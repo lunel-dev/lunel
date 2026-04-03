@@ -20,7 +20,7 @@ AI-powered mobile IDE and cloud development platform. Code on your phone, run on
 
 ## Uses
 
-This can be used in two ways, both are for coding
+This can be used in two ways, both are for coding:
 
 - Lunel Connect: One is when you want to remotely use pc without dealing with ssh and shit, geared towards coding
 - Lunel Cloud: Coming soon
