@@ -2988,7 +2988,9 @@ async function processMessage(message: Message): Promise<Response> {
 
       case "ai": {
         if (!aiManager) throw Object.assign(new Error("AI manager not initialized"), { code: "EUNAVAILABLE" });
-        const backend = ((payload.backend as string) === "codex" ? "codex" : "opencode") as AiBackend;
+        const rawBackend = payload.backend as string | undefined;
+        const backend: AiBackend =
+          rawBackend === "codex" || rawBackend === "pi" || rawBackend === "opencode" ? rawBackend : "opencode";
         switch (action) {
           case "backends":
             result = { backends: aiManager.availableBackends() };

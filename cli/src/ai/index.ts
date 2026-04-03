@@ -4,7 +4,7 @@
 
 import type { AIProvider, AiEvent, AiEventEmitter, ModelSelector, FileAttachment } from "./interface.js";
 
-export type AiBackend = "opencode" | "codex";
+export type AiBackend = "opencode" | "codex" | "pi";
 const DEBUG_MODE = process.env.LUNEL_DEBUG === "1" || process.env.LUNEL_DEBUG_AI === "1";
 
 export class AiManager {
@@ -15,6 +15,7 @@ export class AiManager {
     await Promise.allSettled([
       this.tryInit("opencode"),
       this.tryInit("codex"),
+      this.tryInit("pi"),
     ]);
     if (this._available.length === 0) {
       console.warn("[ai] No AI backends available. CLI will continue without AI features.");
@@ -32,11 +33,16 @@ export class AiManager {
         const p = new OpenCodeProvider();
         await p.init();
         this._providers.opencode = p;
-      } else {
+      } else if (backend === "codex") {
         const { CodexProvider } = await import("./codex.js");
         const p = new CodexProvider();
         await p.init();
         this._providers.codex = p;
+      } else {
+        const { PiProvider } = await import("./pi.js");
+        const p = new PiProvider();
+        await p.init();
+        this._providers.pi = p;
       }
       this._available.push(backend);
     } catch (err) {

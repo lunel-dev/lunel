@@ -116,9 +116,11 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
     ? (() => {
         const opencode = filteredSessions.filter((s) => !s.backend || s.backend === 'opencode');
         const codex = filteredSessions.filter((s) => s.backend === 'codex');
+        const pi = filteredSessions.filter((s) => s.backend === 'pi');
         const groups: SessionGroup[] = [];
         if (opencode.length > 0) groups.push({ backend: 'opencode', label: 'OpenCode', sessions: opencode });
         if (codex.length > 0) groups.push({ backend: 'codex', label: 'Codex', sessions: codex });
+        if (pi.length > 0) groups.push({ backend: 'pi', label: 'Pi', sessions: pi });
         return groups;
       })()
     : filteredSessions.length > 0

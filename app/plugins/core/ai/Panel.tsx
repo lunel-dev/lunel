@@ -15,7 +15,7 @@ import FileChange from "./FileChange";
 import {
   Sparkle, Sparkles, Check, X, Plus,
   Hammer, Map as MapIcon, Square, AlertTriangle, Key,
-  EllipsisVertical, ChevronDown, Mic,
+  EllipsisVertical, ChevronDown, Mic, Search,
 } from "lucide-react-native";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -67,9 +67,13 @@ const AI_READING_LETTER_SPACING = 0.12;
 // Session tab interface
 interface AITab extends BaseTab {
   sessionId?: string;
-  backend: "opencode" | "codex";
+  backend: AiBackend;
   updatedAt?: number;
 }
+
+const AI_BACKENDS: AiBackend[] = ["opencode", "codex", "pi"];
+const BACKENDS_WITHOUT_AGENTS = new Set<AiBackend>(["codex", "pi"]);
+const BACKENDS_WITHOUT_SESSION_COMMANDS = new Set<AiBackend>(["codex", "pi"]);
 
 const DEFAULT_OPENCODE_AGENTS: { id: string; name: string; icon?: React.ComponentType<any> }[] = [
   { id: "build", name: "Build", icon: Hammer },
@@ -101,11 +105,17 @@ function AISkeleton({ colors, paddingTop = 0 }: { colors: any; paddingTop?: numb
 }
 
 function formatBackendSessionTitle(backend: AiBackend, title?: string) {
-  return backend === "codex" ? "Codex" : "OpenCode";
+  if (backend === "codex") return "Codex";
+  if (backend === "pi") return "Pi";
+  return "OpenCode";
 }
 
 function sortTabsByUpdatedAt(tabs: AITab[]): AITab[] {
   return [...tabs].sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
+}
+
+function getSessionTabId(backend: AiBackend, sessionId: string): string {
+  return `${backend}:${sessionId}`;
 }
 
 function mergeSessionTabs(existingTabs: AITab[], incomingSessions: AISession[]): AITab[] {
@@ -119,12 +129,17 @@ function mergeSessionTabs(existingTabs: AITab[], incomingSessions: AISession[]):
     const session = incomingSessions[i];
     const backend = session.backend ?? "opencode";
     const key = `${backend}:${session.id}`;
+    for (const [existingKey, tab] of byKey.entries()) {
+      if (tab.sessionId === session.id && tab.backend !== backend && tab.id === session.id) {
+        byKey.delete(existingKey);
+      }
+    }
     const existing = byKey.get(key);
     const nextTitle = (session.title || "").trim() || existing?.title || `Session ${i + 1}`;
     const nextUpdatedAt = session.time?.updated;
 
     byKey.set(key, {
-      id: existing?.id ?? session.id,
+      id: existing?.id ?? getSessionTabId(backend, session.id),
       sessionId: session.id,
       backend,
       title: nextTitle,
@@ -986,7 +1001,7 @@ function BackendPickerDialog({
   fonts,
 }: {
   visible: boolean;
-  onPick: (backend: "opencode" | "codex") => void;
+  onPick: (backend: AiBackend) => void;
   onClose: () => void;
   colors: any;
   radius: any;
@@ -1039,13 +1054,14 @@ function BackendPickerDialog({
   if (!modalVisible) return null;
 
   const options: Array<{
-    backend?: "opencode" | "codex";
+    backend?: AiBackend;
     label: string;
     description: string;
     disabled?: boolean;
   }> = [
     { backend: "opencode", label: "OpenCode", description: "The open source AI coding agent" },
     { backend: "codex", label: "Codex", description: "OpenAI Codex CLI" },
+    { backend: "pi", label: "Pi", description: "Pi coding agent" },
     { label: "Claude Code", description: "Coming soon", disabled: true },
   ];
 
@@ -1146,6 +1162,8 @@ function ConfigureSheet({
   fonts: any;
 }) {
   const [modalVisible, setModalVisible] = useState(false);
+  const [isModelSearchVisible, setIsModelSearchVisible] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState("");
   const backdropOpacity = useSharedValue(0);
   const sheetTranslateY = useSharedValue(SCREEN_HEIGHT);
 
@@ -1181,6 +1199,22 @@ function ConfigureSheet({
       );
     }
   }, [visible, backdropOpacity, sheetTranslateY, hideModal]);
+
+  useEffect(() => {
+    if (!visible) {
+      setIsModelSearchVisible(false);
+      setModelSearchQuery("");
+    }
+  }, [visible, backend]);
+
+  const normalizedModelQuery = modelSearchQuery.trim().toLowerCase();
+  const filteredModelOptions = useMemo(() => {
+    if (!normalizedModelQuery) return modelOptions;
+    return modelOptions.filter((option) =>
+      option.name.toLowerCase().includes(normalizedModelQuery) ||
+      option.id.toLowerCase().includes(normalizedModelQuery)
+    );
+  }, [modelOptions, normalizedModelQuery]);
 
   const backdropAnimatedStyle = useAnimatedStyle(() => ({
     opacity: backdropOpacity.value,
@@ -1257,10 +1291,84 @@ function ConfigureSheet({
             ) : null}
 
             <View>
-              <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, marginBottom: 8, paddingHorizontal: 8 }}>
-                Model
-              </Text>
-              {modelOptions.length > 0 ? modelOptions.map((option) => {
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8, paddingHorizontal: 8 }}>
+                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold }}>
+                  Model
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (isModelSearchVisible) {
+                      setIsModelSearchVisible(false);
+                      setModelSearchQuery("");
+                    } else {
+                      setIsModelSearchVisible(true);
+                    }
+                  }}
+                  activeOpacity={0.7}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                    borderRadius: 999,
+                    backgroundColor: colors.bg.base,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: colors.border.secondary,
+                  }}
+                >
+                  <Search size={14} color={colors.fg.muted} strokeWidth={2.1} />
+                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.medium }}>
+                    Search
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {isModelSearchVisible ? (
+                <View style={{ paddingHorizontal: 8, marginBottom: 10 }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: radius.lg,
+                      backgroundColor: colors.bg.base,
+                      borderWidth: StyleSheet.hairlineWidth,
+                      borderColor: colors.border.secondary,
+                    }}
+                  >
+                    <Search size={16} color={colors.fg.muted} strokeWidth={2.1} />
+                    <TextInput
+                      value={modelSearchQuery}
+                      onChangeText={setModelSearchQuery}
+                      placeholder="Search models"
+                      placeholderTextColor={colors.fg.subtle}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={{
+                        flex: 1,
+                        color: colors.fg.default,
+                        fontSize: 14,
+                        fontFamily: fonts.sans.regular,
+                        paddingVertical: 0,
+                      }}
+                    />
+                    {modelSearchQuery ? (
+                      <TouchableOpacity
+                        onPress={() => setModelSearchQuery("")}
+                        activeOpacity={0.7}
+                        style={{ padding: 2 }}
+                      >
+                        <X size={14} color={colors.fg.muted} strokeWidth={2.2} />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
+
+              {filteredModelOptions.length > 0 ? filteredModelOptions.map((option) => {
                 const selected = option.id === selectedModelId;
                 return (
                   <TouchableOpacity
@@ -1286,7 +1394,13 @@ function ConfigureSheet({
                     {selected && <Check size={16} color={colors.fg.default} strokeWidth={2.8} />}
                   </TouchableOpacity>
                 );
-              }) : (
+              }) : normalizedModelQuery && modelOptions.length > 0 ? (
+                <View style={styles.sheetRow}>
+                  <Text style={{ color: colors.fg.muted, fontSize: 14, fontFamily: fonts.sans.regular }}>
+                    No matching models
+                  </Text>
+                </View>
+              ) : (
                 <View style={styles.sheetRow}>
                   <Text style={{ color: colors.fg.muted, fontSize: 14, fontFamily: fonts.sans.regular }}>
                     {backend === "codex" ? "Auto" : "No models available"}
@@ -1415,22 +1529,27 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [agentsByBackend, setAgentsByBackend] = useState<Record<AiBackend, { id: string; name: string; icon?: React.ComponentType<any> }[]>>({
     opencode: DEFAULT_OPENCODE_AGENTS,
     codex: [],
+    pi: [],
   });
   const [modelOptionsByBackend, setModelOptionsByBackend] = useState<Record<AiBackend, { id: string; name: string }[]>>({
     opencode: [],
     codex: [],
+    pi: [],
   });
   const [selectedAgentByBackend, setSelectedAgentByBackend] = useState<Record<AiBackend, string>>({
     opencode: "build",
     codex: "",
+    pi: "",
   });
   const [selectedModelByBackend, setSelectedModelByBackend] = useState<Record<AiBackend, string>>({
     opencode: "",
     codex: "",
+    pi: "",
   });
   const [providersByBackend, setProvidersByBackend] = useState<Record<AiBackend, AIProvider[]>>({
     opencode: [],
     codex: [],
+    pi: [],
   });
 
   // UI state
@@ -1453,6 +1572,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [needsApiKeyByBackend, setNeedsApiKeyByBackend] = useState<Record<AiBackend, boolean>>({
     opencode: false,
     codex: false,
+    pi: false,
   });
   const [isInitialized, setIsInitialized] = useState(false);
   const [isInitialSessionsLoading, setIsInitialSessionsLoading] = useState(false);
@@ -1597,7 +1717,8 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           }
           break;
         }
-        case "session.status": {
+        case "session.status":
+        case "status.updated": {
           // OpenCode: properties = { sessionID, status: { type: "idle" | "busy" | "retry" } }
           const statusObj = props.status as Record<string, unknown> | string | undefined;
           const statusType = typeof statusObj === "object" ? (statusObj?.type as string) : (statusObj as string);
@@ -1644,6 +1765,90 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     }, []),
   });
 
+  const refreshBackendConfiguration = useCallback(async (backend: AiBackend) => {
+    try {
+      const agentsList = await ai.getAgents(backend);
+      if (Array.isArray(agentsList) && agentsList.length > 0) {
+        const filteredAgents = backend === "opencode"
+          ? (agentsList as AIAgent[]).filter((a) => {
+              const normalized = (a.mode || a.name || "").trim().toLowerCase();
+              return normalized === "build" || normalized === "plan";
+            })
+          : (agentsList as AIAgent[]);
+        const mapped = filteredAgents.map((a) => {
+          const raw = a.name || a.mode;
+          return {
+            id: raw,
+            name: raw.charAt(0).toUpperCase() + raw.slice(1),
+            icon: a.mode === "plan" ? MapIcon : Hammer,
+          };
+        });
+        const resolvedAgents = backend === "opencode" && mapped.length === 0
+          ? DEFAULT_OPENCODE_AGENTS
+          : mapped;
+        setAgentsByBackend((prev) => ({ ...prev, [backend]: resolvedAgents }));
+        setSelectedAgentByBackend((prev) => ({
+          ...prev,
+          [backend]: resolvedAgents.some((agent) => agent.id === prev[backend]) ? prev[backend] : (resolvedAgents[0]?.id || ""),
+        }));
+      } else if (BACKENDS_WITHOUT_AGENTS.has(backend)) {
+        setAgentsByBackend((prev) => ({ ...prev, [backend]: [] }));
+        setSelectedAgentByBackend((prev) => ({ ...prev, [backend]: "" }));
+      }
+    } catch {
+      if (BACKENDS_WITHOUT_AGENTS.has(backend)) {
+        setAgentsByBackend((prev) => ({ ...prev, [backend]: [] }));
+        setSelectedAgentByBackend((prev) => ({ ...prev, [backend]: "" }));
+      }
+    }
+
+    try {
+      const result = await ai.getProviders(backend);
+      const providersList = result.providers;
+      const defaults = result.defaults || {};
+      if (Array.isArray(providersList)) {
+        setProvidersByBackend((prev) => ({ ...prev, [backend]: providersList as AIProvider[] }));
+        const models: { id: string; name: string }[] = [];
+        let hasConfiguredKey = false;
+        let defaultModelId = "";
+
+        for (const p of providersList as AIProvider[]) {
+          if ((p as any).key || (p as any).source === "env") {
+            hasConfiguredKey = true;
+          }
+          if (p.models) {
+            const defaultForProvider = defaults[p.id];
+            for (const [modelId, model] of Object.entries(p.models)) {
+              const optionId = `${p.id}:${modelId}`;
+              models.push({
+                id: optionId,
+                name: (model as any).name || modelId,
+              });
+              if (defaultForProvider && modelId === defaultForProvider && ((p as any).key || (p as any).source === "env")) {
+                defaultModelId = optionId;
+              }
+            }
+          }
+        }
+
+        setModelOptionsByBackend((prev) => ({ ...prev, [backend]: models }));
+        setSelectedModelByBackend((prev) => ({
+          ...prev,
+          [backend]: models.some((model) => model.id === prev[backend]) ? prev[backend] : (models.length > 0 ? (defaultModelId || models[0].id) : ""),
+        }));
+        setNeedsApiKeyByBackend((prev) => ({
+          ...prev,
+          [backend]: !hasConfiguredKey && models.length === 0,
+        }));
+      }
+    } catch {
+      setProvidersByBackend((prev) => ({ ...prev, [backend]: [] }));
+      setModelOptionsByBackend((prev) => ({ ...prev, [backend]: [] }));
+      setSelectedModelByBackend((prev) => ({ ...prev, [backend]: "" }));
+      setNeedsApiKeyByBackend((prev) => ({ ...prev, [backend]: false }));
+    }
+  }, [ai]);
+
   // Initialize on connection
   useEffect(() => {
     if (status !== "connected" || isInitialized) return;
@@ -1652,86 +1857,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
       setIsInitialized(true);
       setIsInitialSessionsLoading(true);
       try {
-        void Promise.allSettled((["opencode", "codex"] as AiBackend[]).map(async (backend) => {
-          try {
-            const agentsList = await ai.getAgents(backend);
-            if (Array.isArray(agentsList) && agentsList.length > 0) {
-              const filteredAgents = backend === "opencode"
-                ? (agentsList as AIAgent[]).filter((a) => {
-                    const normalized = (a.mode || a.name || "").trim().toLowerCase();
-                    return normalized === "build" || normalized === "plan";
-                  })
-                : (agentsList as AIAgent[]);
-              const mapped = filteredAgents.map((a) => {
-                const raw = a.name || a.mode;
-                return {
-                  id: raw,
-                  name: raw.charAt(0).toUpperCase() + raw.slice(1),
-                  icon: a.mode === "plan" ? MapIcon : Hammer,
-                };
-              });
-              const resolvedAgents = backend === "opencode" && mapped.length === 0
-                ? DEFAULT_OPENCODE_AGENTS
-                : mapped;
-              setAgentsByBackend((prev) => ({ ...prev, [backend]: resolvedAgents }));
-              setSelectedAgentByBackend((prev) => ({ ...prev, [backend]: resolvedAgents[0]?.id || "" }));
-            } else if (backend === "codex") {
-              setAgentsByBackend((prev) => ({ ...prev, codex: [] }));
-              setSelectedAgentByBackend((prev) => ({ ...prev, codex: "" }));
-            }
-          } catch {
-            if (backend === "codex") {
-              setAgentsByBackend((prev) => ({ ...prev, codex: [] }));
-              setSelectedAgentByBackend((prev) => ({ ...prev, codex: "" }));
-            }
-          }
-
-          try {
-            const result = await ai.getProviders(backend);
-            const providersList = result.providers;
-            const defaults = result.defaults || {};
-            if (Array.isArray(providersList)) {
-              setProvidersByBackend((prev) => ({ ...prev, [backend]: providersList as AIProvider[] }));
-              const models: { id: string; name: string }[] = [];
-              let hasConfiguredKey = false;
-              let defaultModelId = "";
-
-              for (const p of providersList as AIProvider[]) {
-                if ((p as any).key || (p as any).source === "env") {
-                  hasConfiguredKey = true;
-                }
-                if (p.models) {
-                  const defaultForProvider = defaults[p.id];
-                  for (const [modelId, model] of Object.entries(p.models)) {
-                    const optionId = `${p.id}:${modelId}`;
-                    models.push({
-                      id: optionId,
-                      name: (model as any).name || modelId,
-                    });
-                    if (defaultForProvider && modelId === defaultForProvider && ((p as any).key || (p as any).source === "env")) {
-                      defaultModelId = optionId;
-                    }
-                  }
-                }
-              }
-
-              setModelOptionsByBackend((prev) => ({ ...prev, [backend]: models }));
-              setSelectedModelByBackend((prev) => ({
-                ...prev,
-                [backend]: models.length > 0 ? (defaultModelId || models[0].id) : "",
-              }));
-              setNeedsApiKeyByBackend((prev) => ({
-                ...prev,
-                [backend]: !hasConfiguredKey && models.length === 0,
-              }));
-            }
-          } catch {
-            setProvidersByBackend((prev) => ({ ...prev, [backend]: [] }));
-            setModelOptionsByBackend((prev) => ({ ...prev, [backend]: [] }));
-            setSelectedModelByBackend((prev) => ({ ...prev, [backend]: "" }));
-            setNeedsApiKeyByBackend((prev) => ({ ...prev, [backend]: false }));
-          }
-        }));
+        void Promise.allSettled((AI_BACKENDS as AiBackend[]).map((backend) => refreshBackendConfiguration(backend)));
 
         // Fetch existing sessions from all backends
         try {
@@ -1766,7 +1892,12 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     };
 
     init();
-  }, [status, isInitialized, ai]);
+  }, [status, isInitialized, ai, refreshBackendConfiguration]);
+
+  useEffect(() => {
+    if (status !== "connected" || !isInitialized || !isActive) return;
+    void refreshBackendConfiguration(activeBackend);
+  }, [status, isInitialized, isActive, activeBackend, refreshBackendConfiguration]);
 
   // Reset on disconnect
   useEffect(() => {
@@ -1852,7 +1983,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
     || (activeBackend === "codex" ? "Auto" : "Select model");
   const selectedModelName = selectedModelNameFull.length > 12 ? selectedModelNameFull.slice(0, 12) + "…" : selectedModelNameFull;
-  const selectedAgentNameFull = activeBackend === "codex" && agents.length === 0
+  const selectedAgentNameFull = BACKENDS_WITHOUT_AGENTS.has(activeBackend) && agents.length === 0
     ? ""
     : ((agents.find((a) => a.id === selectedAgent)?.name || selectedAgent) as string);
   const combinedConfigLabel = activeBackend === "opencode" && selectedAgentNameFull
@@ -1908,7 +2039,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     setBackendPickerVisible(true);
   };
 
-  const createNewTabWithBackend = async (backend: "opencode" | "codex") => {
+  const createNewTabWithBackend = async (backend: AiBackend) => {
     setBackendPickerVisible(false);
     const draftId = Date.now().toString();
     const fallbackTitle = `Session ${tabs.length + 1}`;
@@ -1925,6 +2056,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 
     try {
       const session = await ai.createSession(fallbackTitle, backend);
+      const sessionTabId = getSessionTabId(backend, session.id);
       setDraftTabs((prev) => prev.filter((t) => t.id !== draftId));
       setMessagesMap((prev) => {
         const next = { ...prev };
@@ -1932,7 +2064,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
         return { ...next, [session.id]: [] };
       });
       setSessionTabs((prev) => mergeSessionTabs(prev, [{ ...session, backend } as AISession]));
-      setActiveTabId(session.id);
+      setActiveTabId(sessionTabId);
     } catch {
       // draft tab stays, user can still type
     }
@@ -2157,16 +2289,17 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 
     // Get or create session
     const activeTab = tabs.find((t) => t.id === activeTabId);
-    const activeBackend: "opencode" | "codex" = activeTab?.backend ?? "opencode";
+    const activeBackend: AiBackend = activeTab?.backend ?? "opencode";
     const selectedAgentForBackend = activeBackend === "opencode" ? selectedAgent : undefined;
     let sessId = activeSessionId;
     if (!sessId) {
       try {
         const fallbackTitle = `Session ${tabs.length + 1}`;
         const session = await ai.createSession(fallbackTitle, activeBackend);
+        const sessionTabId = getSessionTabId(activeBackend, session.id);
         sessId = session.id;
         const newTab: AITab = {
-          id: session.id,
+          id: sessionTabId,
           title: session.title || fallbackTitle,
           sessionId: session.id,
           backend: activeBackend,
@@ -2176,7 +2309,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
         if (activeTabId) {
           setDraftTabs((prev) => prev.filter((t) => t.id !== activeTabId));
         }
-        setActiveTabId(session.id);
+        setActiveTabId(sessionTabId);
       } catch (err) {
         Alert.alert("Error", "Failed to create AI session");
         return;
@@ -2189,8 +2322,8 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
       try {
         switch (cmd) {
           case "undo": {
-            if (activeBackend === "codex") {
-              throw new Error("Codex undo is not supported in Lunel yet");
+            if (BACKENDS_WITHOUT_SESSION_COMMANDS.has(activeBackend)) {
+              throw new Error(`${formatBackendSessionTitle(activeBackend)} undo is not supported in Lunel yet`);
             }
             const msgs = messagesMap[sessId] || [];
             const lastUserMsg = [...msgs].reverse().find((m) => m.role === "user");
@@ -2198,8 +2331,8 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
             break;
           }
           case "redo":
-            if (activeBackend === "codex") {
-              throw new Error("Codex redo is not supported in Lunel yet");
+            if (BACKENDS_WITHOUT_SESSION_COMMANDS.has(activeBackend)) {
+              throw new Error(`${formatBackendSessionTitle(activeBackend)} redo is not supported in Lunel yet`);
             }
             await ai.unrevert(sessId, activeBackend);
             break;
@@ -2208,8 +2341,8 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
             setIsStreaming(false);
             break;
           case "init":
-            if (activeBackend === "codex") {
-              throw new Error("Codex init is not supported in Lunel yet");
+            if (BACKENDS_WITHOUT_SESSION_COMMANDS.has(activeBackend)) {
+              throw new Error(`${formatBackendSessionTitle(activeBackend)} init is not supported in Lunel yet`);
             }
             await ai.runCommand(sessId, "init", activeBackend);
             break;
@@ -2709,9 +2842,18 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               <Pressable style={{ flex: 1, paddingTop: headerHeight }} onPress={() => { inputRef.current?.blur(); Keyboard.dismiss(); }}>
                 <View style={styles.logoContainer}>
                   <View style={[styles.logoWrapper, { marginBottom: activeBackend === "codex" ? 8 : 0 }]}>
-                    {activeBackend === "codex"
-                      ? <Codex size={80} color={colors.fg.default} />
-                      : <OpenCode size={85} color={colors.fg.default} />}
+                    {activeBackend === "codex" ? (
+                      <Codex size={80} color={colors.fg.default} />
+                    ) : activeBackend === "pi" ? (
+                      <View style={{ alignItems: "center", justifyContent: "center" }}>
+                        <Sparkles size={44} color={colors.fg.default} strokeWidth={1.8} />
+                        <Text style={{ color: colors.fg.default, fontSize: 28, fontFamily: fonts.mono.semibold, marginTop: 6 }}>
+                          pi
+                        </Text>
+                      </View>
+                    ) : (
+                      <OpenCode size={85} color={colors.fg.default} />
+                    )}
                   </View>
                   <Text style={{ color: colors.fg.muted, fontSize: 20, fontFamily: "PublicSans_500Medium", textAlign: "center", marginTop: 16, paddingHorizontal: 24 }}>
                     What's the plan today? I'm in.
@@ -2847,7 +2989,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
                     style={[styles.modelButton, { borderColor: colors.border.secondary, maxWidth: 260 }]}
                     onPress={() => setActiveSheet("configure")}
                     activeOpacity={0.7}
-                    disabled={activeBackend !== "codex" && agents.length === 0 && modelOptions.length === 0}
+                    disabled={!BACKENDS_WITHOUT_AGENTS.has(activeBackend) && agents.length === 0 && modelOptions.length === 0}
                   >
                     <Text
                       numberOfLines={1}
