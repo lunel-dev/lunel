@@ -1,5 +1,5 @@
 <div align="center">
-<img src="./githubanner.png" alt="Lunel" width="500" /> </div>
+<img src="./githubanner.png" alt="Lunel" width="650" /> </div>
 <br>
 
 AI-powered mobile IDE and cloud development platform. Code on your phone, run on your machine or in secure cloud sandboxes.
