@@ -81,3 +81,15 @@ Rust binary for pseudo-terminal management, used by the CLI.
 MIT: See [LICENSE](LICENSE) for details.
 
 ---
+
+## Star History
+
+<a href="https://www.star-history.com/#lunel-dev/lunel&Timeline">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lunel-dev/lunel&type=Timeline&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=lunel-dev/lunel&type=Timeline" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=lunel-dev/lunel&type=Timeline" />
+ </picture>
+</a>
+
+<div align="center">
