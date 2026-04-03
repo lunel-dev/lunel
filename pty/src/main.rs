@@ -18,6 +18,15 @@ fn emit(event: &Event) {
     let _ = out.flush();
 }
 
+fn default_shell() -> String {
+    if cfg!(windows) {
+        std::env::var("COMSPEC")
+            .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string())
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+}
+
 fn main() {
     if let Some(arg1) = std::env::args().nth(1) {
         if arg1 == "--version" || arg1 == "-V" {
@@ -127,9 +136,7 @@ fn main() {
                 cols,
                 rows,
             } => {
-                let shell = shell.unwrap_or_else(|| {
-                    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-                });
+                let shell = shell.unwrap_or_else(default_shell);
 
                 match TerminalSession::spawn(
                     id.clone(),

@@ -78,6 +78,13 @@ const terminals = new Set<string>();
 let ptyProcess: ChildProcess | null = null;
 const ptyPendingSpawns = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
 
+function getDefaultTerminalShell(): string {
+  if (process.platform === "win32") {
+    return process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe";
+  }
+  return process.env.SHELL || "/bin/sh";
+}
+
 // Process management
 interface ManagedProcess {
   pid: number;
@@ -1619,6 +1626,11 @@ async function ensurePtyProcess(): Promise<void> {
       };
       emitAppEvent(msg);
     } else if (event.event === "error") {
+      const pending = ptyPendingSpawns.get(event.id);
+      if (pending) {
+        pending.reject(new Error(String(event.message || "PTY error")));
+        ptyPendingSpawns.delete(event.id);
+      }
       console.error(`[pty] Error for ${event.id}: ${event.message}`);
     }
   });
@@ -1634,7 +1646,7 @@ function sendToPty(cmd: object): void {
 async function handleTerminalSpawn(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   await ensurePtyProcess();
 
-  const shell = (payload.shell as string) || process.env.SHELL || "/bin/sh";
+  const shell = (payload.shell as string) || getDefaultTerminalShell();
   const cols = (payload.cols as number) || 80;
   const rows = (payload.rows as number) || 24;
   const terminalId = `term-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
