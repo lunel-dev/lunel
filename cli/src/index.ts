@@ -85,6 +85,40 @@ function getDefaultTerminalShell(): string {
   return process.env.SHELL || "/bin/sh";
 }
 
+function runWindowsCommandSync(command: string, args: string[], timeout = 5000): string {
+  const result = spawnSync(command, args, { encoding: "utf-8", timeout });
+  if (result.error) {
+    throw result.error;
+  }
+  return result.stdout || "";
+}
+
+function runWindowsPowerShellJson(command: string, timeout = 5000): unknown {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+    encoding: "utf-8",
+    timeout,
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `PowerShell exited with code ${result.status}`);
+  }
+
+  const output = (result.stdout || "").trim();
+  if (!output) {
+    return null;
+  }
+  return JSON.parse(output);
+}
+
+function toArray<T>(value: T | T[] | null | undefined): T[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return value == null ? [] : [value];
+}
+
 // Process management
 interface ManagedProcess {
   pid: number;
@@ -1940,15 +1974,12 @@ function handlePortsList(): Record<string, unknown> {
         });
       }
     } else if (platform === "win32") {
-      output = execSync("netstat -ano | findstr LISTENING", {
-        encoding: "utf-8",
-        timeout: 5000,
-      });
+      output = runWindowsCommandSync("netstat", ["-ano"]);
 
       const lines = output.trim().split("\n");
       for (const line of lines) {
         const parts = line.trim().split(/\s+/);
-        if (parts.length >= 5) {
+        if (parts.length >= 5 && parts[3]?.toUpperCase() === "LISTENING") {
           const localAddr = parts[1];
           const pid = parseInt(parts[4]);
           const match = localAddr.match(/:(\d+)$/);
@@ -2128,27 +2159,26 @@ function getDiskInfo(): Array<{ mount: string; filesystem: string; size: number;
         }
       }
     } else if (platform === "win32") {
-      const output = execSync("wmic logicaldisk get size,freespace,caption", { encoding: "utf-8" });
-      const lines = output.trim().split("\n").slice(1);
+      const diskData = toArray(runWindowsPowerShellJson(
+        "Get-CimInstance Win32_LogicalDisk -Filter \"DriveType=3\" | Select-Object DeviceID,FileSystem,Size,FreeSpace | ConvertTo-Json -Compress"
+      ) as Array<Record<string, unknown>> | Record<string, unknown> | null);
 
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 3) {
-          const mount = parts[0];
-          const free = parseInt(parts[1]) || 0;
-          const size = parseInt(parts[2]) || 0;
-          const used = size - free;
+      for (const entry of diskData) {
+        const mount = typeof entry.DeviceID === "string" ? entry.DeviceID : "";
+        const filesystem = typeof entry.FileSystem === "string" ? entry.FileSystem : "unknown";
+        const size = Number(entry.Size) || 0;
+        const free = Number(entry.FreeSpace) || 0;
+        const used = size - free;
 
-          if (size > 0) {
-            disks.push({
-              mount,
-              filesystem: "NTFS",
-              size,
-              used,
-              free,
-              usedPercent: Math.round((used / size) * 1000) / 10,
-            });
-          }
+        if (mount && size > 0) {
+          disks.push({
+            mount,
+            filesystem,
+            size,
+            used,
+            free,
+            usedPercent: Math.round((used / size) * 1000) / 10,
+          });
         }
       }
     }
@@ -2197,22 +2227,21 @@ function getBatteryInfo(): { hasBattery: boolean; percent: number; charging: boo
         // No battery
       }
     } else if (platform === "win32") {
-      const output = execSync("WMIC Path Win32_Battery Get EstimatedChargeRemaining,BatteryStatus 2>nul || echo", { encoding: "utf-8" });
-      const lines = output.trim().split("\n").slice(1);
+      const batteries = toArray(runWindowsPowerShellJson(
+        "Get-CimInstance Win32_Battery | Select-Object EstimatedChargeRemaining,BatteryStatus | ConvertTo-Json -Compress"
+      ) as Array<Record<string, unknown>> | Record<string, unknown> | null);
 
-      if (lines.length > 0) {
-        const parts = lines[0].trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const status = parseInt(parts[0]);
-          const percent = parseInt(parts[1]);
+      if (batteries.length > 0) {
+        const battery = batteries[0];
+        const status = Number(battery.BatteryStatus);
+        const percent = Number(battery.EstimatedChargeRemaining);
 
-          return {
-            hasBattery: true,
-            percent: percent || 0,
-            charging: status === 2 || status === 6, // Charging or Charging High
-            timeRemaining: null,
-          };
-        }
+        return {
+          hasBattery: true,
+          percent: Number.isFinite(percent) ? percent : 0,
+          charging: status === 2 || status === 6, // Charging or Charging High
+          timeRemaining: null,
+        };
       }
     }
   } catch {

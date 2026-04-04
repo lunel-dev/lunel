@@ -2,7 +2,7 @@
 // All logic extracted verbatim from cli/src/index.ts AI handlers section.
 
 import * as crypto from "crypto";
-import { createOpencodeServer, createOpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient } from "@opencode-ai/sdk";
 import type {
   AIProvider,
   AiEventEmitter,
@@ -13,12 +13,18 @@ import type {
   SessionInfo,
   ShareInfo,
 } from "./interface.js";
+import { spawnPlatformCommand } from "./spawn-command.js";
 
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG === "1" || process.env.LUNEL_DEBUG_AI === "1";
 
 const SSE_BACKOFF_INITIAL_MS = 500;
 const SSE_BACKOFF_CAP_MS = 30_000;
 const SSE_MAX_RETRIES = 20;
+
+type ManagedOpencodeServer = {
+  url: string;
+  close(): void;
+};
 
 function redactSensitive(input: unknown): string {
   const text = typeof input === "string" ? input : JSON.stringify(input);
@@ -44,9 +50,86 @@ function requireData<T>(response: { data?: T; error?: unknown }, label: string):
   return response.data;
 }
 
+async function startOpencodeServer(options: {
+  hostname: string;
+  port: number;
+  timeout: number;
+  signal?: AbortSignal;
+  config?: { logLevel?: string };
+}): Promise<ManagedOpencodeServer> {
+  const args = [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`];
+  if (options.config?.logLevel) {
+    args.push(`--log-level=${options.config.logLevel}`);
+  }
+
+  const proc = spawnPlatformCommand("opencode", args, {
+    signal: options.signal,
+    env: {
+      ...process.env,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(options.config ?? {}),
+    },
+  });
+
+  const url = await new Promise<string>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`Timeout waiting for server to start after ${options.timeout}ms`));
+    }, options.timeout);
+
+    let output = "";
+
+    proc.stdout?.on("data", (chunk) => {
+      output += chunk.toString();
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (!line.startsWith("opencode server listening")) continue;
+
+        const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
+        if (!match) {
+          throw new Error(`Failed to parse server url from output: ${line}`);
+        }
+        clearTimeout(timeoutId);
+        resolve(match[1]);
+        return;
+      }
+    });
+
+    proc.stderr?.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    proc.on("exit", (code) => {
+      clearTimeout(timeoutId);
+      let message = `Server exited with code ${code}`;
+      if (output.trim()) {
+        message += `\nServer output: ${output}`;
+      }
+      reject(new Error(message));
+    });
+
+    proc.on("error", (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+
+    if (options.signal) {
+      options.signal.addEventListener("abort", () => {
+        clearTimeout(timeoutId);
+        reject(new Error("Aborted"));
+      });
+    }
+  });
+
+  return {
+    url,
+    close() {
+      proc.kill();
+    },
+  };
+}
+
 export class OpenCodeProvider implements AIProvider {
   private client: ReturnType<typeof createOpencodeClient> | null = null;
-  private server: Awaited<ReturnType<typeof createOpencodeServer>> | null = null;
+  private server: ManagedOpencodeServer | null = null;
   private authHeader: string | null = null;
   private lastActiveSessionId: string | null = null;
   private shuttingDown = false;
@@ -64,7 +147,7 @@ export class OpenCodeProvider implements AIProvider {
     this.authHeader = authHeader;
 
     if (VERBOSE_AI_LOGS) console.log("Starting OpenCode...");
-    this.server = await createOpencodeServer({
+    this.server = await startOpencodeServer({
       hostname: "127.0.0.1",
       port: 0,
       timeout: 15000,
@@ -81,6 +164,8 @@ export class OpenCodeProvider implements AIProvider {
   async destroy(): Promise<void> {
     this.shuttingDown = true;
     this.authHeader = null;
+    this.server?.close();
+    this.server = null;
   }
 
   subscribe(emitter: AiEventEmitter): () => void {
