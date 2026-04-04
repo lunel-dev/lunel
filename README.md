@@ -1,10 +1,10 @@
 <div align="center">
-<img src="./githubanner.png" alt="Lunel" width="650" /> </div>
-<br>
+<img src="./githubanner.png" alt="Lunel" width="650" />
+<br />
 
-AI-powered mobile IDE and cloud development platform. Code on your phone, run on your machine or in secure cloud sandboxes.
+<p >AI-powered mobile IDE and cloud development platform. Code on your phone, run on your machine or in secure cloud sandboxes.</p> </div>
 
----
+<br />
 
 ## Structure
 
@@ -16,16 +16,16 @@ AI-powered mobile IDE and cloud development platform. Code on your phone, run on
 | `proxy/` | Proxy server |
 | `pty/` | Rust PTY binary uses wezterm internal libs for rendering |
 
----
+<br />
 
-## Uses
+## Usage
 
 This can be used in two ways, both are for coding:
 
 - Lunel Connect: One is when you want to remotely use pc without dealing with ssh and shit, geared towards coding
 - Lunel Cloud: Coming soon
 
----
+<br /> 
 
 ## App
 
@@ -36,7 +36,7 @@ Mobile app for iOS/Android/Web built with Expo. App is just a dumb client with m
 - Terminal emulator
 - Process management
 
----
+<br />
 
 ## CLI
 
@@ -53,7 +53,7 @@ Node.js CLI that bridges your local machine to the app via WebSocket. Can be ran
 npx lunel-cli
 ```
 
----
+<br />
 
 ## Manager and Proxy
 
@@ -63,7 +63,7 @@ Bun-based WebSocket relay server that connects CLI and app using session codes. 
 - Dual-channel architecture (control + data)
 - QR code pairing
 
----
+<br />
 
 ## PTY
 
@@ -74,13 +74,13 @@ Rust binary for pseudo-terminal management, used by the CLI.
 - 24fps render loop (only sends updates when content changes)
 - JSON line protocol over stdin/stdout
 
----
+<br />
 
 ## 📄 License
 
 MIT: See [LICENSE](LICENSE) for details.
 
----
+<br />
 
 ## Star History
 
@@ -91,5 +91,3 @@ MIT: See [LICENSE](LICENSE) for details.
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=lunel-dev/lunel&type=Timeline" />
  </picture>
 </a>
-
-<div align="center">
