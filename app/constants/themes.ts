@@ -464,7 +464,7 @@ const lightTheme: ThemeColors = {
     tertiary: '#aaaaaa60',
   },
   accent: {
-    default: '#6161FF',
+    default: '#6161F2',
   },
   blue: '#3b82f6',
   git: {
@@ -514,7 +514,7 @@ const darkTheme: ThemeColors = {
     tertiary: '#57575760',
   },
   accent: {
-    default: '#6161FF',
+    default: '#6161F2',
   },
   blue: '#60a5fa',
   git: {

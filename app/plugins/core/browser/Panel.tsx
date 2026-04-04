@@ -180,7 +180,7 @@ const DEVSOLE_STUBS: Record<
 };
 
 export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
-  const { colors, radius, fonts } = useTheme();
+  const { colors, radius, fonts, isDark } = useTheme();
   const { discoveredProxyPorts, trackedProxyPorts, refreshProxyState, trackProxyPort, untrackProxyPort } = useConnection();
   const headerHeight = usePluginHeaderHeight();
   const { register, unregister } = useSessionRegistryActions();
@@ -2050,12 +2050,11 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                 alignItems: "center",
                 justifyContent: "center",
                 borderRadius: isFocused ? 10 : 999,
-                backgroundColor: colors.bg.raised,
                 opacity: isFocused || activeTab?.canGoBack ? 1 : 0.3,
               }}
             >
               <ArrowLeft
-                size={18}
+                size={20}
                 color={colors.fg.default}
                 strokeWidth={2}
               />
@@ -2072,12 +2071,11 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                     alignItems: "center",
                     justifyContent: "center",
                     borderRadius: 999,
-                    backgroundColor: colors.bg.raised,
                     opacity: activeTab?.canGoForward ? 1 : 0.3,
                   }}
                 >
                   <ArrowRight
-                    size={18}
+                    size={20}
                     color={colors.fg.default}
                     strokeWidth={2}
                   />
@@ -2090,7 +2088,6 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                     alignItems: "center",
                     justifyContent: "center",
                     borderRadius: 10,
-                    backgroundColor: colors.bg.raised,
                   }}
                 >
                   <RotateCw size={18} color={colors.fg.default} strokeWidth={2} />
@@ -2248,6 +2245,16 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                   }}
                   source={{ uri: tab.url }}
                   style={{ flex: 1 }}
+                  forceDarkOn={isDark}
+                  injectedJavaScriptBeforeContentLoaded={`
+                    (function() {
+                      var meta = document.createElement('meta');
+                      meta.name = 'color-scheme';
+                      meta.content = '${isDark ? 'dark' : 'light'}';
+                      document.head.appendChild(meta);
+                    })();
+                    true;
+                  `}
                   textZoom={90}
                   cacheEnabled={false}
                   cacheMode="LOAD_NO_CACHE"
