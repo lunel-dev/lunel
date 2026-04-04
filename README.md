@@ -1,10 +1,13 @@
 <div align="center">
-<img src="./githubanner.png" alt="Lunel" width="650" />
-<br />
-
-<p >AI-powered mobile IDE and cloud development platform. Code on your phone, run on your machine or in secure cloud sandboxes.</p> </div>
-
-<br />
+  <a href="https://lunel.dev">
+    <picture>
+      <source srcset="./logo-ornate-dark.png" media="(prefers-color-scheme: dark)">
+      <source srcset="./logo-ornate-light.png" media="(prefers-color-scheme: light)">
+      <img src="./logo-ornate-dark.png" alt="Lunel>
+    </picture>
+  </a>
+</div> <br />
+<p align="center">AI-powered mobile IDE and cloud development platform. Code on your phone, run on your machine or in secure cloud sandboxes.</p> <br />
 
 ## Structure
 
