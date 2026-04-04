@@ -14,7 +14,7 @@ try {
   });
 }
 
-const DEFAULT_GATEWAY_WS_URL = 'wss://gateway.lunel.dev';
+const DEFAULT_GATEWAY_WS_URL = '';
 
 // ============================================================================
 // Types

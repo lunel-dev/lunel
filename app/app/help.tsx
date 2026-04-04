@@ -1,20 +1,14 @@
 import { useTheme } from "@/contexts/ThemeContext";
-import { ChevronLeft, ExternalLink } from "lucide-react-native";
+import { ChevronLeft } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import React from "react";
-import * as WebBrowser from "expo-web-browser";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 interface FaqItemProps {
   question: string;
   answer: string;
-}
-
-interface LinkRowProps {
-  label: string;
-  url: string;
 }
 
 function FaqItem({ question, answer }: FaqItemProps) {
@@ -29,36 +23,6 @@ function FaqItem({ question, answer }: FaqItemProps) {
         {answer}
       </Text>
     </View>
-  );
-}
-
-function LinkRow({ label, url }: LinkRowProps) {
-  const { colors, fonts, radius, spacing } = useTheme();
-
-  const handleOpen = () => {
-    void WebBrowser.openBrowserAsync(url);
-  };
-
-  return (
-    <TouchableOpacity
-      onPress={handleOpen}
-      activeOpacity={0.7}
-      style={[
-        styles.linkRow,
-        {
-          backgroundColor: colors.bg.raised,
-          borderColor: colors.bg.raised,
-          borderRadius: radius.lg,
-          paddingVertical: spacing[3],
-          paddingHorizontal: spacing[4],
-        },
-      ]}
-    >
-      <Text style={[styles.linkLabel, { color: colors.fg.default, fontFamily: fonts.sans.medium }]}>
-        {label}
-      </Text>
-      <ExternalLink size={16} color={colors.fg.subtle} strokeWidth={2} />
-    </TouchableOpacity>
   );
 }
 
@@ -119,11 +83,11 @@ export default function HelpPage() {
         <View style={[styles.faqList, { marginHorizontal: 16 }]}>
           <FaqItem
             question="How do I connect to a session?"
-            answer="Run `npx lunel-cli` on your machine, then scan the generated QR code from the app."
+            answer="Open Settings, choose either GitHub Codespaces or Hetzner, save your manager URL, then start your session CLI on that server and scan the generated QR code."
           />
           <FaqItem
             question="What if I get disconnected?"
-            answer="Open Home and scan a fresh QR code from a new CLI session to reconnect."
+            answer="Go back to Home and attach again with a fresh one-time code from your current server session."
           />
         </View>
 
@@ -137,20 +101,12 @@ export default function HelpPage() {
           />
           <FaqItem
             question="Why am I not connecting?"
-            answer="Verify your machine is online, rerun `npx lunel-cli`, and scan the newest QR code."
+            answer="Verify the selected backend points to your self-hosted manager, confirm the server-side CLI is already running, and scan the newest QR code."
           />
-        </View>
-
-        <Text style={[styles.sectionHeader, { color: colors.fg.muted, fontFamily: fonts.sans.medium }]}>
-          LINKS
-        </Text>
-        <View style={[styles.linkList, { marginHorizontal: 16 }]}>
-          <LinkRow label="Terms" url="https://app.lunel.dev/terms" />
-          <LinkRow label="Policy" url="https://app.lunel.dev/policy" />
-          <LinkRow label="Security" url="https://app.lunel.dev/security" />
-          <LinkRow label="Discord" url="https://discord.gg/tdaywsP4HK" />
-          <LinkRow label="GitHub" url="https://github.com/lunel-dev" />
-          <LinkRow label="Twitter" url="https://twitter.com/uselunel" />
+          <FaqItem
+            question="Which parts do I still need to host?"
+            answer="This app is now configured to use your own endpoints, but the transport still expects a compatible manager and gateway backend unless you replace that protocol as well."
+          />
         </View>
 
         <View style={{ height: spacing[8] }} />
@@ -213,17 +169,5 @@ const styles = StyleSheet.create({
   faqAnswer: {
     fontSize: 14,
     lineHeight: 20,
-  },
-  linkList: {
-    gap: 10,
-  },
-  linkRow: {
-    borderWidth: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  linkLabel: {
-    fontSize: 15,
   },
 });

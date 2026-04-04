@@ -93,7 +93,7 @@ const MIC_WAVE_BAR_COUNT = Math.round(42 * (SCREEN_WIDTH / 390));
 const MIC_WAVE_IDLE_LEVEL = 0.08;
 const MIC_WAVE_DOT_SIZE = 2.5;
 const MIC_WAVE_MAX_EXTRA_HEIGHT = 34;
-const TERMINAL_TRANSCRIBE_ENDPOINT = "https://internal-api.lunel.dev/api/transcribe";
+const TERMINAL_TRANSCRIBE_ENDPOINT = "";
 const MONO_FONT_ASSET = require("../../../assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf");
 const MONO_FONT_BOLD_ASSET = require("../../../assets/fonts/JetBrainsMonoNerdFontMono-Bold.ttf");
 
@@ -1831,6 +1831,9 @@ export default function TerminalPanel({
     if (micInputLoading) return;
     setMicInputLoading(true);
     try {
+      if (!TERMINAL_TRANSCRIBE_ENDPOINT) {
+        throw new Error("Voice transcription is not configured in this self-hosted build.");
+      }
       const uri = await stopMicRecording();
       if (!uri) {
         return;

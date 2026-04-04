@@ -3,11 +3,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { AppState } from 'react-native';
 import { configureProxy, startPortServers, stopAllServers } from '@/lib/proxyServer';
+import {
+  DeploymentTarget,
+  normalizeGatewayUrl,
+  normalizeManagerUrl,
+  resolveConnectionProfile,
+} from '@/lib/connectionProfiles';
 import { logger } from '@/lib/logger';
 import { V2SessionTransport } from '@/lib/transport/v2';
+import { useAppSettings } from './AppSettingsContext';
 
-const DEFAULT_GATEWAY = 'wss://gateway.lunel.dev';
-const MANAGER_URL = 'https://manager.lunel.dev';
+const DEFAULT_GATEWAY = '';
 const LAST_SESSION_STORAGE_KEY = 'lunel_last_session';
 const LAST_SESSION_FALLBACK_STORAGE_KEY = '@lunel_last_session_fallback';
 const PAIRED_SESSIONS_STORAGE_KEY = 'lunel_paired_sessions';
@@ -89,6 +95,8 @@ export interface StoredSession {
   sessionCode: string | null;
   sessionPassword: string;
   gateways: string[];
+  managerUrl?: string;
+  deploymentTarget?: DeploymentTarget;
   savedAt: number;
 }
 
@@ -114,7 +122,7 @@ interface ConnectionContextType {
   resumeSession: (session: StoredSession) => Promise<void>;
   getStoredSession: () => Promise<StoredSession | null>;
   getPairedSessions: () => Promise<PairedSession[]>;
-  revokePairedSession: (secret: string) => Promise<void>;
+  revokePairedSession: (secret: string, managerUrl?: string | null) => Promise<void>;
   removePairedSession: (secret: string) => Promise<void>;
   clearStoredSession: () => Promise<void>;
   endSession: () => Promise<void>;
@@ -210,28 +218,7 @@ function describeWebSocketErrorEvent(event: unknown): Record<string, unknown> {
 function normalizeGateway(input: string): string {
   const raw = input.trim();
   if (!raw) return DEFAULT_GATEWAY;
-
-  const lower = raw.toLowerCase();
-  if (lower.startsWith('ws://') || lower.startsWith('http://')) {
-    throw new Error('Insecure gateway protocol is not allowed; use wss:// or https://');
-  }
-
-  const asWss = lower.startsWith('https://')
-    ? `wss://${raw.slice(8)}`
-    : lower.startsWith('wss://')
-      ? raw
-      : `wss://${raw}`;
-
-  try {
-    const url = new URL(asWss);
-    if (url.protocol !== 'wss:') {
-      throw new Error('invalid protocol');
-    }
-    const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
-    return `${url.protocol}//${url.host}${path}`;
-  } catch {
-    throw new Error('Invalid gateway URL');
-  }
+  return normalizeGatewayUrl(raw);
 }
 
 function parseConnectPayload(value: string): { code: string } {
@@ -293,6 +280,7 @@ function delay(ms: number): Promise<void> {
 // ============================================================================
 
 export function ConnectionProvider({ children }: { children: React.ReactNode }) {
+  const { settings } = useAppSettings();
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [sessionState, setSessionState] = useState<SessionState>('idle');
   const [sessionCode, setSessionCode] = useState<string | null>(null);
@@ -311,8 +299,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const sessionCodeRef = useRef<string | null>(null);
   const sessionPasswordRef = useRef<string | null>(null);
-  const gatewaysRef = useRef<string[]>([DEFAULT_GATEWAY]);
+  const gatewaysRef = useRef<string[]>([]);
   const activeGatewayRef = useRef<string>(DEFAULT_GATEWAY);
+  const sessionManagerUrlRef = useRef<string>('');
   const reattachGenerationRef = useRef<number | null>(null);
   const sendControlRef = useRef<((ns: string, action: string, payload?: Record<string, unknown>) => Promise<Response>) | null>(null);
   const reconnectWithPasswordRef = useRef<(() => Promise<{ ok: boolean; terminal: boolean; message?: string }>) | null>(null);
@@ -325,6 +314,33 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const reconnectAttemptRef = useRef(0);
   const discoveredPortsRef = useRef<number[]>([]);
   const trackedPortsRef = useRef<number[]>([]);
+  const activeConnectionProfile = useMemo(
+    () => resolveConnectionProfile(settings.connectionProfiles),
+    [settings.connectionProfiles],
+  );
+
+  const getConfiguredManagerUrl = useCallback((override?: string | null): string => {
+    const raw = override?.trim() || activeConnectionProfile.managerUrl.trim();
+    if (!raw) {
+      throw new Error(`Configure the ${activeConnectionProfile.label} manager URL in Settings before connecting.`);
+    }
+    return normalizeManagerUrl(raw);
+  }, [activeConnectionProfile.label, activeConnectionProfile.managerUrl]);
+
+  const getFallbackGatewayUrl = useCallback((override?: string | null): string => {
+    const raw = override?.trim() || activeConnectionProfile.gatewayUrl.trim();
+    if (!raw) return DEFAULT_GATEWAY;
+    return normalizeGateway(raw);
+  }, [activeConnectionProfile.gatewayUrl]);
+
+  useEffect(() => {
+    if (sessionPasswordRef.current) {
+      return;
+    }
+    const fallbackGateway = getFallbackGatewayUrl();
+    gatewaysRef.current = fallbackGateway ? [fallbackGateway] : [];
+    activeGatewayRef.current = fallbackGateway;
+  }, [getFallbackGatewayUrl]);
 
   const setReconnectUiState = useCallback((reason: 'offline' | 'reconnecting' | null) => {
     setInteractionBlockReason(reason);
@@ -387,6 +403,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       )).map((entry) => ({
         ...entry,
         gateways: Array.isArray(entry.gateways) ? entry.gateways : [],
+        managerUrl: typeof entry.managerUrl === 'string' ? entry.managerUrl : undefined,
+        deploymentTarget: entry.deploymentTarget === 'hetzner' || entry.deploymentTarget === 'codespaces'
+          ? entry.deploymentTarget
+          : undefined,
       }));
       logger.info('connection', 'paired sessions loaded', {
         count: filtered.length,
@@ -411,8 +431,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     await persistPairedSessions(existing.filter((entry) => entry.sessionPassword !== secret));
   }, [getPairedSessions, persistPairedSessions]);
 
-  const revokePairedSession = useCallback(async (secret: string): Promise<void> => {
-    const response = await fetch(new URL('/v2/revoke', MANAGER_URL).toString(), {
+  const revokePairedSession = useCallback(async (secret: string, managerUrl?: string | null): Promise<void> => {
+    const response = await fetch(new URL('/v2/revoke', getConfiguredManagerUrl(managerUrl)).toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -437,7 +457,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       // ignore json parse failures and use fallback message
     }
     throw new Error(message);
-  }, []);
+  }, [getConfiguredManagerUrl]);
 
   const savePairedSession = useCallback(async (
     session: StoredSession,
@@ -449,6 +469,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       sessionCode: session.sessionCode,
       sessionPassword: session.sessionPassword,
       gateways: session.gateways,
+      managerUrl: session.managerUrl,
+      deploymentTarget: session.deploymentTarget,
       savedAt: session.savedAt,
       hostname: capabilitiesValue.hostname,
       root: capabilitiesValue.rootDir,
@@ -885,6 +907,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
           sessionCode: sessionCodeRef.current,
           sessionPassword: sessionPasswordRef.current,
           gateways: gatewaysRef.current,
+          managerUrl: sessionManagerUrlRef.current,
+          deploymentTarget: activeConnectionProfile.target,
           savedAt: Date.now(),
         }, {
           hostname: String((response.payload as Record<string, unknown>).hostname ?? ''),
@@ -898,9 +922,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     }
   }, [clearPendingRequests, clearStoredSession, generateId, savePairedSession, sendMessageV2]);
 
-  const assembleWithCode = useCallback(async (code: string): Promise<AssembleResult> => {
-    const wsUrl = `${MANAGER_URL.replace(/^https:/, 'wss:')}/v2/assemble?code=${encodeURIComponent(code)}&role=app`;
-    const healthUrl = new URL('/health', MANAGER_URL).toString();
+  const assembleWithCode = useCallback(async (managerUrl: string, code: string): Promise<AssembleResult> => {
+    const wsUrl = `${managerUrl.replace(/^https:/, 'wss:')}/v2/assemble?code=${encodeURIComponent(code)}&role=app`;
+    const healthUrl = new URL('/health', managerUrl).toString();
 
     try {
       logger.info('connection', 'probing manager health before assemble websocket', {
@@ -1021,8 +1045,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     });
   }, []);
 
-  const getAssignedProxyUrl = useCallback(async (password: string): Promise<string> => {
-    const url = new URL('/v2/proxy', MANAGER_URL);
+  const getAssignedProxyUrl = useCallback(async (managerUrl: string, password: string): Promise<string> => {
+    const url = new URL('/v2/proxy', managerUrl);
     url.searchParams.set('password', password);
     const res = await fetch(url.toString());
     if (!res.ok) {
@@ -1046,8 +1070,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     return normalizeGateway(payload.proxyUrl);
   }, []);
 
-  const claimReattach = useCallback(async (password: string): Promise<ReattachClaimResult> => {
-    const response = await fetch(new URL('/v2/reattach/claim', MANAGER_URL).toString(), {
+  const claimReattach = useCallback(async (managerUrl: string, password: string): Promise<ReattachClaimResult> => {
+    const response = await fetch(new URL('/v2/reattach/claim', managerUrl).toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1098,7 +1122,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     }
 
     try {
-      const reattach = await claimReattach(sessionPasswordRef.current);
+      const reattach = await claimReattach(sessionManagerUrlRef.current, sessionPasswordRef.current);
       gatewaysRef.current = [reattach.proxyUrl];
       reattachGenerationRef.current = reattach.generation;
     } catch (err) {
@@ -1111,7 +1135,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       };
     }
 
-    const gateway = gatewaysRef.current[0] || DEFAULT_GATEWAY;
+    const gateway = gatewaysRef.current[0] || getFallbackGatewayUrl();
     try {
       logger.info('connection', 'reconnect attempt starting', {
         gateway,
@@ -1141,7 +1165,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         message,
       };
     }
-  }, [claimReattach, connectToGatewayV2]);
+  }, [claimReattach, connectToGatewayV2, getFallbackGatewayUrl]);
 
   reconnectWithPasswordRef.current = reconnectWithPassword;
 
@@ -1260,9 +1284,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       setSessionCode(null);
       sessionCodeRef.current = null;
       sessionPasswordRef.current = null;
+      sessionManagerUrlRef.current = '';
       reattachGenerationRef.current = null;
-      gatewaysRef.current = [DEFAULT_GATEWAY];
-      activeGatewayRef.current = DEFAULT_GATEWAY;
+      const fallbackGateway = getFallbackGatewayUrl();
+      gatewaysRef.current = fallbackGateway ? [fallbackGateway] : [];
+      activeGatewayRef.current = fallbackGateway;
       discoveredPortsRef.current = [];
       trackedPortsRef.current = [];
       setTrackedProxyPorts([]);
@@ -1271,7 +1297,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       setError(null);
       clearPendingRequests('Disconnected');
     }
-  }, [clearPendingRequests]);
+  }, [clearPendingRequests, getFallbackGatewayUrl]);
 
   const disconnect = useCallback(() => {
     manualDisconnectRef.current = true;
@@ -1310,9 +1336,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     }
 
     let assembled: AssembleResult;
+    const managerUrl = getConfiguredManagerUrl();
     try {
       logger.info('connection', 'assembling session in manager', { code: parsed.code });
-      assembled = await assembleWithCode(parsed.code);
+      assembled = await assembleWithCode(managerUrl, parsed.code);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Manager assemble failed';
       logger.error('connection', 'manager assemble failed', { code: parsed.code, error: msg });
@@ -1329,9 +1356,12 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
     sessionCodeRef.current = assembled.code;
     sessionPasswordRef.current = assembled.password;
+    sessionManagerUrlRef.current = managerUrl;
     reattachGenerationRef.current = null;
     try {
-      gatewaysRef.current = [await getAssignedProxyUrl(assembled.password)];
+      const assignedGateway = await getAssignedProxyUrl(managerUrl, assembled.password);
+      gatewaysRef.current = [assignedGateway];
+      activeGatewayRef.current = assignedGateway;
       logger.info('connection', 'resolved gateways', { gateways: gatewaysRef.current });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Invalid gateway configuration';
@@ -1363,7 +1393,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       setError(lastError.message);
       throw lastError;
     }
-  }, [assembleWithCode, cleanupSockets, connectToGatewayV2, getAssignedProxyUrl]);
+  }, [assembleWithCode, cleanupSockets, connectToGatewayV2, getAssignedProxyUrl, getConfiguredManagerUrl]);
 
   const resumeSession = useCallback(async (stored: StoredSession) => {
     logger.info('connection', 'resume requested', {
@@ -1388,12 +1418,15 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     setStatus('connecting');
     setError(null);
     setSessionCode(stored.sessionCode || null);
+    const managerUrl = getConfiguredManagerUrl(stored.managerUrl);
 
     try {
       sessionCodeRef.current = stored.sessionCode || null;
       sessionPasswordRef.current = stored.sessionPassword;
-      const reattach = await claimReattach(stored.sessionPassword);
+      sessionManagerUrlRef.current = managerUrl;
+      const reattach = await claimReattach(managerUrl, stored.sessionPassword);
       gatewaysRef.current = [reattach.proxyUrl];
+      activeGatewayRef.current = reattach.proxyUrl;
       reattachGenerationRef.current = reattach.generation;
       logger.info('connection', 'resolved resume gateways', { gateways: gatewaysRef.current });
     } catch (err) {
@@ -1427,7 +1460,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       setError(lastError.message);
       throw lastError;
     }
-  }, [claimReattach, cleanupSockets, connectToGatewayV2]);
+  }, [claimReattach, cleanupSockets, connectToGatewayV2, getConfiguredManagerUrl]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
@@ -1474,8 +1507,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       }
 
       try {
+        if (!sessionManagerUrlRef.current) {
+          return;
+        }
         const response = await Promise.race([
-          fetch(new URL('/health', MANAGER_URL).toString(), {
+          fetch(new URL('/health', sessionManagerUrlRef.current).toString(), {
             method: 'GET',
             headers: { Accept: 'application/json,text/plain,*/*' },
           }),

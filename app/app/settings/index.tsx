@@ -1,5 +1,5 @@
 import { useTheme } from "@/contexts/ThemeContext";
-import { ChevronRight, ChevronLeft, LucideIcon, Palette, Type, Code, Sparkles, MoonStar, Shell } from "lucide-react-native";
+import { ChevronRight, ChevronLeft, LucideIcon, Palette, Type, Code, Sparkles, MoonStar, Server } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 
@@ -128,15 +128,15 @@ export default function SettingsPage() {
         </Text>
         <View style={[styles.section, { backgroundColor: colors.bg.raised, borderRadius: 18 }]}>
           <SettingsRow
-            icon={MoonStar}
-            label="App Settings"
-            onPress={() => router.push("/settings/app")}
+            icon={Server}
+            label="Connection"
+            onPress={() => router.push("/settings/connection")}
           />
           <View style={[styles.divider, { backgroundColor: colors.border.tertiary }]} />
           <SettingsRow
-            icon={Shell}
-            label="Brainrot"
-            onPress={() => router.push("/settings/brainrot")}
+            icon={MoonStar}
+            label="App Settings"
+            onPress={() => router.push("/settings/app")}
           />
         </View>
 

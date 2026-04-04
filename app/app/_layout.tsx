@@ -100,7 +100,6 @@ import {
 } from "@expo-google-fonts/public-sans";
 import { Orbitron_700Bold } from "@expo-google-fonts/orbitron";
 import { SpaceGrotesk_700Bold } from "@expo-google-fonts/space-grotesk";
-import { HotUpdater } from "@hot-updater/react-native";
 import { Stack, usePathname } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as NavigationBar from "expo-navigation-bar";
@@ -113,16 +112,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 SplashScreen.preventAutoHideAsync();
-
-const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const APP_KEEP_AWAKE_TAG = "lunel-app-global";
-
-function asUuidOrZero(value: string | null | undefined): string {
-  if (!value) return ZERO_UUID;
-  return UUID_RE.test(value) ? value : ZERO_UUID;
-}
 
 function RootLayoutContent() {
   const { colors, isDark } = useTheme();
@@ -144,6 +134,7 @@ function RootLayoutContent() {
         : colors.bg.base;
   const statusBarStyle = isLunelConnect || isDark ? "light" : "dark";
   const [isReady, setIsReady] = useState(false);
+  const [fontLoadTimedOut, setFontLoadTimedOut] = useState(false);
   const [fontsLoaded] = useFonts({
     // Sans fonts
     Inter_400Regular,
@@ -219,10 +210,20 @@ function RootLayoutContent() {
   }, []);
 
   useEffect(() => {
-    if (isReady && fontsLoaded) {
+    const timeout = setTimeout(() => {
+      setFontLoadTimedOut(true);
+    }, 1500);
+
+    return () => clearTimeout(timeout);
+  }, []);
+
+  const canRender = isReady && (fontsLoaded || fontLoadTimedOut);
+
+  useEffect(() => {
+    if (canRender) {
       SplashScreen.hide();
     }
-  }, [isReady, fontsLoaded]);
+  }, [canRender]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -256,7 +257,7 @@ function RootLayoutContent() {
     };
   }, [settings.keepAwakeEnabled]);
 
-  if (!isReady || !fontsLoaded) {
+  if (!canRender) {
     return null;
   }
 
@@ -313,9 +314,9 @@ function RootLayout() {
   return (
     <>
       <PolyfillCrypto />
-      <ConnectionProvider>
-        <ThemeProvider>
-          <AppSettingsProvider>
+      <AppSettingsProvider>
+        <ConnectionProvider>
+          <ThemeProvider>
             <EditorProvider>
               <PluginProvider>
                 <SessionRegistryProvider>
@@ -323,33 +324,11 @@ function RootLayout() {
                 </SessionRegistryProvider>
               </PluginProvider>
             </EditorProvider>
-          </AppSettingsProvider>
-        </ThemeProvider>
-      </ConnectionProvider>
+          </ThemeProvider>
+        </ConnectionProvider>
+      </AppSettingsProvider>
     </>
   );
 }
 
-export default HotUpdater.wrap({
-  resolver: {
-    checkUpdate: async (params) => {
-      const platform = params?.platform ?? "android";
-      const appVersion = params?.appVersion ?? HotUpdater.getAppVersion();
-      const channel = params?.channel ?? HotUpdater.getChannel();
-      const minBundleId = asUuidOrZero(
-        params?.minBundleId ?? HotUpdater.getMinBundleId()
-      );
-      const bundleId = asUuidOrZero(params?.bundleId ?? HotUpdater.getBundleId());
-      const url = `https://updates.lunel.dev/hot-updater/app-version/${platform}/${appVersion}/${channel}/${minBundleId}/${bundleId}`;
-      const res = await fetch(url, {
-        headers: params?.requestHeaders ?? {},
-      });
-      if (!res.ok) {
-        throw new Error(`HotUpdater check failed: ${res.status}`);
-      }
-      return res.json();
-    },
-  },
-  updateStrategy: "appVersion",
-  updateMode: "auto",
-})(RootLayout);
+export default RootLayout;

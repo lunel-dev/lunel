@@ -1,9 +1,11 @@
 import { useTheme } from "@/contexts/ThemeContext";
+import { useAppSettings } from "@/contexts/AppSettingsContext";
 import Toast from "@/components/Toast";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { AlertCircle, ArrowLeft, ArrowRight, Info, LoaderCircle, QrCode, X } from "lucide-react-native";
+import { resolveConnectionProfile } from "@/lib/connectionProfiles";
+import { AlertCircle, ArrowLeft, ArrowRight, Info, LoaderCircle, QrCode, Server, X } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -36,6 +38,7 @@ const BLACK = "#000000";
 const LunelConnect = () => {
   const router = useRouter();
   const { fonts, typography } = useTheme();
+  const { settings } = useAppSettings();
   const insets = useSafeAreaInsets();
   const {
     connect,
@@ -53,6 +56,7 @@ const LunelConnect = () => {
   const [showGuide, setShowGuide] = useState(false);
   const keyboardHeight = useSharedValue(0);
   const bottomInset = insets.bottom;
+  const activeConnectionProfile = resolveConnectionProfile(settings.connectionProfiles);
 
   useKeyboardHandler(
     {
@@ -161,6 +165,11 @@ const LunelConnect = () => {
   };
 
   const handleConnectWithCode = async (code: string) => {
+    if (!activeConnectionProfile.isConfigured) {
+      setToastMessage(`Configure ${activeConnectionProfile.label} first.`);
+      setToastVisible(true);
+      return;
+    }
     const trimmedCode = code.trim();
     if (!trimmedCode) {
       setToastMessage("Please enter a connection code.");
@@ -191,7 +200,7 @@ const LunelConnect = () => {
     return <View style={{ flex: 1, backgroundColor: BLACK }} />;
   }
 
-  const isButtonDisabled = !manualCode.trim() || isConnecting;
+  const isButtonDisabled = !manualCode.trim() || isConnecting || !activeConnectionProfile.isConfigured;
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
@@ -321,6 +330,23 @@ const LunelConnect = () => {
 
       {/* Lower */}
       <ReAnimated.View style={[styles.lower, lowerAnimatedStyle, { backgroundColor: BLACK }]}>
+        <View style={styles.connectionBanner}>
+          <View style={styles.connectionBannerText}>
+            <Text style={[styles.connectionBannerLabel, { fontFamily: fonts.sans.medium }]}>
+              {activeConnectionProfile.label}
+            </Text>
+            <Text style={[styles.connectionBannerHost, { fontFamily: fonts.mono.regular }]}>
+              {activeConnectionProfile.managerUrl || "Manager URL not configured"}
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => router.push("/settings/connection")}
+            activeOpacity={0.75}
+            style={styles.connectionBannerButton}
+          >
+            <Server size={16} color={WHITE} strokeWidth={2} />
+          </TouchableOpacity>
+        </View>
         <View style={styles.inputRow}>
           <View style={styles.inputWrapper}>
             <QrCode size={18} color={BLACK} strokeWidth={2} />
@@ -392,11 +418,11 @@ const LunelConnect = () => {
               <View style={styles.step}>
                 <View style={styles.stepContent}>
                   <Text style={[styles.stepTitle, { fontFamily: fonts.sans.regular, fontSize: typography.body }]}>1. Run one command in your project</Text>
-                  <Text style={[styles.stepDesc, { fontSize: typography.body }]}>Open your terminal inside your project directory and run:</Text>
+                  <Text style={[styles.stepDesc, { fontSize: typography.body }]}>Open your terminal inside your project directory or remote workspace and run your session CLI:</Text>
                   <View style={styles.codeBlock}>
                     <Text style={styles.codeText}>npx lunel-cli</Text>
                   </View>
-                  <Text style={[styles.stepDesc, { fontSize: typography.body }]}>A QR code and a short code will appear instantly. No installation needed. Works with any stack: Next.js, React Native, Node, and more.</Text>
+                  <Text style={[styles.stepDesc, { fontSize: typography.body }]}>A QR code and a short code will appear instantly. Start it on your selected Hetzner host or GitHub Codespace.</Text>
                 </View>
               </View>
 
@@ -404,8 +430,8 @@ const LunelConnect = () => {
               <View style={styles.step}>
                 <View style={styles.stepContent}>
                   <Text style={[styles.stepTitle, { fontFamily: fonts.sans.regular, fontSize: typography.body }]}>2. Scan and you're in</Text>
-                  <Text style={[styles.stepDesc, { fontSize: typography.body }]}>Point your camera at the QR code or type the short code manually in the input below. Your codebase is live on your phone in seconds.</Text>
-                  <Text style={[styles.stepNote, { fontSize: typography.body }]}>Keep your laptop open during the session. Everything runs on your machine. We just bridge the gap.</Text>
+                  <Text style={[styles.stepDesc, { fontSize: typography.body }]}>Point your camera at the QR code or type the short code manually in the input below. The mobile app attaches to the active session on your own backend.</Text>
+                  <Text style={[styles.stepNote, { fontSize: typography.body }]}>Keep that server session alive while you work.</Text>
                 </View>
               </View>
               {/* Security note */}
@@ -449,6 +475,37 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     justifyContent: "center",
     alignItems: "center",
+  },
+  connectionBanner: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+    paddingHorizontal: 2,
+  },
+  connectionBannerText: {
+    flex: 1,
+    marginRight: 12,
+  },
+  connectionBannerLabel: {
+    color: WHITE,
+    fontSize: 13,
+  },
+  connectionBannerHost: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  connectionBannerButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   arrowButton: {
     width: 44,

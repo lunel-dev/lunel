@@ -7,3 +7,4 @@ manager/bun.lock
 manager/manager.db
 manager/manager.db-shm
 manager/manager.db-wal
+.codespaces/

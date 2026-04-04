@@ -100,7 +100,7 @@ export default function AppSettingsPage() {
         <View style={[styles.section, { backgroundColor: colors.bg.raised, borderRadius: 18 }]}>
           <ToggleRow
             label="Keep App Awake"
-            description="Prevent auto-lock while Lunel is open"
+            description="Prevent auto-lock while the app is open"
             value={settings.keepAwakeEnabled}
             onValueChange={(value) => {
               void updateSetting("keepAwakeEnabled", value);

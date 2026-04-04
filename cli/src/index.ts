@@ -19,8 +19,17 @@ import { spawn, spawnSync, ChildProcess, execSync } from "child_process";
 import { createServer, createConnection, Socket } from "net";
 import { createInterface } from "readline";
 
-const DEFAULT_PROXY_URL = normalizeGatewayUrl(process.env.LUNEL_PROXY_URL || "https://gateway.lunel.dev");
-const MANAGER_URL = normalizeGatewayUrl(process.env.LUNEL_MANAGER_URL || "https://manager.lunel.dev");
+const RAW_PROXY_URL =
+  process.env.GATEWAY_URL ||
+  process.env.PROXY_URL ||
+  process.env.LUNEL_PROXY_URL ||
+  "";
+const RAW_MANAGER_URL =
+  process.env.MANAGER_URL ||
+  process.env.LUNEL_MANAGER_URL ||
+  "";
+const DEFAULT_PROXY_URL = RAW_PROXY_URL ? normalizeGatewayUrl(RAW_PROXY_URL) : "";
+const MANAGER_URL = RAW_MANAGER_URL ? normalizeGatewayUrl(RAW_MANAGER_URL) : "";
 const CLI_ARGS = process.argv.slice(2);
 function hasAnyFlag(args: string[], ...flags: string[]): boolean {
   return flags.some((flag) => args.includes(flag));
@@ -134,7 +143,7 @@ function debugWarn(message: string, ...args: unknown[]): void {
 }
 
 function printHelp(): void {
-  console.log(`Lunel CLI v${VERSION}
+  console.log(`Self-Hosted CLI v${VERSION}
 
 Usage:
   npx lunel-cli [options]
@@ -3144,6 +3153,13 @@ interface ReattachClaimResponse {
 
 let currentReattachGeneration: number | null = null;
 
+function requireManagerUrl(): string {
+  if (!MANAGER_URL) {
+    throw new Error("Manager URL is required. Set MANAGER_URL or LUNEL_MANAGER_URL before starting the CLI.");
+  }
+  return MANAGER_URL;
+}
+
 function normalizeGatewayUrl(input: string): string {
   const raw = input.trim();
   if (!raw) {
@@ -3168,7 +3184,7 @@ function normalizeGatewayUrl(input: string): string {
 }
 
 async function createQrCode(): Promise<ManagerQrResponse> {
-  const response = await fetch(`${MANAGER_URL}/v2/qr`);
+  const response = await fetch(`${requireManagerUrl()}/v2/qr`);
   if (!response.ok) {
     throw new Error(`Failed to create QR code from manager: ${response.status}`);
   }
@@ -3176,7 +3192,7 @@ async function createQrCode(): Promise<ManagerQrResponse> {
 }
 
 async function assembleWithCode(code: string): Promise<AssembleResult> {
-  const wsUrl = `${MANAGER_URL.replace(/^https:/, "wss:")}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
+  const wsUrl = `${requireManagerUrl().replace(/^https:/, "wss:")}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
   return await new Promise<AssembleResult>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;
@@ -3220,7 +3236,7 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
 }
 
 async function getAssignedProxyUrl(password: string): Promise<string> {
-  const url = new URL("/v2/proxy", MANAGER_URL);
+  const url = new URL("/v2/proxy", requireManagerUrl());
   url.searchParams.set("password", password);
   const response = await fetch(url);
   if (!response.ok) {
@@ -3245,7 +3261,7 @@ async function getAssignedProxyUrl(password: string): Promise<string> {
 }
 
 async function claimReattach(password: string): Promise<ReattachClaimResponse> {
-  const response = await fetch(new URL("/v2/reattach/claim", MANAGER_URL), {
+  const response = await fetch(new URL("/v2/reattach/claim", requireManagerUrl()), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -3285,7 +3301,7 @@ async function claimReattach(password: string): Promise<ReattachClaimResponse> {
 }
 
 async function revokePassword(password: string, reason = "revoked by cli --new"): Promise<void> {
-  const response = await fetch(new URL("/v2/revoke", MANAGER_URL), {
+  const response = await fetch(new URL("/v2/revoke", requireManagerUrl()), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password, reason }),
@@ -3314,7 +3330,7 @@ function displayQR(code: string): void {
     console.log(qr);
     console.log(`\n  Session code: ${code}\n`);
     console.log(`  Root directory: ${ROOT_DIR}\n`);
-    console.log("  Scan the QR code with the Lunel app to connect.");
+    console.log("  Scan the QR code with the mobile app to connect.");
     console.log("  Press Ctrl+C to exit.\n");
   });
 }
@@ -3527,7 +3543,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log("Lunel CLI v" + VERSION);
+  console.log("Self-Hosted CLI v" + VERSION);
   console.log("=".repeat(20) + "\n");
   if (EXTRA_PORTS.length > 0) {
     console.log(`Extra ports enabled: ${EXTRA_PORTS.join(", ")}`);
