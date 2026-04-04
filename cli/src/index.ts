@@ -46,8 +46,8 @@ const PTY_RELEASES: Record<string, { fileName: string; url: string }> = {
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-macos-arm64-0`,
   },
   "win32:x64": {
-    fileName: "lunel-pty-windows-x8664-0.exe",
-    url: `${PTY_RELEASE_BASE_URL}/lunel-pty-windows-x8664-0.exe`,
+    fileName: "lunel-pty-windows-x8664-1.exe",
+    url: `${PTY_RELEASE_BASE_URL}/lunel-pty-windows-x8664-1.exe`,
   },
 };
 
