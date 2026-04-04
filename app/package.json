@@ -1,6 +1,6 @@
 {
   "name": "lunel",
-  "main": "expo-router/entry",
+  "main": "./index.js",
   "version": "1.0.1",
   "scripts": {
     "start": "expo start",
@@ -8,8 +8,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "build:editor-webview": "node scripts/build-editor-webview.mjs",
-    "hotupdater:deploy": "hot-updater deploy -i"
+    "build:editor-webview": "node scripts/build-editor-webview.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",
@@ -52,7 +51,6 @@
     "@expo-google-fonts/source-serif-4": "^0.4.1",
     "@expo-google-fonts/space-grotesk": "^0.4.1",
     "@expo/vector-icons": "^15.0.3",
-    "@hot-updater/react-native": "latest",
     "@lezer/highlight": "^1.2.3",
     "@lobehub/icons": "^5.0.1",
     "@lobehub/icons-rn": "^2.4.0",
@@ -111,15 +109,11 @@
     "react-native-worklets": "0.5.1"
   },
   "devDependencies": {
-    "@hot-updater/aws": "latest",
-    "@hot-updater/expo": "latest",
-    "@hot-updater/standalone": "latest",
     "@types/react": "~19.1.0",
     "dotenv": "^16.4.7",
     "esbuild": "^0.27.4",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
-    "hot-updater": "latest",
     "typescript": "~5.9.2"
   },
   "private": true

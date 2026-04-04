@@ -1,5 +1,5 @@
 import React from 'react';
-import { Image, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { ThemeColors } from '@/constants/themes';
 
 interface NotConnectedProps {
@@ -10,18 +10,13 @@ interface NotConnectedProps {
 export default function NotConnected({ colors, fonts }: NotConnectedProps) {
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-      <Image
-        source={require('@/assets/images/icon.png')}
-        style={{ width: 72, height: 72, borderRadius: 18, marginBottom: 16 }}
-        resizeMode="contain"
-      />
       <Text style={{
         fontSize: 20,
         fontFamily: fonts.sans.semibold,
         color: colors.fg.default,
         letterSpacing: 0.5,
       }}>
-        lunel
+        No active connection
       </Text>
       <Text style={{
         fontSize: 12,
@@ -29,8 +24,9 @@ export default function NotConnected({ colors, fonts }: NotConnectedProps) {
         color: colors.fg.subtle,
         marginTop: 4,
         letterSpacing: 0.3,
+        textAlign: 'center',
       }}>
-        ship from anywhere
+        Choose a server in Settings, start your CLI session, then connect from the home screen.
       </Text>
     </View>
   );

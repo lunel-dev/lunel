@@ -1,0 +1,145 @@
+# changy
+
+## Context
+- Goal: turn the app into a self-hosted mobile client for exactly two deployment modes:
+  - Hetzner
+  - GitHub Codespaces
+- Constraint from repo instructions: check `prd.md` before feature work.
+- Result: no `prd.md` exists in this repository root, so the implementation was aligned to the current app architecture instead.
+
+## Problems Found
+- App startup was crashing on iOS release launch with:
+  - `Cannot make a deep link into a standalone app with no custom scheme defined`
+- The crash path was not caused by a missing `CFBundleURLSchemes` entry. The iOS app already had a scheme.
+- The real boot problem was that release startup still went through `HotUpdater.bundleURL()`. That changed the bundle/runtime assumptions enough for Expo Router to fail during standalone startup.
+- The app and CLI both still contained silent fallback paths to Lunel-owned infrastructure.
+- The UI still contained Lunel-specific branding, links, and remote feedback endpoints.
+- Xcode warnings were heavily dominated by third-party pods/modules, not by the app code itself.
+- The repo still has unrelated TypeScript issues outside this change scope.
+
+## Changes Made
+- Added a GitHub Codespaces bootstrap setup:
+  - `.devcontainer/devcontainer.json`
+  - `.devcontainer/post-create.sh`
+  - `scripts/codespaces/start-stack.sh`
+  - `scripts/codespaces/stop-stack.sh`
+- The Codespaces bootstrap now:
+  - installs Bun
+  - installs the Codex CLI
+  - installs the OpenCode CLI
+  - builds the local bridge CLI
+  - auto-forwards the manager and gateway ports in devcontainer config
+- The runtime start script now:
+  - computes the public Codespaces URLs for manager and gateway
+  - starts manager and proxy in the background
+  - persists generated local runtime secrets in `.codespaces/runtime.env`
+  - waits for the gateway to see the manager over the public Codespaces URL
+  - launches the local CLI with the correct `MANAGER_URL` and `GATEWAY_URL`
+- Added `.codespaces/` to `.gitignore` so Codespaces runtime state, logs, and generated secrets stay local.
+- Self-hosted connection profiles were added for:
+  - Hetzner
+  - GitHub Codespaces
+- Added a dedicated connection settings screen at `app/app/settings/connection.tsx`.
+- Added persistent profile storage in `app/contexts/AppSettingsContext.tsx`.
+- Reworked `app/contexts/ConnectionContext.tsx` so the selected profile drives manager/gateway selection.
+- Stored `managerUrl` and deployment target with paired sessions so reconnect/revoke stays bound to the right backend.
+- Added direct server-settings access from the auth/start screen and the QR connect screen.
+- Removed HotUpdater from the runtime startup path:
+  - `app/app/_layout.tsx`
+  - `app/ios/lunel/AppDelegate.swift`
+  - `app/babel.config.js`
+  - `app/app.json`
+  - `app/ios/lunel/Info.plist`
+- Removed HotUpdater from the installed app dependency graph:
+  - removed packages from `app/package.json`
+  - removed the config file `app/hot-updater.config.ts`
+  - ran `pod install`, which removed `HotUpdater` from iOS pods
+- Added a custom entry file at `app/index.js` and changed `app/package.json` `main` to use it.
+  - Purpose: patch `expo-linking.createURL()` before Expo Router boots so standalone startup does not crash even if Expo Router cannot read the scheme at runtime.
+- Replaced the default Expo Router entry boot in `app/index.js` with a custom root renderer.
+  - Purpose: pass a native initial location (`/auth`) directly into `ExpoRoot` so iOS standalone startup does not depend on Expo Router calling `Linking.createURL('/')` during boot.
+  - This keeps router-based navigation alive after launch, but removes the failing deep-link bootstrap path as the initial source of truth.
+- Relaxed the root splash/font gate in `app/app/_layout.tsx`.
+  - Purpose: render the UI after a short timeout even if custom font loading stalls, instead of leaving the app stuck on a black splash/icon screen forever.
+- Removed or neutralized Lunel-hosted UI surfaces:
+  - auth screen branding/legal links
+  - help page links
+  - feedback API submission
+  - drawer idle branding
+  - not-connected placeholder branding
+- Disabled the old Lunel-hosted voice transcription endpoints in:
+  - `app/plugins/core/ai/Panel.tsx`
+  - `app/plugins/core/terminal/Panel.tsx`
+  - Result: microphone actions now fail fast with an explicit self-hosted-not-configured message instead of calling Lunel infrastructure.
+- Simplified the home/auth hero so the app does not just feel like a splash-logo shell anymore.
+- Updated the CLI to stop silently falling back to public Lunel infrastructure:
+  - supports `MANAGER_URL`
+  - supports `GATEWAY_URL` / `PROXY_URL`
+  - still accepts legacy `LUNEL_MANAGER_URL` / `LUNEL_PROXY_URL`
+  - no longer defaults to `manager.lunel.dev` / `gateway.lunel.dev`
+- Updated the settings CLI hint to use the generic environment variable names.
+
+## Validation
+- `cd app && npx expo export --platform ios --output-dir /tmp/lunel-export-selfhosted`
+  - Passed
+- `cd app && npx expo export --platform ios --output-dir /tmp/lunel-export-final`
+  - Passed after HotUpdater package removal and pod refresh
+- `cd app && npx expo export --platform ios --output-dir /tmp/lunel-export-entryfix`
+  - Passed with the custom pre-router entry file
+- `cd app && npx expo export --platform ios --output-dir /tmp/lunel-export-splashfix`
+  - Passed after making the splash/font gate fail-open
+- `cd app && npx expo export --platform ios --output-dir /tmp/lunel-bundle-check`
+  - Passed after replacing the default Expo Router entry so the new boot path is bundled for iOS
+- `cd app/ios && xcodebuild -workspace lunel.xcworkspace -scheme lunel -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build`
+  - Build warnings remain dominated by Pods such as:
+    - `libwebp`
+    - `libdav1d`
+    - `libavif`
+    - `ZXingObjC`
+    - `SDWebImage`
+    - `CocoaAsyncSocket`
+  - No new app-source compile failure was introduced by the custom root entry change
+- `cd app && npx expo prebuild --platform ios --no-install`
+  - Passed
+- `cd app && npx expo prebuild --platform ios`
+  - Passed
+- `cd app/ios && pod install`
+  - Passed
+  - Confirmed removal of `HotUpdater` pod during install
+- `cd app/ios && xcodebuild -workspace lunel.xcworkspace -scheme lunel clean`
+  - Passed
+- `bash -n .devcontainer/post-create.sh scripts/codespaces/start-stack.sh scripts/codespaces/stop-stack.sh`
+  - Passed
+- Removed local Xcode DerivedData for `lunel-*`
+  - Purpose: force a clean rebuild instead of reusing old HotUpdater-era build artifacts
+- `cd app/ios && xcodebuild ... | rg "error:|warning:|\\*\\* BUILD|note:"`
+  - No app-specific crash signal reappeared
+  - Warning output observed was dominated by third-party sources such as:
+    - `expo-modules-core`
+    - `react-native-svg`
+    - generated React/Pods headers
+- `cd cli && npm install`
+  - Passed
+- `cd cli && npm run build`
+  - Passed
+
+## Remaining Notes
+- A filtered `tsc` run still surfaced an unrelated existing error in:
+  - `app/settings/appearance/fonts/normal.tsx`
+- The large Xcode warning count is not realistically solvable in one pass because most warnings come from dependency code under `node_modules` / `Pods`, not from the app sources touched here.
+- The iOS boot path now no longer depends on Expo Router deriving a standalone deep-link root URL from `Linking.createURL('/')` during startup.
+- The transport architecture still expects a compatible manager/gateway backend. Public Lunel fallback is removed, but this is not yet a full direct-to-CLI protocol rewrite.
+- GitHub Codespaces will only work from the iPhone app if the forwarded manager and gateway ports are made `Public`.
+  - Private Codespaces ports require GitHub-authenticated access headers and the mobile app / proxy runtime do not send those headers.
+
+## How To Use
+- Open the app.
+- On the auth screen tap `Server Settings`.
+- Choose `Hetzner` or `GitHub Codespaces`.
+- Enter the self-hosted manager URL, and optionally the gateway URL.
+- On the server side, start the CLI with matching env vars:
+  - `MANAGER_URL=...`
+  - `GATEWAY_URL=...`
+- Legacy env vars still work if needed:
+  - `LUNEL_MANAGER_URL=...`
+  - `LUNEL_PROXY_URL=...`

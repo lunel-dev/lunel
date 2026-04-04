@@ -1,20 +1,19 @@
 import { useTheme } from "@/contexts/ThemeContext";
+import { useAppSettings } from "@/contexts/AppSettingsContext";
 import { PairedSession, useConnection } from "@/contexts/ConnectionContext";
+import { resolveConnectionProfile } from "@/lib/connectionProfiles";
 import { logger } from "@/lib/logger";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
-import { ChevronRight, History, ScanLine, X } from "lucide-react-native";
+import { ChevronRight, History, ScanLine, Server, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, BackHandler, Dimensions, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import { Alert, BackHandler, Dimensions, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
 
 const TABLET_BREAKPOINT = 768;
-const TERMS_URL = "https://app.lunel.dev/terms";
-const PRIVACY_URL = "https://app.lunel.dev/privacy";
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
-const LOGO_SOURCE = require("@/assets/images/icon.png");
 
 function OpenActionIcon({ size = 18, color = "#111111" }: { size?: number; color?: string }) {
   return (
@@ -307,6 +306,7 @@ function PastSessionsSheet({
 
 export default function Auth() {
   const { colors, fonts, radius, isDark } = useTheme();
+  const { settings } = useAppSettings();
   const ctaRadius = 10;
   const router = useRouter();
   const { getPairedSessions, removePairedSession, resumeSession, revokePairedSession, status, capabilities, disconnect } = useConnection();
@@ -319,6 +319,7 @@ export default function Auth() {
   const [hasLoadedPairedSessions, setHasLoadedPairedSessions] = useState(false);
   const cancelledContinueRef = useRef(false);
   const pastSessionsButtonOpacity = useSharedValue(0);
+  const activeConnectionProfile = resolveConnectionProfile(settings.connectionProfiles);
 
   useFocusEffect(
     useCallback(() => {
@@ -351,19 +352,6 @@ export default function Auth() {
       };
     }, [getPairedSessions])
   );
-
-  const openExternalUrl = useCallback(async (url: string) => {
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-      if (!canOpen) {
-        Alert.alert("Unable to open link", "Please try again later.");
-        return;
-      }
-      await Linking.openURL(url);
-    } catch {
-      Alert.alert("Unable to open link", "Please try again later.");
-    }
-  }, []);
 
   useEffect(() => {
     if (status === "connected" && capabilities) {
@@ -417,7 +405,7 @@ export default function Auth() {
 
   const handleDeleteSession = useCallback(async (session: PairedSession) => {
     try {
-      await revokePairedSession(session.sessionPassword);
+      await revokePairedSession(session.sessionPassword, session.managerUrl);
       await removePairedSession(session.sessionPassword);
       setPairedSessions((current) => current.filter((entry) => entry.sessionPassword !== session.sessionPassword));
     } catch (error) {
@@ -500,19 +488,25 @@ export default function Auth() {
       <View style={[styles.page, isTablet && styles.pageTablet]}>
         <View style={styles.hero}>
           <View style={styles.centerContent}>
-            <View style={styles.brand}>
-              <Image
-                source={LOGO_SOURCE}
-                style={[
-                  styles.appIcon,
-                  {
-                    width: isTablet ? 280 : 236,
-                    height: isTablet ? 280 : 236,
-                    borderRadius: radius.md,
-                  },
-                ]}
-                resizeMode="contain"
-              />
+            <View
+              style={[
+                styles.heroCard,
+                {
+                  backgroundColor: colors.bg.raised,
+                  borderColor: colors.border.secondary,
+                  borderRadius: Number(radius?.["2xl"] ?? 24),
+                },
+              ]}
+            >
+              <Text style={[styles.heroEyebrow, { color: colors.fg.muted, fontFamily: fonts.sans.medium }]}>
+                SELF-HOSTED MOBILE IDE
+              </Text>
+              <Text style={[styles.heroTitle, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]}>
+                Connect to your own server
+              </Text>
+              <Text style={[styles.heroSubtitle, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
+                Pick GitHub Codespaces or Hetzner, save the active endpoint, then attach to your running session with a fresh one-time code.
+              </Text>
             </View>
           </View>
         </View>
@@ -526,9 +520,30 @@ export default function Auth() {
             >
               <ScanLine size={20} color={colors.bg.base} strokeWidth={2} />
               <Text style={[styles.btnText, isTablet && styles.btnTextTablet, { color: colors.bg.base, fontFamily: fonts.sans.medium }]}>
-                Scan with Lunel Connect
+                Scan connection code
               </Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.push("/settings/connection")}
+              activeOpacity={0.75}
+              style={[styles.serverSettingsButton, { backgroundColor: colors.bg.raised, borderColor: colors.border.secondary, borderRadius: ctaRadius }]}
+            >
+              <Server size={18} color={colors.fg.default} strokeWidth={2} />
+              <Text style={[styles.serverSettingsButtonText, { color: colors.fg.default, fontFamily: fonts.sans.medium }]}>
+                Server Settings
+              </Text>
+            </TouchableOpacity>
+            <View style={styles.connectionMeta}>
+              <Text style={[styles.connectionMetaLabel, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
+                Active target
+              </Text>
+              <Text style={[styles.connectionMetaValue, { color: colors.fg.default, fontFamily: fonts.sans.medium }]}>
+                {activeConnectionProfile.label}
+              </Text>
+              <Text style={[styles.connectionMetaHost, { color: colors.fg.muted, fontFamily: fonts.mono.regular }]}>
+                {activeConnectionProfile.managerUrl || "Manager URL not configured yet"}
+              </Text>
+            </View>
             <Animated.View
               pointerEvents={isPastSessionsButtonEnabled ? "auto" : "none"}
               style={pastSessionsButtonAnimatedStyle}
@@ -547,18 +562,6 @@ export default function Auth() {
             </Animated.View>
           </View>
         </View>
-
-        <Text style={[styles.legal, isTablet && styles.legalTablet, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
-          By continuing, you agree to our{" "}
-          <Text style={[styles.legalLink, { color: colors.fg.default, fontFamily: fonts.sans.regular }]} onPress={() => openExternalUrl(TERMS_URL)}>
-            Terms of Service
-          </Text>
-          {" "}and{" "}
-          <Text style={[styles.legalLink, { color: colors.fg.default, fontFamily: fonts.sans.regular }]} onPress={() => openExternalUrl(PRIVACY_URL)}>
-            Privacy Policy
-          </Text>
-          .
-        </Text>
       </View>
       <PastSessionsSheet
         visible={showPastSessionsSheet}
@@ -623,6 +626,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
   },
+  heroCard: {
+    width: "100%",
+    maxWidth: 560,
+    borderWidth: 1,
+    paddingHorizontal: 24,
+    paddingVertical: 26,
+    gap: 10,
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  heroTitle: {
+    fontSize: 28,
+    lineHeight: 34,
+  },
+  heroSubtitle: {
+    fontSize: 15,
+    lineHeight: 23,
+  },
   brandText: {
     alignItems: "center",
     gap: 2,
@@ -636,28 +659,30 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     paddingHorizontal: 32,
   },
-  appIcon: {
-    width: 100,
-    height: 100,
-    borderRadius: 10,
-    marginBottom: 8,
-    overflow: "hidden",
+  serverSettingsButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 13,
+    paddingVertical: 13,
+    borderWidth: 0.5,
   },
-  appName: {
-    fontSize: 24,
-    letterSpacing: 0.3,
-    textAlign: "center",
+  serverSettingsButtonText: {
+    fontSize: 15,
   },
-  appNameTablet: {
-    fontSize: 24,
+  connectionMeta: {
+    gap: 2,
+    paddingHorizontal: 2,
   },
-  tagline: {
-    fontSize: 13,
-    letterSpacing: 0.2,
-    textAlign: "center",
+  connectionMetaLabel: {
+    fontSize: 12,
   },
-  taglineTablet: {
-    fontSize: 17,
+  connectionMetaValue: {
+    fontSize: 14,
+  },
+  connectionMetaHost: {
+    fontSize: 12,
   },
   btn: {
     flexDirection: "row",
@@ -792,18 +817,6 @@ const styles = StyleSheet.create({
   },
   sheetDeleteLabel: {
     fontSize: 15,
-  },
-  legal: {
-    fontSize: 12,
-    lineHeight: 18,
-    textAlign: "center",
-  },
-  legalTablet: {
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  legalLink: {
-    textDecorationLine: "underline",
   },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,

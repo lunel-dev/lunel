@@ -1,4 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  ConnectionProfilesSettings,
+  DEFAULT_CONNECTION_PROFILES,
+  sanitizeConnectionProfiles,
+} from "@/lib/connectionProfiles";
 import React, {
   createContext,
   ReactNode,
@@ -13,6 +18,7 @@ interface AppSettings {
   keepAwakeEnabled: boolean;
   brainrotSource: "youtube" | "instagram" | "x" | "tiktok";
   brainrotAiChatIntegration: boolean;
+  connectionProfiles: ConnectionProfilesSettings;
 }
 
 interface AppSettingsContextType {
@@ -25,6 +31,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   keepAwakeEnabled: true,
   brainrotSource: "youtube",
   brainrotAiChatIntegration: false,
+  connectionProfiles: DEFAULT_CONNECTION_PROFILES,
 };
 
 const AppSettingsContext = createContext<AppSettingsContextType | undefined>(undefined);
@@ -42,6 +49,7 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
           setSettingsState({
             ...DEFAULT_APP_SETTINGS,
             ...parsed,
+            connectionProfiles: sanitizeConnectionProfiles(parsed.connectionProfiles),
           });
         }
       } catch (error) {
@@ -88,3 +96,5 @@ export function useAppSettings() {
   }
   return context;
 }
+
+export type { AppSettings };

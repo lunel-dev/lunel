@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "lunel",
-    "slug": "lunel",
+    "name": "Remote CLI",
+    "slug": "remote-cli",
     "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -14,7 +14,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "This app uses the camera to scan a QR code to securely connect the app to your development environment or codebase. You can also manually enter the code if you prefer not to use the camera.",
-        "NSMicrophoneUsageDescription": "This app uses the microphone so you can dictate commands in the terminal and speak to the AI assistant. Voice is sent to Lunel servers for transcription only — we do not store or retain audio recordings.",
+        "NSMicrophoneUsageDescription": "This app uses the microphone so you can dictate commands in the terminal and speak to the AI assistant.",
         "NSPhotoLibraryUsageDescription": "This app uses your photo library so you can attach images to AI chats."
       }
     },
@@ -55,12 +55,6 @@
       ],
       "expo-document-picker",
       [
-        "@hot-updater/react-native",
-        {
-          "channel": "production"
-        }
-      ],
-      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash.png",
@@ -87,7 +81,6 @@
       "eas": {
         "projectId": "8978113f-5771-434e-bf20-cffae280b1dc"
       }
-    },
-    "owner": "sohzm"
+    }
   }
 }

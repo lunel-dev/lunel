@@ -1,8 +1,10 @@
 import { radius, typography } from "@/constants/themes";
+import { useAppSettings } from "@/contexts/AppSettingsContext";
 import { useConnection } from "@/contexts/ConnectionContext";
 import { useSessionRegistry } from "@/contexts/SessionRegistry";
 import type { SessionItem } from "@/contexts/SessionRegistry";
 import { useTheme } from "@/contexts/ThemeContext";
+import { resolveConnectionProfile } from "@/lib/connectionProfiles";
 import { usePlugins } from "@/plugins/context";
 import { DrawerContentComponentProps, useDrawerStatus } from "@react-navigation/drawer";
 import * as Haptics from "expo-haptics";
@@ -11,7 +13,6 @@ import {
   ChevronDown,
   HelpCircle,
   Home,
-  MessageCircle,
   PencilLine,
   Search,
   Settings,
@@ -21,7 +22,6 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
   InteractionManager,
   Keyboard,
   ScrollView,
@@ -45,10 +45,12 @@ const HIDE_SIDEBAR_SESSION_PLUGIN_IDS = new Set([
 
 export default function DrawerContent(props: DrawerContentComponentProps) {
   const { colors, fonts } = useTheme();
+  const { settings } = useAppSettings();
   const { status, disconnect } = useConnection();
   const { activeTabId: activePluginTabId, openTabs, getPlugin, openTab } = usePlugins();
   const { registry } = useSessionRegistry();
   const router = useRouter();
+  const activeConnectionProfile = resolveConnectionProfile(settings.connectionProfiles);
   const [search, setSearch] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [expandedBackends, setExpandedBackends] = useState<Set<string>>(new Set());
@@ -214,13 +216,6 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
     });
   };
 
-  const handleFeedback = () => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    closeDrawerThen(() => {
-      router.push("/feedback" as any);
-    });
-  };
-
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -353,18 +348,16 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
           </>
         ) : (
           <View style={[styles.sessionsSection, { justifyContent: 'flex-start' }]}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, gap: 12 }}>
-              <Image
-                source={require('@/assets/images/icon.png')}
-                style={{ width: 56, height: 56, borderRadius: 14 }}
-                resizeMode="contain"
-              />
-              <View style={{ justifyContent: 'center' }}>
-                <Text style={{ fontSize: 20, fontFamily: 'PublicSans_700Bold', color: colors.fg.default, lineHeight: 26 }}>
-                  Lunel
-                </Text>
+            <View style={{ paddingHorizontal: 16, paddingTop: 8, gap: 6 }}>
+              <Text style={{ fontSize: 16, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 22 }}>
+                Self-hosted session
+              </Text>
+              <View style={{ gap: 2 }}>
                 <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.subtle, lineHeight: 17 }}>
-                  Ship from Anywhere
+                  {activeConnectionProfile.label}
+                </Text>
+                <Text style={{ fontSize: 12, fontFamily: fonts.mono.regular, color: colors.fg.muted, lineHeight: 17 }}>
+                  {activeConnectionProfile.managerUrl || "Manager URL not configured"}
                 </Text>
               </View>
             </View>
@@ -384,10 +377,6 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
           <TouchableOpacity onPress={handleHelp} style={styles.bottomBtn} activeOpacity={0.7}>
             <HelpCircle size={22} color={colors.fg.muted} strokeWidth={1.6} />
             <Text style={[styles.bottomBtnLabel, { color: colors.fg.subtle, fontFamily: fonts.sans.regular }]}>Help</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleFeedback} style={styles.bottomBtn} activeOpacity={0.7}>
-            <MessageCircle size={22} color={colors.fg.muted} strokeWidth={1.6} />
-            <Text style={[styles.bottomBtnLabel, { color: colors.fg.subtle, fontFamily: fonts.sans.regular }]}>Feedback</Text>
           </TouchableOpacity>
 
           <View style={{ flex: 1 }} />

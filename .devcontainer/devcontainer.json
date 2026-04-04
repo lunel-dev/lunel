@@ -1,0 +1,14 @@
+{
+  "name": "Remote CLI Codespace",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "forwardPorts": [3000, 8899],
+  "portsAttributes": {
+    "3000": {
+      "label": "Remote CLI Gateway"
+    },
+    "8899": {
+      "label": "Remote CLI Manager"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
+}

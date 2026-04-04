@@ -56,7 +56,7 @@ import { innerApi } from "../../innerApi";
 import { PluginPanelProps } from "../../types";
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
 const AI_DETAILED_VIEW_STORAGE_KEY = "ai-detailed-view-enabled";
-const TRANSCRIBE_ENDPOINT = "https://internal-api.lunel.dev/api/transcribe";
+const TRANSCRIBE_ENDPOINT = "";
 const VOICE_WAVE_BAR_COUNT = Math.round(42 * (SCREEN_WIDTH / 390));
 const VOICE_WAVE_IDLE_LEVEL = 0.08;
 const VOICE_WAVE_DOT_SIZE = 2.5;
@@ -2337,6 +2337,9 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     if (isVoiceBusy) return;
     setIsVoiceBusy(true);
     try {
+      if (!TRANSCRIBE_ENDPOINT) {
+        throw new Error("Voice transcription is not configured in this self-hosted build.");
+      }
       const uri = await stopRecording();
       if (!uri) {
         Alert.alert("Voice Input", "No audio recording found.");
