@@ -1,6 +1,10 @@
 <div align="center">
   <a href="https://lunel.dev">
-    <img src="https://lunel.dev/img/github/github-main.png" alt="Lunel" width="600" />
+    <picture>
+      <source srcset="https://lunel.dev/img/github/github-main.png" media="(prefers-color-scheme: dark)" width="600">
+      <source srcset="./github-main-light.png" media="(prefers-color-scheme: light)" width="600">
+      <img src="https://lunel.dev/img/github/github-main.png" alt="Lunel">
+    </picture>
   </a>
 </div><br />
 <p align="center">AI-powered mobile IDE and cloud development platform. Code on your phone, run on your machine or in secure cloud sandboxes.</p> <br />
