@@ -34,7 +34,9 @@
   - starts manager and proxy in the background
   - persists generated local runtime secrets in `.codespaces/runtime.env`
   - waits for the gateway to see the manager over the public Codespaces URL
+  - waits for the manager to expose an active gateway before launching the CLI
   - launches the local CLI with the correct `MANAGER_URL` and `GATEWAY_URL`
+  - always starts a fresh session from the repository root with `-n`, avoiding stale reattach state and avoiding the wrong `/cli` working directory
 - Added `.codespaces/` to `.gitignore` so Codespaces runtime state, logs, and generated secrets stay local.
 - Self-hosted connection profiles were added for:
   - Hetzner
@@ -110,6 +112,8 @@
   - Passed
 - `bash -n .devcontainer/post-create.sh scripts/codespaces/start-stack.sh scripts/codespaces/stop-stack.sh`
   - Passed
+- `bash -n scripts/codespaces/start-stack.sh`
+  - Passed after adjusting the launch flow to wait for active gateway assignment and force a fresh session
 - Removed local Xcode DerivedData for `lunel-*`
   - Purpose: force a clean rebuild instead of reusing old HotUpdater-era build artifacts
 - `cd app/ios && xcodebuild ... | rg "error:|warning:|\\*\\* BUILD|note:"`

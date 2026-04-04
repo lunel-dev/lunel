@@ -77,6 +77,18 @@ wait_for_local_health() {
   exit 1
 }
 
+wait_for_active_proxy_assignment() {
+  for _ in $(seq 1 90); do
+    if curl -fsS "http://127.0.0.1:${MANAGER_PORT}/v1/gateways" | grep -q '"primary":"https://'; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Manager did not register an active gateway in time."
+  echo "Check .codespaces/logs/manager.log and .codespaces/logs/proxy.log"
+  exit 1
+}
+
 stop_if_running "$PID_DIR/manager.pid"
 stop_if_running "$PID_DIR/proxy.pid"
 
@@ -149,5 +161,7 @@ If you want to verify OpenCode is installed:
 Starting the mobile bridge CLI now...
 EOF
 
-cd "$REPO_ROOT/cli"
-MANAGER_URL="$MANAGER_PUBLIC_URL" GATEWAY_URL="$GATEWAY_PUBLIC_URL" node dist/index.js
+wait_for_active_proxy_assignment
+
+cd "$REPO_ROOT"
+MANAGER_URL="$MANAGER_PUBLIC_URL" GATEWAY_URL="$GATEWAY_PUBLIC_URL" node cli/dist/index.js -n
