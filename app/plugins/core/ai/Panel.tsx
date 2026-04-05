@@ -251,6 +251,11 @@ function formatVoiceDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function formatClockTime(value?: number): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function mergeStreamingText(previous: string, incoming: string): string {
   if (!incoming) return previous;
   if (!previous) return incoming;
@@ -468,7 +473,7 @@ function StepStartView({ part }: { part: AIPart }) {
   const { colors, fonts } = useTheme();
   const title = (part.title as string) || "";
   const time = part.time?.start;
-  const timeStr = time ? new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const timeStr = formatClockTime(time);
 
   return (
     <View style={styles.stepContainer}>
@@ -757,31 +762,41 @@ function MessageBubble({
   };
 
   if (isUser) {
+    const isSending = message.id.startsWith("opt-");
+    const sentTime = !isSending ? (message.time?.created ?? message.time?.updated) : undefined;
+    const timeLabel = isSending ? "sending..." : sentTime != null ? formatClockTime(sentTime) : null;
     return (
-      <TouchableOpacity
-        onLongPress={handleCopy}
-        activeOpacity={0.8}
-        style={[
-          styles.userBubble,
-          {
-            backgroundColor: colors.bg.raised,
-            borderRadius: 10,
-          },
-        ]}
-      >
-        {parts.map((part, i) => (
-          <View key={i} style={i > 0 ? getMessagePartSpacingStyle(parts[i - 1], part, styles) : undefined}>
-            <MessagePartView
-              part={part}
-              isUser={true}
-              colors={colors}
-              fonts={fonts}
-              radius={radius}
-              showDetailedView={showDetailedView}
-            />
-          </View>
-        ))}
-      </TouchableOpacity>
+      <View style={{ alignSelf: "flex-end", alignItems: "flex-end", marginVertical: 7 }}>
+        <TouchableOpacity
+          onLongPress={handleCopy}
+          activeOpacity={0.8}
+          style={[
+            styles.userBubble,
+            {
+              backgroundColor: colors.bg.raised,
+              borderRadius: 10,
+            },
+          ]}
+        >
+          {parts.map((part, i) => (
+            <View key={i} style={i > 0 ? getMessagePartSpacingStyle(parts[i - 1], part, styles) : undefined}>
+              <MessagePartView
+                part={part}
+                isUser={true}
+                colors={colors}
+                fonts={fonts}
+                radius={radius}
+                showDetailedView={showDetailedView}
+              />
+            </View>
+          ))}
+        </TouchableOpacity>
+        {timeLabel ? (
+          <Text style={{ color: colors.fg.subtle, fontFamily: fonts.mono.regular, fontSize: 11, marginTop: 4, marginRight: 2 }}>
+            {timeLabel}
+          </Text>
+        ) : null}
+      </View>
     );
   }
 
@@ -1925,6 +1940,15 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           const sessId = (info.sessionID as string) || (info.sessionId as string);
           const msgId = info.id as string;
           const role = (info.role as string) === "user" ? "user" : "assistant";
+          const timeInfo = info.time as Record<string, unknown> | undefined;
+          const created = typeof timeInfo?.created === "number" ? timeInfo.created : undefined;
+          const updated = typeof timeInfo?.updated === "number" ? timeInfo.updated : undefined;
+          const messageTime = created != null || updated != null
+            ? {
+                created: created ?? (updated as number),
+                updated: updated ?? (created as number),
+              }
+            : undefined;
           if (sessId && msgId) {
             setMessagesMap((prev) => {
               let existing = prev[sessId] || [];
@@ -1936,13 +1960,17 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               if (idx >= 0) {
                 // Update metadata but preserve parts (parts come via message.part.updated)
                 const updated = [...existing];
-                updated[idx] = { ...updated[idx], role: role as "user" | "assistant" };
+                updated[idx] = {
+                  ...updated[idx],
+                  role: role as "user" | "assistant",
+                  time: messageTime ?? updated[idx].time,
+                };
                 return { ...prev, [sessId]: updated };
               }
               // New message shell — parts will arrive via message.part.updated
               return {
                 ...prev,
-                [sessId]: [...existing, { id: msgId, role: role as "user" | "assistant", parts: [] }],
+                [sessId]: [...existing, { id: msgId, role: role as "user" | "assistant", parts: [], time: messageTime }],
               };
             });
           }
@@ -2311,7 +2339,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   // Scroll to bottom on new messages
   const currentMessages = activeSessionId ? messagesMap[activeSessionId] || [] : [];
   const currentErrors = activeSessionId ? errorMessages[activeSessionId] || [] : [];
-  const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
+const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
     || (activeBackend === "codex" ? "Auto" : "Select model");
   const selectedModelName = selectedModelNameFull.length > 12 ? selectedModelNameFull.slice(0, 12) + "…" : selectedModelNameFull;
   const selectedAgentNameFull = activeBackend === "codex" && agents.length === 0
@@ -2688,6 +2716,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 
     // Regular prompt
     try {
+      const optimisticMessageId = `opt-${Date.now()}`;
       const optimisticParts: AIPart[] = [];
       if (pendingImage) {
         optimisticParts.push({
@@ -2701,7 +2730,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
         optimisticParts.push({ type: "text", text } as AIPart);
       }
       const optimisticMsg: AIMessage = {
-        id: `opt-${Date.now()}`,
+        id: optimisticMessageId,
         role: "user",
         parts: optimisticParts,
       };
@@ -2726,6 +2755,12 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
       setIsStreaming(true);
       setPendingImage(null);
     } catch (err) {
+      if (sessId) {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [sessId!]: (prev[sessId!] || []).filter((msg) => !msg.id.startsWith("opt-")),
+        }));
+      }
       Alert.alert("Error", (err as Error).message);
     }
   };
@@ -3416,10 +3451,9 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               >
                 <Pressable
                   onPress={() => {
-                    autoFollowRef.current = isStreaming;
                     isNearBottomRef.current = true;
                     setShowScrollToBottom(false);
-                    scrollToLatest(true, false);
+                    messagesListRef.current?.scrollToEnd({ animated: true });
                   }}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   pointerEvents="box-only"
@@ -3660,9 +3694,7 @@ const styles = StyleSheet.create({
 
   // Message styles
   userBubble: {
-    alignSelf: "flex-end",
     maxWidth: "85%",
-    marginVertical: 7,
     paddingHorizontal: 10,
     paddingVertical: 7,
   },
@@ -3774,6 +3806,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  composerStatusText: {
+    marginTop: 8,
+    marginRight: 2,
+    alignSelf: "flex-end",
+    fontSize: 11,
   },
   composerRowOverlay: {
     position: "absolute",
