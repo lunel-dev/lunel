@@ -1665,6 +1665,11 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const scrollToLatest = useCallback((animated: boolean) => {
     requestAnimationFrame(() => {
       messagesListRef.current?.scrollToEnd({ animated });
+      // Snap once more on the next frame to avoid landing slightly above bottom
+      // when content size updates after the first scroll call.
+      requestAnimationFrame(() => {
+        messagesListRef.current?.scrollToEnd({ animated });
+      });
     });
   }, []);
   const tabs = useMemo(() => sortTabsByUpdatedAt([...sessionTabs, ...draftTabs]), [sessionTabs, draftTabs]);
@@ -2750,7 +2755,13 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   }, [activeTab, closeTab]);
 
   const hasContent = listData.length > 0;
-  const messagesBottomInset = composerHeight + 30;
+  const messagesBottomInset = composerHeight + 16;
+
+  useEffect(() => {
+    if (!hasContent) return;
+    if (!isNearBottomRef.current) return;
+    scrollToLatest(false);
+  }, [messagesBottomInset, hasContent, scrollToLatest]);
 
   useEffect(() => {
     // Include backend on each session item so DrawerContent can group them
