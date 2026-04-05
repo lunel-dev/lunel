@@ -338,30 +338,68 @@ interface CliSavedSession {
 // Path Safety
 // ============================================================================
 
-function resolveSafePath(requestedPath: string): string | null {
-  // path.resolve handles ".." components, but on case-insensitive or symlinked
-  // filesystems a simple startsWith check can still be bypassed. We use
-  // realpathSync to canonicalise the path (resolves symlinks, normalises case on
-  // Windows) before comparing against ROOT_DIR, which is itself canonicalised at
-  // startup. If the path does not exist yet we fall back to the lexical resolve so
-  // that callers creating new files can still pass the check.
-  const lexical = path.resolve(ROOT_DIR, requestedPath);
-  let canonical: string;
+const CANONICAL_ROOT_DIR = (() => {
   try {
-    canonical = fssync.realpathSync(lexical);
+    return fssync.realpathSync(ROOT_DIR);
   } catch {
-    // Path doesn't exist yet — verify lexically. Still safe because path.resolve
-    // already eliminated all ".." traversals in the resolved string.
-    canonical = lexical;
+    return ROOT_DIR;
   }
-  // Ensure ROOT_DIR itself is canonical for a reliable prefix comparison.
-  const canonicalRoot = (() => {
-    try { return fssync.realpathSync(ROOT_DIR); } catch { return ROOT_DIR; }
-  })();
-  if (!canonical.startsWith(canonicalRoot + path.sep) && canonical !== canonicalRoot) {
+})();
+
+function isPathWithinRoot(candidatePath: string): boolean {
+  return candidatePath === CANONICAL_ROOT_DIR || candidatePath.startsWith(CANONICAL_ROOT_DIR + path.sep);
+}
+
+function resolveSafePath(requestedPath: string): string | null {
+  // For existing paths we canonicalise the full target. For new paths we must not
+  // fall back to a purely lexical check because a parent component inside ROOT_DIR
+  // may be a symlink pointing outside the workspace. Instead, walk up to the
+  // nearest existing ancestor, canonicalise that ancestor, ensure it remains under
+  // the canonical root, then rebuild the final target path from the canonical
+  // ancestor.
+  const lexicalTarget = path.resolve(ROOT_DIR, requestedPath);
+  let existingAncestor = lexicalTarget;
+
+  while (!fssync.existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      return null;
+    }
+    existingAncestor = parent;
+  }
+
+  let canonicalAncestor: string;
+  try {
+    canonicalAncestor = fssync.realpathSync(existingAncestor);
+  } catch {
     return null;
   }
-  return canonical;
+
+  if (!isPathWithinRoot(canonicalAncestor)) {
+    return null;
+  }
+
+  if (existingAncestor === lexicalTarget) {
+    return canonicalAncestor;
+  }
+
+  let ancestorStats: fssync.Stats;
+  try {
+    ancestorStats = fssync.statSync(canonicalAncestor);
+  } catch {
+    return null;
+  }
+
+  if (!ancestorStats.isDirectory()) {
+    return null;
+  }
+
+  const relativeSuffix = path.relative(existingAncestor, lexicalTarget);
+  if (!relativeSuffix || relativeSuffix.startsWith("..") || path.isAbsolute(relativeSuffix)) {
+    return null;
+  }
+
+  return path.join(canonicalAncestor, relativeSuffix);
 }
 
 function assertSafePath(requestedPath: string): string {
