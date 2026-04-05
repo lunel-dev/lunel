@@ -1529,6 +1529,22 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [composerHeight, setComposerHeight] = useState(104);
   const [isVoiceMode, setIsVoiceMode] = useState(false);
   const [isVoiceBusy, setIsVoiceBusy] = useState(false);
+  const voiceBusySpinSV = useSharedValue(0);
+  const voiceBusySpinStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${voiceBusySpinSV.value}deg` }],
+  }));
+  useEffect(() => {
+    if (isVoiceBusy) {
+      voiceBusySpinSV.value = 0;
+      voiceBusySpinSV.value = withRepeat(
+        withTiming(360, { duration: 900, easing: Easing.linear }),
+        -1,
+        false,
+      );
+    } else {
+      voiceBusySpinSV.value = 0;
+    }
+  }, [isVoiceBusy, voiceBusySpinSV]);
   const [voiceDurationMs, setVoiceDurationMs] = useState(0);
   const [voiceWave, setVoiceWave] = useState<number[]>(
     () => Array.from({ length: VOICE_WAVE_BAR_COUNT }, () => VOICE_WAVE_IDLE_LEVEL)
@@ -2649,7 +2665,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   }, [activeTab, closeTab]);
 
   const hasContent = listData.length > 0;
-  const messagesBottomInset = isVoiceMode ? 72 : composerHeight + 30;
+  const messagesBottomInset = composerHeight + 30;
 
   useEffect(() => {
     // Include backend on each session item so DrawerContent can group them
@@ -3174,7 +3190,9 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
                   activeOpacity={0.7}
                 >
                   {isVoiceBusy ? (
-                    <ActivityIndicator size="small" color={'#ffffff'} />
+                    <Animated.View style={voiceBusySpinStyle}>
+                      <LoaderCircle size={18} color={'#ffffff'} strokeWidth={2} />
+                    </Animated.View>
                   ) : (
                     <Check size={18} color={'#ffffff'} strokeWidth={2.5} />
                   )}
@@ -3446,8 +3464,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
     marginBottom: 8,
     paddingHorizontal: 10,
-    paddingTop: 10,
-    paddingBottom: 10,
+    paddingTop: 14,
+    paddingBottom: 14,
     borderWidth: StyleSheet.hairlineWidth,
   },
   inputWrapper: {

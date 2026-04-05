@@ -32,6 +32,7 @@ import {
   Check,
   CornerDownLeft,
   Keyboard as KeyboardIcon,
+  LoaderCircle,
   Mic,
   Plus,
   Terminal,
@@ -63,7 +64,9 @@ import {
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
+  Easing,
   runOnJS,
+  withRepeat,
   withTiming,
   useAnimatedStyle,
   useSharedValue,
@@ -799,6 +802,22 @@ const TerminalToolbar = memo(
   }) => {
     const toolbarVerticalPadding = keyboardVisible ? 6 : 8;
     const [quickInputFocused, setQuickInputFocused] = useState(false);
+    const micBusySpinSV = useSharedValue(0);
+    const micBusySpinStyle = useAnimatedStyle(() => ({
+      transform: [{ rotate: `${micBusySpinSV.value}deg` }],
+    }));
+    useEffect(() => {
+      if (micInputLoading) {
+        micBusySpinSV.value = 0;
+        micBusySpinSV.value = withRepeat(
+          withTiming(360, { duration: 900, easing: Easing.linear }),
+          -1,
+          false,
+        );
+      } else {
+        micBusySpinSV.value = 0;
+      }
+    }, [micInputLoading, micBusySpinSV]);
 
     const leftButtonStyle = ({
       pressed,
@@ -858,7 +877,7 @@ const TerminalToolbar = memo(
           <View
             style={{
               backgroundColor: colors.bg.raised,
-              borderRadius: 26,
+              borderRadius: 10,
               borderWidth: StyleSheet.hairlineWidth,
               borderColor: colors.fg.disabled,
               shadowColor: "#000",
@@ -877,10 +896,10 @@ const TerminalToolbar = memo(
               style={{
                 flex: 1,
                 fontFamily: fonts.sans.regular,
-                fontSize: 16,
+                fontSize: 14,
                 color: colors.fg.default,
-                paddingHorizontal: 16,
-                paddingVertical: 16,
+                paddingHorizontal: 14,
+                paddingVertical: 13,
                 maxHeight: 160,
               }}
               multiline
@@ -904,7 +923,8 @@ const TerminalToolbar = memo(
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                paddingLeft: 12,
+                justifyContent: "center",
+                paddingLeft: 8,
                 paddingRight: 6,
                 paddingBottom: 6,
                 gap: 6,
@@ -912,9 +932,9 @@ const TerminalToolbar = memo(
             >
               <TouchableOpacity
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 999,
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
                   alignItems: "center",
                   justifyContent: "center",
                   backgroundColor: colors.bg.base,
@@ -922,14 +942,14 @@ const TerminalToolbar = memo(
                 onPress={onToggleQuickInput}
                 activeOpacity={0.7}
               >
-                <X size={20} color={colors.fg.muted} strokeWidth={1.8} />
+                <X size={18} color={colors.fg.muted} strokeWidth={1.8} />
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 999,
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
                   alignItems: "center",
                   justifyContent: "center",
                   backgroundColor: quickInputText.trim() ? colors.accent.default : colors.bg.raised,
@@ -940,7 +960,7 @@ const TerminalToolbar = memo(
                 activeOpacity={0.7}
               >
                 <SendIcon
-                  size={22}
+                  size={18}
                   color={quickInputText.trim() ? '#ffffff' : colors.fg.muted}
                 />
               </TouchableOpacity>
@@ -1035,7 +1055,9 @@ const TerminalToolbar = memo(
               activeOpacity={0.7}
             >
               {micInputLoading ? (
-                <ActivityIndicator size="small" color={'#ffffff'} />
+                <Animated.View style={micBusySpinStyle}>
+                  <LoaderCircle size={18} color={'#ffffff'} strokeWidth={2} />
+                </Animated.View>
               ) : (
                 <Check size={18} color={'#ffffff'} strokeWidth={2.5} />
               )}
