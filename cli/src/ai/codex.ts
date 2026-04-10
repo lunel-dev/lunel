@@ -11,6 +11,7 @@ import type {
   AIProvider,
   AiEventEmitter,
   CodexPromptOptions,
+  CommandInfo,
   FileAttachment,
   ModelSelector,
   MessageInfo,
@@ -358,6 +359,10 @@ export class CodexProvider implements AIProvider {
 
   async agents(): Promise<{ agents: AgentInfo[] }> {
     return { agents: [] };
+  }
+
+  async commands(): Promise<{ commands: CommandInfo[] }> {
+    return { commands: [{ id: "abort", name: "abort", description: "Stop the current task" }] };
   }
 
   async providers(): Promise<ProviderInfo> {

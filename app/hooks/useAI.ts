@@ -94,6 +94,16 @@ export function useAI(events?: AIEvents) {
     return response.payload.agents as AIAgent[];
   }, [sendControl]);
 
+  const getCommands = useCallback(async (backend: AiBackend = 'opencode'): Promise<{ id: string; name: string; description?: string }[]> => {
+    try {
+      const response = await sendControl('ai', 'commands', { backend });
+      if (!response.ok) return [];
+      return (response.payload.commands as { id: string; name: string; description?: string }[]) || [];
+    } catch {
+      return [];
+    }
+  }, [sendControl]);
+
   const getProviders = useCallback(async (backend: AiBackend = 'opencode'): Promise<{ providers: AIProvider[]; defaults: Record<string, string>; configDefaults?: AIConfigDefaults }> => {
     const response = await sendControl('ai', 'providers', { backend });
     if (!response.ok) throw new Error(response.error?.message || 'Failed to get providers');
@@ -159,6 +169,7 @@ export function useAI(events?: AIEvents) {
     sendPrompt,
     abort,
     getAgents,
+    getCommands,
     getProviders,
     setAuth,
     runCommand,

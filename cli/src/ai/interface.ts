@@ -49,6 +49,12 @@ export interface AgentInfo {
   mode?: string;
 }
 
+export interface CommandInfo {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface ProviderInfo {
   providers: unknown[];
   default: Record<string, string>;
@@ -98,6 +104,7 @@ export interface AIProvider {
 
   // Metadata
   agents(): Promise<{ agents: AgentInfo[] }>;
+  commands(): Promise<{ commands: CommandInfo[] }>;
   providers(): Promise<ProviderInfo>;
 
   // Auth

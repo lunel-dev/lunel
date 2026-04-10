@@ -2639,6 +2639,29 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           }
 
           try {
+            const cmds = await ai.getCommands(backend);
+            if (Array.isArray(cmds) && cmds.length > 0) {
+              const mapped = cmds.map((c) => ({
+                cmd: c.id.startsWith("/") ? c.id : `/${c.id}`,
+                desc: c.description || c.name || c.id,
+              }));
+              setDynamicCommands((prev) => {
+                const existing = new Set(prev.map((p) => p.cmd));
+                const merged = [...prev];
+                for (const m of mapped) {
+                  if (!existing.has(m.cmd)) {
+                    merged.push(m);
+                    existing.add(m.cmd);
+                  }
+                }
+                return merged;
+              });
+            }
+          } catch {
+            // slash commands are non-critical
+          }
+
+          try {
             const result = await ai.getProviders(backend);
             const providersList = result.providers;
             const defaults = result.defaults || {};
@@ -2931,14 +2954,18 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
   const combinedConfigLabel = activeBackend === "opencode" && selectedAgentNameFull
     ? [selectedAgentNameFull, selectedModelName].filter(Boolean).join(" · ")
     : selectedModelName;
-  const slashCommands = activeBackend === "codex"
-    ? [{ cmd: "/abort", desc: "Abort current task" }]
+  const [dynamicCommands, setDynamicCommands] = useState<{ cmd: string; desc: string }[]>([]);
+  const defaultSlashCommands = activeBackend === "codex"
+    ? [{ cmd: "/abort", desc: "Stop the current task" }]
     : [
         { cmd: "/undo", desc: "Undo last prompt" },
         { cmd: "/redo", desc: "Redo undone prompt" },
         { cmd: "/abort", desc: "Abort current task" },
         { cmd: "/init", desc: "Initialize AGENTS.md" },
+        { cmd: "/compact", desc: "Compact session context" },
+        { cmd: "/share", desc: "Share session link" },
       ];
+  const slashCommands = dynamicCommands.length > 0 ? dynamicCommands : defaultSlashCommands;
   useEffect(() => {
     isNearBottomRef.current = true;
     autoFollowRef.current = isStreaming;
@@ -3930,27 +3957,40 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
 
             {inputText.startsWith("/") && !pendingImage ? (
-              <View style={{
-                position: "absolute",
-                bottom: composerHeight + 16,
-                left: 12,
-                right: 12,
-                backgroundColor: colors.bg.raised,
-                borderRadius: radius.md,
-                borderWidth: 1,
-                borderColor: colors.border.main,
-                padding: 4,
-                zIndex: 10,
-              }}>
+              <Animated.View
+                entering={ZoomIn.duration(150)}
+                style={{
+                  position: "absolute",
+                  bottom: composerHeight + 12,
+                  left: 10,
+                  right: 10,
+                  backgroundColor: colors.bg.raised,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: colors.border.secondary,
+                  paddingVertical: 6,
+                  paddingHorizontal: 6,
+                  zIndex: 10,
+                  maxHeight: 260,
+                  shadowColor: "#000",
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.12,
+                  shadowRadius: 12,
+                  elevation: 8,
+                }}
+              >
+                <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 {slashCommands.filter(c => c.cmd.startsWith(inputText.toLowerCase())).map((c, i) => (
                   <TouchableOpacity
                     key={c.cmd}
                     style={{
-                      padding: 10,
+                      paddingVertical: 10,
+                      paddingHorizontal: 12,
                       flexDirection: "row",
                       alignItems: "center",
                       backgroundColor: i === 0 ? colors.bg.base : "transparent",
-                      borderRadius: radius.sm,
+                      borderRadius: 10,
+                      gap: 10,
                     }}
                     onPress={() => {
                       setInputText(c.cmd + " ");
@@ -3958,15 +3998,16 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                     }}
                     activeOpacity={0.7}
                   >
-                    <Text style={{ color: colors.fg.default, fontFamily: fonts.mono.regular, fontSize: 13, width: 60 }}>
+                    <Text style={{ color: colors.accent.default, fontFamily: fonts.mono.regular, fontSize: 13, minWidth: 64 }}>
                       {c.cmd}
                     </Text>
-                    <Text style={{ color: colors.fg.muted, fontFamily: fonts.sans.regular, fontSize: 12, flex: 1 }}>
+                    <Text numberOfLines={1} style={{ color: colors.fg.muted, fontFamily: fonts.sans.regular, fontSize: 12, flex: 1 }}>
                       {c.desc}
                     </Text>
                   </TouchableOpacity>
                 ))}
-              </View>
+                </ScrollView>
+              </Animated.View>
             ) : null}
 
             {/* Composer */}

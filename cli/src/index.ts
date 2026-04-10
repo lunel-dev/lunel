@@ -3321,6 +3321,7 @@ async function processMessage(message: Message): Promise<Response> {
           case "getMessages":    result = await manager.getMessages(backend, payload.id as string); break;
           case "abort":          result = await manager.abort(backend, payload.sessionId as string); break;
           case "agents":         result = await manager.agents(backend); break;
+          case "commands":       result = await manager.commands(backend); break;
           case "providers":      result = await manager.providers(backend); break;
           case "setAuth":        result = await manager.setAuth(backend, payload.providerId as string, payload.key as string); break;
           case "command":        result = await manager.command(backend, payload.sessionId as string, payload.command as string, (payload.arguments as string) || ""); break;

@@ -126,6 +126,7 @@ export class AiManager {
 
   // Metadata — backend is optional, falls back to first available
   async agents(backend?: AiBackend) { return (await this.ensureBackend(backend ?? "opencode")).agents(); }
+  async commands(backend?: AiBackend) { return (await this.ensureBackend(backend ?? "opencode")).commands(); }
   async providers(backend?: AiBackend) { return (await this.ensureBackend(backend ?? "opencode")).providers(); }
   async setAuth(backend: AiBackend, providerId: string, key: string) { return (await this.ensureBackend(backend)).setAuth(providerId, key); }
 

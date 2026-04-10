@@ -10,6 +10,7 @@ import type {
   AIProvider,
   AiEventEmitter,
   CodexPromptOptions,
+  CommandInfo,
   FileAttachment,
   ModelSelector,
   MessageInfo,
@@ -403,6 +404,33 @@ export class OpenCodeProvider implements AIProvider {
     } catch (err) {
       console.error("[ai] getAgents exception:", (err as Error).message);
       throw err;
+    }
+  }
+
+  async commands(): Promise<{ commands: CommandInfo[] }> {
+    if (VERBOSE_AI_LOGS) console.log("[ai] getCommands called");
+    try {
+      const response = await this.client!.command.list();
+      const data = requireData(response, "command.list");
+      const list = Array.isArray(data) ? data : [];
+      const commands: CommandInfo[] = list
+        .map((entry: unknown) => {
+          if (!entry || typeof entry !== "object") return undefined;
+          const record = entry as Record<string, unknown>;
+          const id = typeof record.id === "string" ? record.id.trim() : "";
+          const name = typeof record.name === "string" ? record.name.trim() : id;
+          const description = typeof record.description === "string" ? record.description.trim() : "";
+          if (!id) return undefined;
+          return { id, name: name || id, ...(description ? { description } : {}) };
+        })
+        .filter((value): value is CommandInfo => Boolean(value));
+      if (VERBOSE_AI_LOGS) {
+        console.log("[ai] getCommands returned:", commands.length, "commands");
+      }
+      return { commands };
+    } catch (err) {
+      console.error("[ai] getCommands exception:", (err as Error).message);
+      return { commands: [] };
     }
   }
 
