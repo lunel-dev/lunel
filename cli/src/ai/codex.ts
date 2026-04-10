@@ -120,14 +120,13 @@ export class CodexProvider implements AIProvider {
   async init(): Promise<void> {
     if (DEBUG_MODE) console.log("Starting Codex app-server...");
 
-    const windowsSpawnOptions = process.platform === "win32"
-      ? { shell: true as const }
-      : {};
+    const codexCommand = process.platform === "win32" ? "codex.cmd" : "codex";
 
-    this.proc = spawn("codex", ["app-server"], {
+    this.proc = spawn(codexCommand, ["app-server"], {
       stdio: ["pipe", "pipe", "inherit"],
       env: process.env,
-      ...windowsSpawnOptions,
+      shell: false,
+      windowsHide: process.platform === "win32",
     });
 
     const rl = createInterface({ input: this.proc.stdout! });
