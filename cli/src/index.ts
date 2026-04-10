@@ -1885,6 +1885,91 @@ function handleProcessesList(): Record<string, unknown> {
   return { processes: result };
 }
 
+function isShellProcessName(command: string): boolean {
+  const normalized = path.basename(command).toLowerCase();
+  return normalized === "bash"
+    || normalized === "zsh"
+    || normalized === "sh"
+    || normalized === "fish"
+    || normalized === "cmd.exe"
+    || normalized === "powershell.exe"
+    || normalized === "pwsh.exe";
+}
+
+function getParentPid(pid: number): number | null {
+  if (pid <= 1) return null;
+  if (os.platform() === "win32") return null;
+  const result = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf-8" });
+  const next = parseInt((result.stdout || "").trim(), 10);
+  return Number.isFinite(next) && next > 1 ? next : null;
+}
+
+function getProcessCommand(pid: number): string {
+  if (pid <= 0) return "";
+  if (os.platform() === "win32") return "";
+  const result = spawnSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf-8" });
+  return (result.stdout || "").trim();
+}
+
+function listChildPids(pid: number): number[] {
+  if (pid <= 0) return [];
+  if (os.platform() === "win32") return [];
+  const result = spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf-8" });
+  return (result.stdout || "")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((value) => parseInt(value, 10))
+    .filter((value) => Number.isFinite(value) && value > 0);
+}
+
+function resolveOwningProcessPid(pid: number): number {
+  if (pid <= 1 || os.platform() === "win32") return pid;
+  let current = pid;
+  while (true) {
+    const parent = getParentPid(current);
+    if (!parent) return current;
+    const parentCommand = getProcessCommand(parent);
+    if (!parentCommand || isShellProcessName(parentCommand)) {
+      return current;
+    }
+    current = parent;
+  }
+}
+
+function killProcessTree(rootPid: number): void {
+  if (rootPid <= 0) return;
+  if (os.platform() === "win32") {
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(rootPid)], { encoding: "utf-8" });
+    return;
+  }
+
+  const visited = new Set<number>();
+  const collect = (pid: number): number[] => {
+    if (visited.has(pid)) return [];
+    visited.add(pid);
+    const children = listChildPids(pid).flatMap((childPid) => collect(childPid));
+    return [...children, pid];
+  };
+
+  const ordered = collect(rootPid);
+  for (const pid of ordered) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already dead
+    }
+  }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  for (const pid of ordered) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already dead
+    }
+  }
+}
+
 async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const command = payload.command as string;
   const args = (payload.args as string[]) || [];
@@ -1977,6 +2062,7 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
   });
 
   proc.on("close", (code, signal) => {
+    processes.delete(pid);
     const msg: Message = {
       v: 1,
       id: `evt-${Date.now()}`,
@@ -2170,19 +2256,18 @@ function handlePortsKill(payload: Record<string, unknown>): Record<string, unkno
   try {
     const pids = lookupListeningPidsForPort(portNum);
     const pid = pids[0] ?? null;
+    const ownerPid = pid != null ? resolveOwningProcessPid(pid) : null;
 
-    for (const currentPid of pids) {
-      if (platform === "win32") {
-        spawnSync("taskkill", ["/F", "/PID", String(currentPid)], { encoding: "utf-8" });
-      } else {
-        try { process.kill(currentPid, "SIGKILL"); } catch { /* already dead */ }
-      }
+    const killTargets = ownerPid != null ? [ownerPid] : pids;
+    for (const currentPid of killTargets) {
+      killProcessTree(currentPid);
     }
 
     const remainingPids = lookupListeningPidsForPort(portNum);
     return {
       port: portNum,
       pid,
+      ownerPid,
       killed: pids.length > 0,
       stillListening: remainingPids.length > 0,
       currentPid: remainingPids[0] ?? null,
