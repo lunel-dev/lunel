@@ -130,18 +130,22 @@ export function isEncryptedProtocolEnvelope(value: unknown): value is EncryptedP
 export function buildSessionV2WsUrl(
   gatewayUrl: string,
   role: 'cli' | 'app',
-  password: string,
   generation?: number | null,
+  password?: string | null,
 ): string {
   const wsBase = gatewayUrl.replace(/^https:/, 'wss:');
   if (!wsBase.startsWith('wss://')) {
     throw new Error('Gateway URL must use https://');
   }
-  const query = new URLSearchParams({ password });
+  const query = new URLSearchParams();
   if (typeof generation === 'number' && Number.isFinite(generation) && generation > 0) {
     query.set('generation', String(generation));
   }
-  return `${wsBase}/v2/ws/${role}?${query.toString()}`;
+  if (typeof password === 'string' && password.trim()) {
+    query.set('password', password.trim());
+  }
+  const queryString = query.toString();
+  return `${wsBase}/v2/ws/${role}${queryString ? `?${queryString}` : ''}`;
 }
 
 export function encodeV2EncryptedFrame(payload: Uint8Array): Uint8Array {

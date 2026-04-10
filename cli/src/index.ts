@@ -14,7 +14,7 @@ import * as fs from "fs/promises";
 import * as fssync from "fs";
 import * as path from "path";
 import * as os from "os";
-import { randomBytes } from "crypto";
+import { randomBytes, createHash } from "crypto";
 import { spawn, spawnSync, ChildProcess, execSync } from "child_process";
 import { createServer, createConnection, Socket } from "net";
 import { createInterface } from "readline";
@@ -36,18 +36,21 @@ const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
 const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
-const PTY_RELEASES: Record<string, { fileName: string; url: string }> = {
+const PTY_RELEASES: Record<string, { fileName: string; url: string; sha256: string }> = {
   "linux:x64": {
     fileName: "lunel-pty-linux-x8664-0",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-linux-x8664-0`,
+    sha256: "422c260e31cf6324e0347aaf06747b8a4ef50a94f587292b293281f28f7113b1",
   },
   "darwin:arm64": {
     fileName: "lunel-pty-macos-arm64-0",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-macos-arm64-0`,
+    sha256: "8d2fc8cfafc5e3e3b3aecc8045222659d11d9d48d7aeeee6ba4e419930dab5fc",
   },
   "win32:x64": {
     fileName: "lunel-pty-windows-x8664-1.exe",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-windows-x8664-1.exe`,
+    sha256: "c80c522081a339e148e9c9309ea289d7b7ba992462d66aa010a6e7719ba7dfa2",
   },
 };
 
@@ -70,6 +73,53 @@ const CLI_CONFIG_PATH = (() => {
   const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(xdgConfig, "lunel", "config.json");
 })();
+const SAFE_PROCESS_COMMANDS = new Set([
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "bun",
+  "python",
+  "python3",
+  "pip",
+  "pip3",
+  "uv",
+  "git",
+  "go",
+  "cargo",
+  "rustc",
+  "make",
+  "just",
+  "java",
+  "javac",
+  "gradle",
+  "gradlew",
+]);
+const SAFE_TERMINAL_SHELLS = new Set([
+  "bash",
+  "zsh",
+  "sh",
+  "fish",
+  "pwsh",
+  "powershell",
+  "powershell.exe",
+  "cmd",
+  "cmd.exe",
+  "nu",
+]);
+const BLOCKED_PROCESS_ENV_KEYS = new Set([
+  "PATH",
+  "LD_PRELOAD",
+  "DYLD_INSERT_LIBRARIES",
+  "NODE_OPTIONS",
+  "GIT_SSH_COMMAND",
+  "BASH_ENV",
+  "ENV",
+  "HOME",
+  "USERPROFILE",
+  "SHELL",
+]);
 
 // Terminal sessions (managed by Rust PTY binary)
 const terminals = new Set<string>();
@@ -338,30 +388,47 @@ interface CliSavedSession {
 // Path Safety
 // ============================================================================
 
+function isPathWithinRoot(candidatePath: string): boolean {
+  return candidatePath === ROOT_DIR || candidatePath.startsWith(`${ROOT_DIR}${path.sep}`);
+}
+
 function resolveSafePath(requestedPath: string): string | null {
-  // path.resolve handles ".." components, but on case-insensitive or symlinked
-  // filesystems a simple startsWith check can still be bypassed. We use
-  // realpathSync to canonicalise the path (resolves symlinks, normalises case on
-  // Windows) before comparing against ROOT_DIR, which is itself canonicalised at
-  // startup. If the path does not exist yet we fall back to the lexical resolve so
-  // that callers creating new files can still pass the check.
-  const lexical = path.resolve(ROOT_DIR, requestedPath);
-  let canonical: string;
-  try {
-    canonical = fssync.realpathSync(lexical);
-  } catch {
-    // Path doesn't exist yet — verify lexically. Still safe because path.resolve
-    // already eliminated all ".." traversals in the resolved string.
-    canonical = lexical;
-  }
-  // Ensure ROOT_DIR itself is canonical for a reliable prefix comparison.
-  const canonicalRoot = (() => {
-    try { return fssync.realpathSync(ROOT_DIR); } catch { return ROOT_DIR; }
-  })();
-  if (!canonical.startsWith(canonicalRoot + path.sep) && canonical !== canonicalRoot) {
+  const lexicalTarget = path.resolve(ROOT_DIR, requestedPath);
+  if (!isPathWithinRoot(lexicalTarget)) {
     return null;
   }
-  return canonical;
+
+  try {
+    const canonicalTarget = fssync.realpathSync(lexicalTarget);
+    return isPathWithinRoot(canonicalTarget) ? canonicalTarget : null;
+  } catch {
+    let existingAncestor = lexicalTarget;
+    while (!fssync.existsSync(existingAncestor)) {
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) {
+        return null;
+      }
+      existingAncestor = parent;
+    }
+
+    let canonicalAncestor: string;
+    try {
+      canonicalAncestor = fssync.realpathSync(existingAncestor);
+    } catch {
+      return null;
+    }
+    if (!isPathWithinRoot(canonicalAncestor)) {
+      return null;
+    }
+
+    const relativeSuffix = path.relative(existingAncestor, lexicalTarget);
+    if (!relativeSuffix || relativeSuffix === ".") {
+      return canonicalAncestor;
+    }
+
+    const resolvedTarget = path.resolve(canonicalAncestor, relativeSuffix);
+    return isPathWithinRoot(resolvedTarget) ? resolvedTarget : null;
+  }
 }
 
 function assertSafePath(requestedPath: string): string {
@@ -372,6 +439,57 @@ function assertSafePath(requestedPath: string): string {
     throw error;
   }
   return safePath;
+}
+
+function sanitizeProcessEnv(extraEnv: Record<string, string>): Record<string, string> {
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw Object.assign(new Error(`Invalid environment key: ${key}`), { code: "EINVAL" });
+    }
+    if (BLOCKED_PROCESS_ENV_KEYS.has(key.toUpperCase())) {
+      throw Object.assign(new Error(`Environment override not allowed: ${key}`), { code: "EACCES" });
+    }
+    sanitized[key] = String(value);
+  }
+  return sanitized;
+}
+
+function resolveAllowedProcessCommand(command: string, workDir: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    throw Object.assign(new Error("command is required"), { code: "EINVAL" });
+  }
+
+  const customAllowed = (process.env.LUNEL_ALLOWED_COMMANDS || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const allowedCommands = new Set([...SAFE_PROCESS_COMMANDS, ...customAllowed]);
+
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    const absolute = path.isAbsolute(trimmed) ? trimmed : path.resolve(workDir, trimmed);
+    const safeAbsolute = assertSafePath(path.relative(ROOT_DIR, absolute));
+    return safeAbsolute;
+  }
+
+  if (!allowedCommands.has(trimmed)) {
+    throw Object.assign(new Error(`Command not allowed: ${trimmed}`), { code: "EACCES" });
+  }
+
+  return trimmed;
+}
+
+function resolveAllowedTerminalShell(shell: string | undefined): string {
+  const candidate = (shell || getDefaultTerminalShell()).trim();
+  const shellName = path.basename(candidate).toLowerCase();
+  if (!SAFE_TERMINAL_SHELLS.has(shellName)) {
+    throw Object.assign(new Error(`Shell not allowed: ${candidate}`), { code: "EACCES" });
+  }
+  if (candidate.includes("/") || candidate.includes("\\")) {
+    return fssync.realpathSync(candidate);
+  }
+  return candidate;
 }
 
 function generatePersistentSecret(length: number): string {
@@ -805,6 +923,15 @@ async function runGit(args: string[]): Promise<{ stdout: string; stderr: string;
   });
 }
 
+function assertSafeGitPaths(paths: string[]): void {
+  for (const requestedPath of paths) {
+    if (typeof requestedPath !== "string" || !requestedPath.trim()) {
+      throw Object.assign(new Error("path is required"), { code: "EINVAL" });
+    }
+    assertSafePath(requestedPath);
+  }
+}
+
 async function handleGitStatus(): Promise<Record<string, unknown>> {
   // Get branch
   const branchResult = await runGit(["branch", "--show-current"]);
@@ -865,6 +992,7 @@ async function handleGitStatus(): Promise<Record<string, unknown>> {
 async function handleGitStage(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const paths = payload.paths as string[];
   if (!paths || !paths.length) throw Object.assign(new Error("paths is required"), { code: "EINVAL" });
+  assertSafeGitPaths(paths);
 
   const result = await runGit(["add", "--", ...paths]);
   if (result.code !== 0) {
@@ -877,6 +1005,7 @@ async function handleGitStage(payload: Record<string, unknown>): Promise<Record<
 async function handleGitUnstage(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const paths = payload.paths as string[];
   if (!paths || !paths.length) throw Object.assign(new Error("paths is required"), { code: "EINVAL" });
+  assertSafeGitPaths(paths);
 
   // Use git restore --staged (Git 2.23+) which is more reliable
   // Falls back to git reset HEAD for older versions
@@ -1013,6 +1142,9 @@ async function handleGitCommitDetails(payload: Record<string, unknown>): Promise
 async function handleGitDiff(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const filepath = payload.path as string;
   const staged = payload.staged === true;
+  if (filepath) {
+    assertSafePath(filepath);
+  }
 
   const args = ["diff"];
   if (staged) args.push("--staged");
@@ -1117,6 +1249,7 @@ async function handleGitDiscard(payload: Record<string, unknown>): Promise<Recor
     // Also clean untracked files
     await runGit(["clean", "-fd"]);
   } else if (paths && paths.length > 0) {
+    assertSafeGitPaths(paths);
     const result = await runGit(["checkout", "--", ...paths]);
     if (result.code !== 0) {
       throw Object.assign(new Error(result.stderr || "git checkout failed"), { code: "EGIT" });
@@ -1440,7 +1573,7 @@ function getLunelConfigDir(): string {
   return path.join(xdg, "lunel");
 }
 
-function getPtyReleaseTarget(): { fileName: string; url: string } | null {
+function getPtyReleaseTarget(): { fileName: string; url: string; sha256: string } | null {
   const release = PTY_RELEASES[`${os.platform()}:${os.arch()}`];
   if (!release) return null;
   return release;
@@ -1450,36 +1583,53 @@ function getPtyBinaryPath(fileName: string): string {
   return path.join(getLunelConfigDir(), "pty-releases", fileName);
 }
 
-async function downloadPtyBinary(url: string, destination: string): Promise<void> {
+function computeSha256(buffer: Uint8Array): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+async function verifyPtyBinary(buffer: Uint8Array, expectedSha256: string): Promise<void> {
+  const actualSha256 = computeSha256(buffer);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(`PTY binary checksum mismatch (expected ${expectedSha256}, got ${actualSha256})`);
+  }
+}
+
+async function downloadPtyBinary(url: string, destination: string, expectedSha256: string): Promise<void> {
   const tempPath = `${destination}.download`;
   console.log("[pty] Downloading PTY [downloading...]");
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download PTY binary (${response.status})`);
-  }
-  if (!response.body) {
-    throw new Error("PTY download response had no body");
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      chunks.push(value);
-      totalBytes += value.byteLength;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to download PTY binary (${response.status})`);
     }
-  }
+    if (!response.body) {
+      throw new Error("PTY download response had no body");
+    }
 
-  const binary = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-  await fs.writeFile(tempPath, binary);
-  if (os.platform() !== "win32") {
-    await fs.chmod(tempPath, 0o755);
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        totalBytes += value.byteLength;
+      }
+    }
+
+    const binary = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+    await verifyPtyBinary(binary, expectedSha256);
+    await fs.writeFile(tempPath, binary);
+    if (os.platform() !== "win32") {
+      await fs.chmod(tempPath, 0o755);
+    }
+    await fs.rename(tempPath, destination);
+    console.log(`[pty] Downloaded PTY (${Math.max(1, Math.round(totalBytes / 1024))} KB)`);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
   }
-  await fs.rename(tempPath, destination);
-  console.log(`[pty] Downloaded PTY (${Math.max(1, Math.round(totalBytes / 1024))} KB)`);
 }
 
 async function ensurePtyBinaryReady(): Promise<string | null> {
@@ -1493,11 +1643,13 @@ async function ensurePtyBinaryReady(): Promise<string | null> {
     await fs.mkdir(path.dirname(binPath), { recursive: true });
 
     try {
-      await fs.access(binPath);
+      const binary = await fs.readFile(binPath);
+      await verifyPtyBinary(binary, release.sha256);
       return binPath;
     } catch {
+      await fs.rm(binPath, { force: true }).catch(() => undefined);
       console.log(`[pty] PTY missing. Installing ${release.fileName}...`);
-      await downloadPtyBinary(release.url, binPath);
+      await downloadPtyBinary(release.url, binPath, release.sha256);
       return binPath;
     }
   })();
@@ -1608,7 +1760,7 @@ function sendToPty(cmd: object): void {
 async function handleTerminalSpawn(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   await ensurePtyProcess();
 
-  const shell = (payload.shell as string) || getDefaultTerminalShell();
+  const shell = resolveAllowedTerminalShell(payload.shell as string | undefined);
   const cols = (payload.cols as number) || 80;
   const rows = (payload.rows as number) || 24;
   const terminalId = `term-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
@@ -1732,10 +1884,12 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
   if (!command) throw Object.assign(new Error("command is required"), { code: "EINVAL" });
 
   const workDir = cwd ? assertSafePath(cwd) : ROOT_DIR;
+  const safeCommand = resolveAllowedProcessCommand(command, workDir);
+  const safeEnv = sanitizeProcessEnv(extraEnv);
 
-  const proc = spawn(command, args, {
+  const proc = spawn(safeCommand, args, {
     cwd: workDir,
-    env: { ...process.env, ...extraEnv },
+    env: { ...process.env, ...safeEnv },
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
   });
@@ -1745,12 +1899,12 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
 
     const handleSpawn = () => {
       if (settled) return;
-      settled = true;
-      proc.removeListener("error", handleError);
-      if (!proc.pid) {
-        reject(Object.assign(new Error(`Failed to spawn "${command}"`), { code: "ERROR" }));
-        return;
-      }
+        settled = true;
+        proc.removeListener("error", handleError);
+        if (!proc.pid) {
+          reject(Object.assign(new Error(`Failed to spawn "${safeCommand}"`), { code: "ERROR" }));
+          return;
+        }
       resolve(proc.pid);
     };
 
@@ -1758,7 +1912,7 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
       if (settled) return;
       settled = true;
       proc.removeListener("spawn", handleSpawn);
-      reject(Object.assign(new Error(err.message || `Failed to spawn "${command}"`), {
+      reject(Object.assign(new Error(err.message || `Failed to spawn "${safeCommand}"`), {
         code: err.code || "ERROR",
       }));
     };
@@ -1771,7 +1925,7 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
   const managedProc: ManagedProcess = {
     pid,
     proc,
-    command,
+    command: safeCommand,
     args,
     cwd: workDir,
     startTime: Date.now(),
@@ -1902,15 +2056,17 @@ function handlePortsList(): Record<string, unknown> {
         });
       }
     } else if (platform === "win32") {
-      output = execSync("netstat -ano | findstr LISTENING", {
+      const result = spawnSync("netstat", ["-ano"], {
         encoding: "utf-8",
         timeout: 5000,
+        windowsHide: true,
       });
+      output = result.stdout || "";
 
       const lines = output.trim().split("\n");
       for (const line of lines) {
         const parts = line.trim().split(/\s+/);
-        if (parts.length >= 5) {
+        if (parts.length >= 5 && /^LISTENING$/i.test(parts[3] || "")) {
           const localAddr = parts[1];
           const pid = parseInt(parts[4]);
           const match = localAddr.match(/:(\d+)$/);
@@ -2090,15 +2246,22 @@ function getDiskInfo(): Array<{ mount: string; filesystem: string; size: number;
         }
       }
     } else if (platform === "win32") {
-      const output = execSync("wmic logicaldisk get size,freespace,caption", { encoding: "utf-8" });
-      const lines = output.trim().split("\n").slice(1);
-
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 3) {
-          const mount = parts[0];
-          const free = parseInt(parts[1]) || 0;
-          const size = parseInt(parts[2]) || 0;
+      const result = spawnSync("powershell.exe", [
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,FreeSpace,Size | ConvertTo-Json -Compress",
+      ], {
+        encoding: "utf-8",
+        timeout: 5000,
+        windowsHide: true,
+      });
+      const raw = (result.stdout || "").trim();
+      if (raw) {
+        const entries = JSON.parse(raw) as Array<{ DeviceID?: string; FreeSpace?: number | string; Size?: number | string }> | { DeviceID?: string; FreeSpace?: number | string; Size?: number | string };
+        for (const entry of Array.isArray(entries) ? entries : [entries]) {
+          const mount = entry.DeviceID || "";
+          const free = Number(entry.FreeSpace) || 0;
+          const size = Number(entry.Size) || 0;
           const used = size - free;
 
           if (size > 0) {
@@ -2159,19 +2322,27 @@ function getBatteryInfo(): { hasBattery: boolean; percent: number; charging: boo
         // No battery
       }
     } else if (platform === "win32") {
-      const output = execSync("WMIC Path Win32_Battery Get EstimatedChargeRemaining,BatteryStatus 2>nul || echo", { encoding: "utf-8" });
-      const lines = output.trim().split("\n").slice(1);
-
-      if (lines.length > 0) {
-        const parts = lines[0].trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const status = parseInt(parts[0]);
-          const percent = parseInt(parts[1]);
+      const result = spawnSync("powershell.exe", [
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Battery | Select-Object EstimatedChargeRemaining,BatteryStatus | ConvertTo-Json -Compress",
+      ], {
+        encoding: "utf-8",
+        timeout: 5000,
+        windowsHide: true,
+      });
+      const raw = (result.stdout || "").trim();
+      if (raw) {
+        const entries = JSON.parse(raw) as Array<{ EstimatedChargeRemaining?: number | string; BatteryStatus?: number | string }> | { EstimatedChargeRemaining?: number | string; BatteryStatus?: number | string };
+        const battery = Array.isArray(entries) ? entries[0] : entries;
+        if (battery) {
+          const status = Number(battery.BatteryStatus) || 0;
+          const percent = Number(battery.EstimatedChargeRemaining) || 0;
 
           return {
             hasBattery: true,
-            percent: percent || 0,
-            charging: status === 2 || status === 6, // Charging or Charging High
+            percent,
+            charging: status === 2 || status === 6,
             timeRemaining: null,
           };
         }
@@ -2229,18 +2400,50 @@ async function handleHttpRequest(payload: Record<string, unknown>): Promise<Reco
 
   if (!url) throw Object.assign(new Error("url is required"), { code: "EINVAL" });
 
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw Object.assign(new Error("url must be a valid absolute URL"), { code: "EINVAL" });
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw Object.assign(new Error("only http and https URLs are allowed"), { code: "EINVAL" });
+  }
+
+  const normalizedHostname = parsedUrl.hostname.toLowerCase();
+  const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+  if (!loopbackHosts.has(normalizedHostname)) {
+    throw Object.assign(new Error("http.request only allows loopback targets"), { code: "EACCES" });
+  }
+
+  const sanitizedHeaders = Object.fromEntries(
+    Object.entries(headers).filter(([key]) => {
+      const lowered = key.toLowerCase();
+      return ![
+        "host",
+        "connection",
+        "content-length",
+        "transfer-encoding",
+        "upgrade",
+        "x-forwarded-for",
+        "x-real-ip",
+      ].includes(lowered);
+    }),
+  );
+
   const startTime = Date.now();
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body || undefined,
-      signal: controller.signal,
-    });
+      const response = await fetch(parsedUrl, {
+        method,
+        headers: sanitizedHeaders,
+        body: body || undefined,
+        signal: controller.signal,
+      });
 
     clearTimeout(timeoutId);
 
@@ -2491,10 +2694,12 @@ async function handleProxyConnect(payload: Record<string, unknown>): Promise<Rec
   if (!wsBase.startsWith("wss://")) {
     throw Object.assign(new Error("Gateway URL must use https://"), { code: "EPROTO" });
   }
-  const authQuery = currentSessionPassword
-    ? `password=${encodeURIComponent(currentSessionPassword)}`
-    : `code=${encodeURIComponent(currentSessionCode as string)}`;
-  const proxyWsUrl = `${wsBase}/v1/ws/proxy?${authQuery}&tunnelId=${encodeURIComponent(tunnelId)}&role=cli`;
+  const proxyQuery = new URLSearchParams({
+    tunnelId,
+    role: "cli",
+    ...(currentSessionPassword ? {} : { code: currentSessionCode as string }),
+  });
+  const proxyWsUrl = `${wsBase}/v1/ws/proxy?${proxyQuery.toString()}`;
   debugLog("[proxy] connecting cli proxy websocket", {
     tunnelId,
     port,
@@ -2512,7 +2717,16 @@ async function handleProxyConnect(payload: Record<string, unknown>): Promise<Rec
     }
 
     const wsConnectTimeoutMs = Math.min(PROXY_WS_CONNECT_TIMEOUT_MS, Math.max(250, remainingMs));
-    const candidateWs = new WebSocket(proxyWsUrl);
+    const candidateWs = new WebSocket(
+      proxyWsUrl,
+      currentSessionPassword
+        ? {
+            headers: {
+              "x-session-password": currentSessionPassword,
+            },
+          }
+        : undefined,
+    );
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -3137,7 +3351,11 @@ function normalizeGatewayUrl(input: string): string {
 }
 
 async function createQrCode(): Promise<ManagerQrResponse> {
-  const response = await fetch(`${MANAGER_URL}/v2/qr`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  const response = await fetch(`${MANAGER_URL}/v2/qr`, {
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`Failed to create QR code from manager: ${response.status}`);
   }
@@ -3149,10 +3367,14 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
   return await new Promise<AssembleResult>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;
+    const timeout = setTimeout(() => {
+      fail(new Error("Timed out waiting for session assembly"));
+    }, 60_000);
 
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       try {
         ws.close();
       } catch {
@@ -3170,6 +3392,7 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
         }
         if (settled) return;
         settled = true;
+        clearTimeout(timeout);
         ws.send(JSON.stringify({ type: "ack" }));
         resolve({ code: parsed.code, password: parsed.password });
       } catch (error) {
@@ -3189,9 +3412,11 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
 }
 
 async function getAssignedProxyUrl(password: string): Promise<string> {
-  const url = new URL("/v2/proxy", MANAGER_URL);
-  url.searchParams.set("password", password);
-  const response = await fetch(url);
+  const response = await fetch(new URL("/v2/proxy", MANAGER_URL), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
   if (!response.ok) {
     let message = `Failed to get proxy from manager: ${response.status}`;
     try {

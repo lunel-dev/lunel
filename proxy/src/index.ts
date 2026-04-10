@@ -170,10 +170,25 @@ interface AuditLogRow {
 }
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password, X-Session-Password",
 };
+
+function isTrustedRequestOrigin(req: Request): boolean {
+  const originHeader = req.headers.get("origin");
+  if (!originHeader) return true;
+  try {
+    const origin = new URL(originHeader);
+    const hostname = origin.hostname.toLowerCase();
+    return hostname === "lunel.dev"
+      || hostname.endsWith(".lunel.dev")
+      || hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
 
 function generateSecureCode(): string {
   const bytes = randomBytes(CODE_LENGTH);
@@ -370,15 +385,16 @@ function startGateway(): void {
 
     try {
       const validateUrl = new URL("/v2/proxy/validate", managerUrl);
-      validateUrl.searchParams.set("password", password);
-      if (role) {
-        validateUrl.searchParams.set("role", role);
-      }
-      if (typeof generation === "number" && generation > 0) {
-        validateUrl.searchParams.set("generation", String(generation));
-      }
       const res = await fetch(validateUrl, {
-        method: "GET",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          password,
+          ...(role ? { role } : {}),
+          ...(typeof generation === "number" && generation > 0 ? { generation } : {}),
+        }),
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
@@ -1107,8 +1123,11 @@ function startGateway(): void {
 
       const wsV2Match = path.match(/^\/v2\/ws\/(cli|app)$/);
       if (wsV2Match) {
+        if (!isTrustedRequestOrigin(req)) {
+          return Response.json({ error: "untrusted origin" }, { status: 403, headers: corsHeaders });
+        }
         const role = wsV2Match[1] as Role;
-        const password = url.searchParams.get("password");
+        const password = (req.headers.get("x-session-password") || url.searchParams.get("password") || "").trim();
         const rawGeneration = Number(url.searchParams.get("generation") || "0");
         const generation = Number.isFinite(rawGeneration) && rawGeneration > 0 ? rawGeneration : null;
 
@@ -1148,7 +1167,10 @@ function startGateway(): void {
       }
 
       if (path === "/v1/ws/proxy") {
-        const password = url.searchParams.get("password");
+        if (!isTrustedRequestOrigin(req)) {
+          return Response.json({ error: "untrusted origin" }, { status: 403, headers: corsHeaders });
+        }
+        const password = (req.headers.get("x-session-password") || url.searchParams.get("password") || "").trim();
         const tunnelId = url.searchParams.get("tunnelId");
         const role = url.searchParams.get("role") as Role | null;
 

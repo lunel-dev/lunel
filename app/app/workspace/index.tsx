@@ -48,7 +48,7 @@ export default function WorkspaceScreen() {
       drawerStatus,
     });
 
-    if (prev !== sessionState && (sessionState === "ended" || sessionState === "expired" || sessionState === "cli_offline_grace")) {
+    if (prev !== sessionState && (sessionState === "ended" || sessionState === "expired")) {
       Alert.alert(
         'Connection Lost',
         'Your session was disconnected. Run npx lunel-cli again to reconnect.',

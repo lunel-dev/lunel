@@ -1,4 +1,5 @@
 .DS_Store
+node_modules/
 pty/target/
 gateway/manager.db
 gateway/manager.db-shm

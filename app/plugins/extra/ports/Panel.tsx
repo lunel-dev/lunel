@@ -12,6 +12,7 @@ import { X, RefreshCw, AlertTriangle, Wifi, Search } from 'lucide-react-native';
 import PluginHeader, { usePluginHeaderHeight } from '@/components/PluginHeader';
 import NotConnected from '@/components/NotConnected';
 import Loading from '@/components/Loading';
+import { useConnection } from '@/contexts/ConnectionContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { PluginPanelProps } from '../../types';
 import { useApi, PortInfo, ApiError } from '@/hooks/useApi';
@@ -20,6 +21,7 @@ function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
   const { colors, fonts, spacing, radius } = useTheme();
   const headerHeight = usePluginHeaderHeight();
   const { ports: portsApi, isConnected } = useApi();
+  const { trackedProxyPorts, untrackProxyPort } = useConnection();
 
   const [portsList, setPortsList] = useState<PortInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,8 +61,13 @@ function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
     setKillingPorts(prev => new Set(prev).add(port));
     try {
       await portsApi.kill(port);
+      if (trackedProxyPorts.includes(port)) {
+        await untrackProxyPort(port);
+      }
       setPortsList(prev => prev.filter(p => p.port !== port));
-      loadPorts();
+      setTimeout(() => {
+        void loadPorts();
+      }, 750);
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Failed to kill port';
       Alert.alert('Error', message);

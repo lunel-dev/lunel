@@ -27,7 +27,7 @@ const V2_PASSWORD_LENGTH = 256;
 const V2_CODE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
 
 type Role = "cli" | "app";
-type Channel = "control" | "data";
+type Channel = "control" | "data" | "session";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -152,6 +152,7 @@ interface GatewayControlEvent {
     | "connection_event"
     | "manager_command";
   token?: string;
+  password?: string;
   gatewayId?: string;
   gateway?: string;
   ts?: number;
@@ -195,13 +196,16 @@ interface ManagerControlSocketData {
   gatewayUrl?: string;
 }
 
+type GatewaySocketData = WebSocketData | ManagerControlSocketData;
+type GatewaySocket = ServerWebSocket<GatewaySocketData>;
+
 interface AssembleSession {
   code: string;
   createdAt: number;
   expiresAt: number;
   password: string | null;
-  appWs: ServerWebSocket<AssembleWebSocketData> | null;
-  cliWs: ServerWebSocket<AssembleWebSocketData> | null;
+  appWs: GatewaySocket | null;
+  cliWs: GatewaySocket | null;
   appAcked: boolean;
   cliAcked: boolean;
 }
@@ -282,10 +286,37 @@ interface AuditLogRow {
 }
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password, X-Manager-Password",
 };
+
+function corsHeadersForRequest(req: Request): Record<string, string> {
+  const originHeader = req.headers.get("origin");
+  if (originHeader && isTrustedRequestOrigin(req)) {
+    return {
+      ...corsHeaders,
+      "Access-Control-Allow-Origin": originHeader,
+      Vary: "Origin",
+    };
+  }
+  return { ...corsHeaders };
+}
+
+function isTrustedRequestOrigin(req: Request): boolean {
+  const originHeader = req.headers.get("origin");
+  if (!originHeader) return true;
+  try {
+    const origin = new URL(originHeader);
+    const hostname = origin.hostname.toLowerCase();
+    return hostname === "lunel.dev"
+      || hostname.endsWith(".lunel.dev")
+      || hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
 
 function generateSecureCode(): string {
   const bytes = randomBytes(CODE_LENGTH);
@@ -365,13 +396,23 @@ function fromBase64Url(input: string): Buffer {
   return Buffer.from(padded, "base64");
 }
 
-function signJwtToken(claims: Record<string, unknown>, secret: string): string {
+function signJwtToken(claims: object, secret: string): string {
   const header = { alg: "HS256", typ: "JWT" };
   const encodedHeader = toBase64Url(JSON.stringify(header));
   const encodedPayload = toBase64Url(JSON.stringify(claims));
   const signingInput = `${encodedHeader}.${encodedPayload}`;
   const signature = createHmac("sha256", secret).update(signingInput).digest();
   return `${signingInput}.${toBase64Url(signature)}`;
+}
+
+function websocketMessageToString(message: string | Buffer | Uint8Array | ArrayBuffer): string {
+  if (typeof message === "string") {
+    return message;
+  }
+  if (message instanceof ArrayBuffer) {
+    return Buffer.from(message).toString("utf-8");
+  }
+  return Buffer.from(message).toString("utf-8");
 }
 
 function verifyJwtToken(
@@ -1438,7 +1479,7 @@ function startManager(): void {
     }
     if (allowLegacyAdminPassword) {
       if (!managerAdminPassword) return false;
-      const provided = url.searchParams.get("password") || "";
+      const provided = req.headers.get("x-manager-password") || url.searchParams.get("password") || "";
       return provided === managerAdminPassword;
     }
     return false;
@@ -1447,20 +1488,20 @@ function startManager(): void {
   const loadAllProxies = (): ManagerProxyMetrics[] => {
     return listProxiesStmt.all() as ManagerProxyMetrics[];
   };
-  const managerControlSocketsByGateway = new Map<string, Set<ServerWebSocket<ManagerControlSocketData>>>();
+  const managerControlSocketsByGateway = new Map<string, Set<GatewaySocket>>();
 
   const attachGatewayControlSocket = (
     gatewayUrl: string,
-    ws: ServerWebSocket<ManagerControlSocketData>
+    ws: GatewaySocket
   ): void => {
-    const set = managerControlSocketsByGateway.get(gatewayUrl) || new Set<ServerWebSocket<ManagerControlSocketData>>();
+    const set = managerControlSocketsByGateway.get(gatewayUrl) || new Set<GatewaySocket>();
     set.add(ws);
     managerControlSocketsByGateway.set(gatewayUrl, set);
   };
 
   const detachGatewayControlSocket = (
     gatewayUrl: string,
-    ws: ServerWebSocket<ManagerControlSocketData>
+    ws: GatewaySocket
   ): void => {
     const set = managerControlSocketsByGateway.get(gatewayUrl);
     if (!set) return;
@@ -2768,14 +2809,14 @@ function startManager(): void {
   setInterval(cleanupManagerSessions, 60 * 1000);
   setInterval(() => cleanupExpiredV2State(), 30 * 1000);
 
-  Bun.serve({
+  Bun.serve<GatewaySocketData>({
     port: Number(process.env.PORT || 8899),
     fetch(req, server) {
       const url = new URL(req.url);
       const path = url.pathname;
 
       if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders });
+        return new Response(null, { status: 204, headers: corsHeadersForRequest(req) });
       }
 
       if (path === "/v2/qr" && req.method === "GET") {
@@ -2790,6 +2831,9 @@ function startManager(): void {
 
       if (path === "/v2/assemble" && req.method === "GET") {
         cleanupExpiredV2State();
+        if (!isTrustedRequestOrigin(req)) {
+          return Response.json({ error: "untrusted origin" }, { status: 403, headers: corsHeaders });
+        }
         const code = (url.searchParams.get("code") || "").trim();
         const role = (url.searchParams.get("role") || "").trim() as Role;
         if (!code) {
@@ -2806,7 +2850,7 @@ function startManager(): void {
           return Response.json({ error: `${role} already connected for code` }, { status: 409, headers: corsHeaders });
         }
         const upgraded = server.upgrade(req, {
-          data: { type: "assemble", code, role } as AssembleWebSocketData,
+          data: { type: "assemble", code, role },
         });
         if (!upgraded) {
           return Response.json({ error: "upgrade failed" }, { status: 500, headers: corsHeaders });
@@ -2814,107 +2858,119 @@ function startManager(): void {
         return undefined;
       }
 
-      if (path === "/v2/proxy" && req.method === "GET") {
-        cleanupExpiredV2State();
-        const password = (url.searchParams.get("password") || "").trim();
-        if (!password) {
-          return Response.json({ error: "password is required" }, { status: 400, headers: corsHeaders });
+        if (path === "/v2/proxy" && req.method === "POST") {
+          cleanupExpiredV2State();
+          const responseHeaders = corsHeadersForRequest(req);
+          return req
+            .json()
+            .then((body: { password?: string }) => {
+              const password = (body.password || "").trim();
+              if (!password) {
+                return Response.json({ error: "password is required" }, { status: 400, headers: responseHeaders });
+              }
+              const pairing = getPairingBySecretStmt.get(password) as any;
+              if (pairing && Number(pairing.revokedAt || 0) > 0) {
+                return Response.json({ error: "password revoked", reason: "revoked" }, { status: 403, headers: responseHeaders });
+              }
+              const passwordHash = hashPassword(password);
+              const record = issuedPasswordsByHash.get(passwordHash);
+              if (!record || record.expiresAt <= Date.now()) {
+                return Response.json({ error: "password invalid" }, { status: 404, headers: responseHeaders });
+              }
+              if (!record.proxyUrl && getActiveProxyUrls().length === 0) {
+                return Response.json({ error: "no active proxies" }, { status: 503, headers: responseHeaders });
+              }
+              return assignProxyUrl(password).then((assignedRecord) => {
+                if (!assignedRecord || !assignedRecord.proxyUrl) {
+                  return Response.json({ error: "proxy assignment unavailable" }, { status: 503, headers: responseHeaders });
+                }
+                return Response.json({ proxyUrl: assignedRecord.proxyUrl }, { headers: responseHeaders });
+              });
+            })
+            .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: responseHeaders }));
         }
-        const pairing = getPairingBySecretStmt.get(password) as any;
-        if (pairing && Number(pairing.revokedAt || 0) > 0) {
-          return Response.json({ error: "password revoked", reason: "revoked" }, { status: 403, headers: corsHeaders });
-        }
-        const passwordHash = hashPassword(password);
-        const record = issuedPasswordsByHash.get(passwordHash);
-        if (!record || record.expiresAt <= Date.now()) {
-          return Response.json({ error: "password invalid" }, { status: 404, headers: corsHeaders });
-        }
-        if (!record.proxyUrl && getActiveProxyUrls().length === 0) {
-          return Response.json({ error: "no active proxies" }, { status: 503, headers: corsHeaders });
-        }
-        return assignProxyUrl(password).then((record) => {
-          if (!record || !record.proxyUrl) {
-            return Response.json({ error: "proxy assignment unavailable" }, { status: 503, headers: corsHeaders });
-          }
-          return Response.json({ proxyUrl: record.proxyUrl }, { headers: corsHeaders });
-        });
-      }
 
-      if (path === "/v2/reattach/claim" && req.method === "POST") {
+        if (path === "/v2/reattach/claim" && req.method === "POST") {
+          cleanupExpiredV2State();
+          const responseHeaders = corsHeadersForRequest(req);
+          return req
+            .json()
+            .then(async (body: { password?: string; role?: Role }) => {
+              const password = (body.password || "").trim();
+              const role = body.role;
+              if (!password) {
+                return Response.json({ error: "password is required" }, { status: 400, headers: responseHeaders });
+              }
+              if (role !== "app" && role !== "cli") {
+                return Response.json({ error: "role must be app or cli" }, { status: 400, headers: responseHeaders });
+              }
+              const pairing = getPairingBySecretStmt.get(password) as any;
+              if (pairing && Number(pairing.revokedAt || 0) > 0) {
+                return Response.json({ error: "password revoked", reason: "revoked" }, { status: 403, headers: responseHeaders });
+              }
+              const record = await claimReattachSession(password, role);
+              if (!record || !record.proxyUrl) {
+                return Response.json({ error: "reattach unavailable" }, { status: 404, headers: responseHeaders });
+              }
+              return Response.json({
+                proxyUrl: record.proxyUrl,
+                generation: record.generation,
+                expiresAt: record.expiresAt,
+              }, { headers: responseHeaders });
+            })
+            .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: responseHeaders }));
+        }
+
+      if (path === "/v2/proxy/validate" && req.method === "POST") {
         cleanupExpiredV2State();
         return req
           .json()
-          .then(async (body: { password?: string; role?: Role }) => {
+          .then((body: { password?: string; role?: Role; generation?: number }) => {
             const password = (body.password || "").trim();
-            const role = body.role;
+            const role = (body.role || "").trim() as Role;
+            const generation = Number(body.generation || 0);
             if (!password) {
-              return Response.json({ error: "password is required" }, { status: 400, headers: corsHeaders });
+              return Response.json({ valid: false, reason: "missing_password" }, { status: 400, headers: corsHeaders });
             }
-            if (role !== "app" && role !== "cli") {
-              return Response.json({ error: "role must be app or cli" }, { status: 400, headers: corsHeaders });
+            if (role && role !== "app" && role !== "cli") {
+              return Response.json({ valid: false, reason: "invalid_role" }, { status: 400, headers: corsHeaders });
             }
-            const pairing = getPairingBySecretStmt.get(password) as any;
-            if (pairing && Number(pairing.revokedAt || 0) > 0) {
-              return Response.json({ error: "password revoked", reason: "revoked" }, { status: 403, headers: corsHeaders });
+            const record = issuedPasswordsByHash.get(hashPassword(password));
+            if (!record || record.expiresAt <= Date.now()) {
+              return Response.json({ valid: false, reason: "invalid_password" }, { headers: corsHeaders });
             }
-            const record = await claimReattachSession(password, role);
-            if (!record || !record.proxyUrl) {
-              return Response.json({ error: "reattach unavailable" }, { status: 404, headers: corsHeaders });
+            const reattach = getReattachSession(password);
+            if (reattach) {
+              if (role === "app" || role === "cli") {
+                if (!Number.isFinite(generation) || generation < 1) {
+                  return Response.json({
+                    valid: false,
+                    reason: "reattach_generation_required",
+                    proxyUrl: reattach.proxyUrl,
+                    generation: reattach.generation,
+                    code: record.code,
+                  }, { headers: corsHeaders });
+                }
+                if (generation !== Number(reattach.generation || 0)) {
+                  return Response.json({
+                    valid: false,
+                    reason: "stale_generation",
+                    proxyUrl: reattach.proxyUrl,
+                    generation: reattach.generation,
+                    code: record.code,
+                  }, { headers: corsHeaders });
+                }
+              }
+              return Response.json({
+                valid: true,
+                proxyUrl: reattach.proxyUrl,
+                generation: reattach.generation,
+                code: record.code,
+              }, { headers: corsHeaders });
             }
-            return Response.json({
-              proxyUrl: record.proxyUrl,
-              generation: record.generation,
-              expiresAt: record.expiresAt,
-            }, { headers: corsHeaders });
+            return Response.json({ valid: true, proxyUrl: record.proxyUrl, code: record.code }, { headers: corsHeaders });
           })
           .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: corsHeaders }));
-      }
-
-      if (path === "/v2/proxy/validate" && req.method === "GET") {
-        cleanupExpiredV2State();
-        const password = (url.searchParams.get("password") || "").trim();
-        const role = (url.searchParams.get("role") || "").trim() as Role;
-        const generation = Number(url.searchParams.get("generation") || "0");
-        if (!password) {
-          return Response.json({ valid: false, reason: "missing_password" }, { status: 400, headers: corsHeaders });
-        }
-        if (role && role !== "app" && role !== "cli") {
-          return Response.json({ valid: false, reason: "invalid_role" }, { status: 400, headers: corsHeaders });
-        }
-        const record = issuedPasswordsByHash.get(hashPassword(password));
-        if (!record || record.expiresAt <= Date.now()) {
-          return Response.json({ valid: false, reason: "invalid_password" }, { headers: corsHeaders });
-        }
-        const reattach = getReattachSession(password);
-        if (reattach) {
-          if (role === "app" || role === "cli") {
-            if (!Number.isFinite(generation) || generation < 1) {
-              return Response.json({
-                valid: false,
-                reason: "reattach_generation_required",
-                proxyUrl: reattach.proxyUrl,
-                generation: reattach.generation,
-                code: record.code,
-              }, { headers: corsHeaders });
-            }
-            if (generation !== Number(reattach.generation || 0)) {
-              return Response.json({
-                valid: false,
-                reason: "stale_generation",
-                proxyUrl: reattach.proxyUrl,
-                generation: reattach.generation,
-                code: record.code,
-              }, { headers: corsHeaders });
-            }
-          }
-          return Response.json({
-            valid: true,
-            proxyUrl: reattach.proxyUrl,
-            generation: reattach.generation,
-            code: record.code,
-          }, { headers: corsHeaders });
-        }
-        return Response.json({ valid: true, proxyUrl: record.proxyUrl, code: record.code }, { headers: corsHeaders });
       }
 
       if (path === "/health") {
@@ -2924,7 +2980,7 @@ function startManager(): void {
           mode: "manager",
           connectedProxies,
           ring: getHealthyRing(),
-        }, { headers: corsHeaders });
+        }, { headers: corsHeadersForRequest(req) });
       }
 
       if (path === "/v1/gateways" && req.method === "GET") {
@@ -3468,6 +3524,9 @@ function startManager(): void {
       }
 
       if (path === "/v1/gateway/ws") {
+        if (!isTrustedRequestOrigin(req)) {
+          return Response.json({ error: "untrusted origin" }, { status: 403, headers: corsHeaders });
+        }
         const sourceIp = extractClientIp(req);
         const blocked = enforceRateLimit(req, "manager:gateway-ws-upgrade", {
           windowMs: 60_000,
@@ -3489,7 +3548,7 @@ function startManager(): void {
         }
 
         const upgraded = server.upgrade(req, {
-          data: { type: "manager-control", authed: false } as ManagerControlSocketData,
+          data: { type: "manager-control", authed: false },
         });
         if (!upgraded) {
           return Response.json({ error: "upgrade failed" }, { status: 500, headers: corsHeaders });
@@ -3863,16 +3922,16 @@ function startManager(): void {
               return;
             }
             if (assembleData.role === "app") {
-              session.appWs = ws as ServerWebSocket<AssembleWebSocketData>;
+              session.appWs = ws;
             } else {
-              session.cliWs = ws as ServerWebSocket<AssembleWebSocketData>;
+              session.cliWs = ws;
             }
             maybeIssueAssemblePassword(session);
           });
           return;
         }
 
-        (ws.data as ManagerControlSocketData) = {
+        ws.data = {
           type: "manager-control",
           authed: false,
         };
@@ -3913,7 +3972,7 @@ function startManager(): void {
           console.warn(`[gateway] proxy disconnected: ${controlSocketData.gatewayUrl}${typeof reason === "string" && reason ? ` — ${reason}` : ""}`);
           detachGatewayControlSocket(
             controlSocketData.gatewayUrl,
-            ws as ServerWebSocket<ManagerControlSocketData>
+            ws
           );
         }
         if (controlSocketData.gatewayId) {
@@ -3929,7 +3988,7 @@ function startManager(): void {
           const socketData = (ws.data || {}) as Partial<WebSocketData | ManagerControlSocketData>;
           if (socketData.type === "assemble") {
             const assembleData = socketData as AssembleWebSocketData;
-            const raw = typeof message === "string" ? message : Buffer.from(message as ArrayBuffer).toString("utf-8");
+            const raw = websocketMessageToString(message);
             const parsed = JSON.parse(raw) as { type?: string };
             if (parsed.type !== "ack") {
               ws.close(1008, "ack required");
@@ -3952,7 +4011,7 @@ function startManager(): void {
           }
 
           const controlSocketData = socketData as Partial<ManagerControlSocketData>;
-          const raw = typeof message === "string" ? message : Buffer.from(message as ArrayBuffer).toString("utf-8");
+          const raw = websocketMessageToString(message);
           const event = JSON.parse(raw) as GatewayControlEvent;
           if (!controlSocketData.authed) {
             if (event.type === "gateway_auth" && event.password) {
@@ -3961,12 +4020,15 @@ function startManager(): void {
               const proxyRow = gateway ? getProxyPasswordStmt.get(gateway) as { password: string } | null : null;
               const storedPassword = proxyRow?.password || "";
               if (gateway && storedPassword && event.password === storedPassword) {
-                (ws.data as ManagerControlSocketData).authed = true;
-                (ws.data as ManagerControlSocketData).gatewayId = gatewayId || gateway;
-                (ws.data as ManagerControlSocketData).gatewayUrl = gateway;
+                ws.data = {
+                  type: "manager-control",
+                  authed: true,
+                  gatewayId: gatewayId || gateway,
+                  gatewayUrl: gateway,
+                };
                 attachGatewayControlSocket(
                   gateway,
-                  ws as ServerWebSocket<ManagerControlSocketData>
+                  ws
                 );
                 // Send current ring immediately so this proxy doesn't need to wait for next gateway_hello
                 try {

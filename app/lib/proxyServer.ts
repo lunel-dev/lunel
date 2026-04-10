@@ -1,6 +1,12 @@
 import { logger } from '@/lib/logger';
+import { Platform } from 'react-native';
 
 let TcpSocket: typeof import('react-native-tcp-socket').default | null = null;
+type MobileWebSocketOptions = { headers?: Record<string, string> };
+type MobileWebSocketConstructor = {
+  new (url: string, protocols?: string | string[], options?: MobileWebSocketOptions): WebSocket;
+};
+const MobileWebSocket = WebSocket as unknown as MobileWebSocketConstructor;
 try {
   const tcpSocketModule = require('react-native-tcp-socket');
   TcpSocket = (tcpSocketModule?.default ?? tcpSocketModule) as typeof import('react-native-tcp-socket').default;
@@ -442,8 +448,14 @@ async function sniffInitialClientProtocol(
 
 function sendBufferedClientChunks(proxyWs: WebSocket, chunks: Uint8Array[]): void {
   for (const chunk of chunks) {
-    proxyWs.send(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+    proxyWs.send(toOwnedArrayBuffer(chunk));
   }
+}
+
+function toOwnedArrayBuffer(source: Uint8Array): ArrayBuffer {
+  const payload = new Uint8Array(source.byteLength);
+  payload.set(source);
+  return payload.buffer;
 }
 
 function maybeLogClientPayload(tunnel: TunnelInfo, chunk: Uint8Array): void {
@@ -535,6 +547,7 @@ function maybeFinalizeTunnel(tunnelId: string): void {
 
 async function connectProxyWsWithRetry(
   proxyWsUrl: string,
+  sessionPassword: string | null,
   getRemainingSetupMs: () => number,
 ): Promise<WebSocket> {
   let lastError: Error | null = null;
@@ -549,7 +562,27 @@ async function connectProxyWsWithRetry(
     }
 
     const connectTimeoutMs = Math.min(PROXY_WS_CONNECT_TIMEOUT_MS, Math.max(250, remainingMs));
-    const proxyWs = new WebSocket(proxyWsUrl);
+    const wsUrl = (() => {
+      if (Platform.OS !== 'web' || !sessionPassword) {
+        return proxyWsUrl;
+      }
+      const url = new URL(proxyWsUrl);
+      url.searchParams.set('password', sessionPassword);
+      return url.toString();
+    })();
+    const proxyWs = Platform.OS === 'web'
+      ? new WebSocket(wsUrl)
+      : new MobileWebSocket(
+          wsUrl,
+          undefined,
+          sessionPassword
+            ? {
+                headers: {
+                  'x-session-password': sessionPassword,
+                },
+              }
+            : undefined,
+        );
     proxyWs.binaryType = 'arraybuffer';
 
     try {
@@ -825,11 +858,13 @@ async function handleIncomingConnection(tcpSocket: any, port: number): Promise<v
     }
 
     // Step 2: Open our side of the proxy WS
-    const authQuery = sessionPassword
-      ? `password=${encodeURIComponent(sessionPassword)}`
-      : `code=${encodeURIComponent(sessionCode)}`;
+    const proxyQuery = new URLSearchParams({
+      tunnelId,
+      role: 'app',
+      ...(sessionPassword ? {} : { code: sessionCode }),
+    });
     const gatewayBase = activeGatewayWsUrl || failoverGatewayWsUrls[0] || DEFAULT_GATEWAY_WS_URL;
-    const proxyWsUrl = `${gatewayBase}/v1/ws/proxy?${authQuery}&tunnelId=${encodeURIComponent(tunnelId)}&role=app`;
+    const proxyWsUrl = `${gatewayBase}/v1/ws/proxy?${proxyQuery.toString()}`;
     logger.info('proxy', 'connecting app proxy websocket', {
       tunnelId,
       port,
@@ -837,7 +872,7 @@ async function handleIncomingConnection(tcpSocket: any, port: number): Promise<v
       authMode: sessionPassword ? 'password' : 'code',
       initialProtocol,
     });
-    const proxyWs = await connectProxyWsWithRetry(proxyWsUrl, getRemainingSetupMs);
+    const proxyWs = await connectProxyWsWithRetry(proxyWsUrl, sessionPassword, getRemainingSetupMs);
     tunnel.proxyWs = proxyWs;
     logger.info('proxy', 'app proxy websocket connected', { tunnelId, port });
 
@@ -884,7 +919,7 @@ async function handleIncomingConnection(tcpSocket: any, port: number): Promise<v
         if (data instanceof ArrayBuffer) {
           proxyWs.send(data);
         } else if (data.buffer) {
-          proxyWs.send(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+          proxyWs.send(toOwnedArrayBuffer(normalizeChunkToUint8Array(data) ?? new Uint8Array(0)));
         } else {
           proxyWs.send(data);
         }

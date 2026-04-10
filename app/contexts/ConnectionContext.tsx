@@ -92,6 +92,12 @@ export interface StoredSession {
   savedAt: number;
 }
 
+interface StoredSessionFallbackRecord {
+  sessionCode: string | null;
+  gateways: string[];
+  savedAt: number;
+}
+
 export interface PairedSession extends StoredSession {
   hostname: string;
   root: string;
@@ -461,8 +467,74 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     await persistPairedSessions(deduped.slice(0, 50));
   }, [getPairedSessions, persistPairedSessions]);
 
+  const saveStoredSession = useCallback(async (session: StoredSession): Promise<void> => {
+    const raw = JSON.stringify(session);
+    const fallbackRaw = JSON.stringify({
+      sessionCode: session.sessionCode,
+      gateways: session.gateways,
+      savedAt: session.savedAt,
+    } satisfies StoredSessionFallbackRecord);
+    try {
+      await SecureStore.setItemAsync(LAST_SESSION_STORAGE_KEY, raw);
+    } catch {
+      // fall through to async storage fallback
+    }
+    try {
+      await AsyncStorage.setItem(LAST_SESSION_FALLBACK_STORAGE_KEY, fallbackRaw);
+    } catch {
+      // best effort
+    }
+  }, []);
+
   const getStoredSession = useCallback(async (): Promise<StoredSession | null> => {
-    return null;
+    const parseStoredSession = (raw: string | null): StoredSession | null => {
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as Partial<StoredSession>;
+        if (typeof parsed.sessionPassword !== 'string' || !parsed.sessionPassword) return null;
+        return {
+          sessionCode: typeof parsed.sessionCode === 'string' ? parsed.sessionCode : null,
+          sessionPassword: parsed.sessionPassword,
+          gateways: Array.isArray(parsed.gateways) ? parsed.gateways.filter((value): value is string => typeof value === 'string') : [],
+          savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    try {
+      const secureValue = await SecureStore.getItemAsync(LAST_SESSION_STORAGE_KEY);
+      const parsedSecure = parseStoredSession(secureValue);
+      if (parsedSecure) return parsedSecure;
+    } catch {
+      // fall through to fallback storage
+    }
+
+    try {
+      const fallbackValue = await AsyncStorage.getItem(LAST_SESSION_FALLBACK_STORAGE_KEY);
+      const parsedFallback = parseStoredSession(fallbackValue);
+      if (parsedFallback) {
+        return parsedFallback;
+      }
+
+      if (!fallbackValue) {
+        return null;
+      }
+
+      try {
+        const parsedFallbackRecord = JSON.parse(fallbackValue) as Partial<StoredSessionFallbackRecord>;
+        logger.info('connection', 'stored session fallback found without secure secret; ignoring insecure resume fallback', {
+          hasSessionCode: typeof parsedFallbackRecord.sessionCode === 'string' && parsedFallbackRecord.sessionCode.length > 0,
+          gatewayCount: Array.isArray(parsedFallbackRecord.gateways) ? parsedFallbackRecord.gateways.length : 0,
+        });
+      } catch {
+        // ignore malformed fallback payloads
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }, []);
 
   const clearStoredSession = useCallback(async (): Promise<void> => {
@@ -487,7 +559,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     ns: string,
     action: string,
     payload: Record<string, unknown> = {},
-    timeoutMs = 30000,
+    timeoutMs = 60000,
   ): Promise<Response> => {
     return new Promise((resolve, reject) => {
       const transport = v2TransportRef.current;
@@ -536,7 +608,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const sendPlaintextSystemRequestV2 = useCallback((
     action: string,
     payload: Record<string, unknown> = {},
-    timeoutMs = 30000,
+    timeoutMs = 60000,
   ): Promise<Response> => {
     return new Promise((resolve, reject) => {
       const transport = v2TransportRef.current;
@@ -846,8 +918,13 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
             gateway,
             generation,
             reason,
+            appState: appStateRef.current,
           });
           if (manualDisconnectRef.current || reconnectingRef.current) return;
+          if (appStateRef.current !== 'active') {
+            setReconnectUiState('reconnecting');
+            return;
+          }
           void runReconnectLoopRef.current?.('transport_closed');
         },
       },
@@ -880,13 +957,14 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     networkReachableRef.current = true;
 
     if (sessionPasswordRef.current) {
+      const storedSession: StoredSession = {
+        sessionCode: sessionCodeRef.current,
+        sessionPassword: sessionPasswordRef.current,
+        gateways: gatewaysRef.current,
+        savedAt: Date.now(),
+      };
       try {
-        await savePairedSession({
-          sessionCode: sessionCodeRef.current,
-          sessionPassword: sessionPasswordRef.current,
-          gateways: gatewaysRef.current,
-          savedAt: Date.now(),
-        }, {
+        await savePairedSession(storedSession, {
           hostname: String((response.payload as Record<string, unknown>).hostname ?? ''),
           rootDir: String((response.payload as Record<string, unknown>).rootDir ?? ''),
         });
@@ -895,8 +973,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      await saveStoredSession(storedSession);
     }
-  }, [clearPendingRequests, clearStoredSession, generateId, savePairedSession, sendMessageV2]);
+  }, [clearPendingRequests, clearStoredSession, generateId, savePairedSession, saveStoredSession, sendMessageV2]);
 
   const assembleWithCode = useCallback(async (code: string): Promise<AssembleResult> => {
     const wsUrl = `${MANAGER_URL.replace(/^https:/, 'wss:')}/v2/assemble?code=${encodeURIComponent(code)}&role=app`;
@@ -1023,8 +1102,13 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const getAssignedProxyUrl = useCallback(async (password: string): Promise<string> => {
     const url = new URL('/v2/proxy', MANAGER_URL);
-    url.searchParams.set('password', password);
-    const res = await fetch(url.toString());
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ password }),
+    });
     if (!res.ok) {
       let message = `Proxy lookup failed (${res.status})`;
       try {
@@ -1221,8 +1305,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       return;
     }
 
-    logger.warn('connection', 'manager reachability lost; entering offline state');
+    logger.warn('connection', 'manager reachability lost; entering degraded connectivity state');
     networkReachableRef.current = false;
+    if (status === 'connected' && v2TransportRef.current) {
+      return;
+    }
     reconnectLoopActiveRef.current = false;
     reconnectingRef.current = false;
     clearPendingRequests('Offline');
@@ -1230,7 +1317,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     v2TransportRef.current?.close();
     v2TransportRef.current = null;
     setReconnectUiState('offline');
-  }, [clearPendingRequests, interactionBlockReason, setReconnectUiState]);
+  }, [clearPendingRequests, interactionBlockReason, setReconnectUiState, status]);
 
   const handleConnectivityRestored = useCallback(() => {
     if (networkReachableRef.current) {
@@ -1239,10 +1326,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
     logger.info('connection', 'manager reachability restored');
     networkReachableRef.current = true;
-    if (!manualDisconnectRef.current && sessionPasswordRef.current) {
+    if (!manualDisconnectRef.current && sessionPasswordRef.current && status !== 'connected') {
       void runReconnectLoop('network_restored');
     }
-  }, [runReconnectLoop]);
+  }, [runReconnectLoop, status]);
 
   const cleanupSockets = useCallback((clearState: boolean) => {
     logger.info('connection', 'cleaning up sockets', { clearState });
@@ -1277,8 +1364,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     manualDisconnectRef.current = true;
     setIsReconnecting(false);
     logger.info('connection', 'manual disconnect requested');
+    void clearStoredSession();
     cleanupSockets(true);
-  }, [cleanupSockets]);
+  }, [clearStoredSession, cleanupSockets]);
 
   const endSession = useCallback(async () => {
     logger.info('connection', 'ending session');
@@ -1517,10 +1605,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       clearInterval(interval);
     };
   }, [handleConnectivityLost, handleConnectivityRestored]);
-
-  useEffect(() => {
-    void clearStoredSession();
-  }, [clearStoredSession]);
 
   useEffect(() => {
     logger.info('connection', 'provider state updated', {

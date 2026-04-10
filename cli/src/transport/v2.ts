@@ -82,6 +82,8 @@ export class V2SessionTransport {
   private keyPair: KeyPair | null = null;
   private remotePublicKey: Uint8Array | null = null;
   private sessionKeys: SessionKeys | null = null;
+  private readonly receivedNonceKeys = new Set<string>();
+  private readonly receivedNonceOrder: string[] = [];
   private secureReadyResolve: (() => void) | null = null;
   private secureReadyReject: ((error: Error) => void) | null = null;
   private secureReadyPromise: Promise<void> | null = null;
@@ -107,12 +109,15 @@ export class V2SessionTransport {
     const wsUrl = buildSessionV2WsUrl(
       this.options.gatewayUrl,
       this.options.role,
-      this.options.password,
       this.options.generation,
     );
 
     await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, {
+        headers: {
+          "x-session-password": this.options.password,
+        },
+      });
       let opened = false;
       this.ws = ws;
       this.closed = false;
@@ -237,6 +242,7 @@ export class V2SessionTransport {
 
     const nonce = frame.payload.subarray(0, sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
     const ciphertext = frame.payload.subarray(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    this.assertFreshNonce(nonce);
     const plaintext = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
       null,
       ciphertext,
@@ -433,6 +439,8 @@ export class V2SessionTransport {
   private resetPeerSession(): void {
     this.remotePublicKey = null;
     this.sessionKeys = null;
+    this.receivedNonceKeys.clear();
+    this.receivedNonceOrder.length = 0;
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.state = "open";
     } else {
@@ -476,6 +484,21 @@ export class V2SessionTransport {
     }
     const framed = encodeV2EncryptedFrame(ciphertext);
     this.ws.send(framed);
+  }
+
+  private assertFreshNonce(nonce: Uint8Array): void {
+    const nonceKey = Buffer.from(nonce).toString("hex");
+    if (this.receivedNonceKeys.has(nonceKey)) {
+      throw new Error("replayed encrypted frame");
+    }
+    this.receivedNonceKeys.add(nonceKey);
+    this.receivedNonceOrder.push(nonceKey);
+    if (this.receivedNonceOrder.length > 2048) {
+      const oldest = this.receivedNonceOrder.shift();
+      if (oldest) {
+        this.receivedNonceKeys.delete(oldest);
+      }
+    }
   }
 
   private markSecure(): void {

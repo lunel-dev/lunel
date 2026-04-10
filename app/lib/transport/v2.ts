@@ -1,4 +1,5 @@
 import sodium from 'react-native-libsodium';
+import { Platform } from 'react-native';
 import type {
   EncryptedProtocolEnvelope,
   EventMessage,
@@ -19,9 +20,20 @@ import {
 } from './protocol';
 
 type TransportState = 'idle' | 'connecting' | 'open' | 'handshaking' | 'secure' | 'closed';
+type MobileWebSocketOptions = { headers?: Record<string, string> };
+type MobileWebSocketConstructor = {
+  new (url: string, protocols?: string | string[], options?: MobileWebSocketOptions): WebSocket;
+};
+const MobileWebSocket = WebSocket as unknown as MobileWebSocketConstructor;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+function toOwnedArrayBuffer(source: Uint8Array): ArrayBuffer {
+  const payload = new Uint8Array(source.byteLength);
+  payload.set(source);
+  return payload.buffer;
+}
 
 export interface V2TransportHandlers {
   onSystemMessage: (message: SystemMessage) => Promise<void> | void;
@@ -82,6 +94,8 @@ export class V2SessionTransport {
   private keyPair: KeyPair | null = null;
   private remotePublicKey: Uint8Array | null = null;
   private sessionKeys: SessionKeys | null = null;
+  private readonly receivedNonceKeys = new Set<string>();
+  private readonly receivedNonceOrder: string[] = [];
   private secureReadyResolve: (() => void) | null = null;
   private secureReadyReject: ((error: Error) => void) | null = null;
   private secureReadyPromise: Promise<void> | null = null;
@@ -107,12 +121,18 @@ export class V2SessionTransport {
     const wsUrl = buildSessionV2WsUrl(
       this.options.gatewayUrl,
       this.options.role,
-      this.options.password,
       this.options.generation,
+      Platform.OS === 'web' ? this.options.password : null,
     );
 
     await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = Platform.OS === 'web'
+        ? new WebSocket(wsUrl)
+        : new MobileWebSocket(wsUrl, undefined, {
+            headers: {
+              'x-session-password': this.options.password,
+            },
+          });
       let opened = false;
       this.ws = ws;
       this.closed = false;
@@ -251,6 +271,7 @@ export class V2SessionTransport {
 
     const nonce = frame.payload.subarray(0, sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
     const ciphertext = frame.payload.subarray(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    this.assertFreshNonce(nonce);
     const plaintext = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
       null,
       ciphertext,
@@ -448,6 +469,8 @@ export class V2SessionTransport {
   private resetPeerSession(): void {
     this.remotePublicKey = null;
     this.sessionKeys = null;
+    this.receivedNonceKeys.clear();
+    this.receivedNonceOrder.length = 0;
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.state = 'open';
     } else {
@@ -490,7 +513,24 @@ export class V2SessionTransport {
       throw new Error('v2 transport is not connected');
     }
     const framed = encodeV2EncryptedFrame(ciphertext);
-    this.ws.send(framed.buffer.slice(framed.byteOffset, framed.byteOffset + framed.byteLength));
+    this.ws.send(toOwnedArrayBuffer(framed));
+  }
+
+  private assertFreshNonce(nonce: Uint8Array): void {
+    const nonceKey = Array.from(nonce)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('');
+    if (this.receivedNonceKeys.has(nonceKey)) {
+      throw new Error('replayed encrypted frame');
+    }
+    this.receivedNonceKeys.add(nonceKey);
+    this.receivedNonceOrder.push(nonceKey);
+    if (this.receivedNonceOrder.length > 2048) {
+      const oldest = this.receivedNonceOrder.shift();
+      if (oldest) {
+        this.receivedNonceKeys.delete(oldest);
+      }
+    }
   }
 
   private markSecure(): void {

@@ -21,6 +21,10 @@ const SSE_BACKOFF_INITIAL_MS = 500;
 const SSE_BACKOFF_CAP_MS = 30_000;
 const SSE_MAX_RETRIES = 20;
 
+interface RequestInitWithDuplex extends RequestInit {
+  duplex?: "half";
+}
+
 function redactSensitive(input: unknown): string {
   const text = typeof input === "string" ? input : JSON.stringify(input);
   return text
@@ -72,9 +76,27 @@ export class OpenCodeProvider implements AIProvider {
     });
     if (VERBOSE_AI_LOGS) console.log(`OpenCode server listening on ${this.server.url}`);
 
+    const normalizedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<globalThis.Response> => {
+      if (typeof input === "string" || input instanceof URL) {
+        return await globalThis.fetch(input, init);
+      }
+
+      const request = input;
+      const requestInit: RequestInitWithDuplex = {
+        method: request.method,
+        headers: request.headers,
+        signal: request.signal,
+        redirect: request.redirect,
+        ...(request.body ? { body: request.body, duplex: "half" as const } : {}),
+        ...(init || {}),
+      };
+      return await globalThis.fetch(request.url, requestInit);
+    };
+
     this.client = createOpencodeClient({
       baseUrl: this.server.url,
       headers: { Authorization: authHeader },
+      fetch: normalizedFetch,
     });
     if (VERBOSE_AI_LOGS) console.log("OpenCode ready.\n");
   }

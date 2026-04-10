@@ -3693,6 +3693,32 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                     </TouchableOpacity>
                   ) : null}
 
+                  <TouchableOpacity
+                    style={[
+                      styles.modelButton,
+                      {
+                        borderColor: showDetailedView ? colors.accent.default : colors.border.secondary,
+                        backgroundColor: showDetailedView ? colors.accent.default + "18" : "transparent",
+                        maxWidth: 180,
+                      },
+                    ]}
+                    onPress={handleDetailedViewAction}
+                    activeOpacity={0.7}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.modelText,
+                        {
+                          color: showDetailedView ? colors.accent.default : colors.fg.default,
+                          fontFamily: fonts.sans.regular,
+                        },
+                      ]}
+                    >
+                      {showDetailedView ? "Thinking on" : "Thinking off"}
+                    </Text>
+                  </TouchableOpacity>
+
                   <View style={{ flex: 1 }} />
 
                   <TouchableOpacity
