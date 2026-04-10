@@ -118,21 +118,22 @@ export class V2SessionTransport {
       this.secureReadyReject = reject;
     });
 
-    const wsUrl = buildSessionV2WsUrl(
-      this.options.gatewayUrl,
-      this.options.role,
-      this.options.generation,
-      Platform.OS === 'web' ? this.options.password : null,
-    );
+    const connectAttempt = async (useLegacyQuery: boolean): Promise<void> => {
+      const wsUrl = buildSessionV2WsUrl(
+        this.options.gatewayUrl,
+        this.options.role,
+        this.options.generation,
+        Platform.OS === 'web' || useLegacyQuery ? this.options.password : null,
+      );
 
-    await new Promise<void>((resolve, reject) => {
-      const ws = Platform.OS === 'web'
-        ? new WebSocket(wsUrl)
-        : new MobileWebSocket(wsUrl, undefined, {
-            headers: {
-              'x-session-password': this.options.password,
-            },
-          });
+      await new Promise<void>((resolve, reject) => {
+        const ws = Platform.OS === 'web'
+          ? new WebSocket(wsUrl)
+          : new MobileWebSocket(wsUrl, undefined, {
+              headers: {
+                'x-session-password': this.options.password,
+              },
+            });
       let opened = false;
       this.ws = ws;
       this.closed = false;
@@ -187,7 +188,19 @@ export class V2SessionTransport {
           // ignore close errors after socket failure
         }
       };
-    });
+      });
+    };
+
+    if (Platform.OS === 'web') {
+      await connectAttempt(false);
+    } else {
+      try {
+        await connectAttempt(false);
+      } catch (error) {
+        this.options.debugLog?.('[transport:v2] primary connect failed', error instanceof Error ? error.message : String(error));
+        await connectAttempt(true);
+      }
+    }
 
     if (!this.secureReadyPromise) {
       throw new Error('secure readiness promise missing');
@@ -422,6 +435,9 @@ export class V2SessionTransport {
       if (!this.sessionKeys) {
         throw new Error('missing session keys before server_ready');
       }
+      if (!this.remotePublicKey) {
+        throw new Error('missing remote public key before server_ready');
+      }
       const expectedAuth = this.computeHandshakeAuth(
         'server_ready',
         'cli',
@@ -488,7 +504,7 @@ export class V2SessionTransport {
     const authKey = sodium.crypto_generichash(
       sodium.crypto_auth_KEYBYTES,
       encodeUtf8(this.options.sessionSecret),
-      undefined,
+      null,
     ) as Uint8Array;
     const parts = [
       phase,

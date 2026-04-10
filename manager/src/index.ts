@@ -2858,12 +2858,14 @@ function startManager(): void {
         return undefined;
       }
 
-        if (path === "/v2/proxy" && req.method === "POST") {
+        if (path === "/v2/proxy" && (req.method === "POST" || req.method === "GET")) {
           cleanupExpiredV2State();
           const responseHeaders = corsHeadersForRequest(req);
-          return req
-            .json()
-            .then((body: { password?: string }) => {
+          const bodyPromise: Promise<{ password?: string }> = req.method === "POST"
+            ? req.json().catch(() => { throw new Error("invalid body"); }) as Promise<{ password?: string }>
+            : Promise.resolve({ password: url.searchParams.get("password") || "" });
+          return bodyPromise
+            .then((body) => {
               const password = (body.password || "").trim();
               if (!password) {
                 return Response.json({ error: "password is required" }, { status: 400, headers: responseHeaders });
@@ -2890,12 +2892,17 @@ function startManager(): void {
             .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: responseHeaders }));
         }
 
-        if (path === "/v2/reattach/claim" && req.method === "POST") {
+        if (path === "/v2/reattach/claim" && (req.method === "POST" || req.method === "GET")) {
           cleanupExpiredV2State();
           const responseHeaders = corsHeadersForRequest(req);
-          return req
-            .json()
-            .then(async (body: { password?: string; role?: Role }) => {
+          const bodyPromise: Promise<{ password?: string; role?: Role }> = req.method === "POST"
+            ? req.json().catch(() => { throw new Error("invalid body"); }) as Promise<{ password?: string; role?: Role }>
+            : Promise.resolve({
+                password: url.searchParams.get("password") || "",
+                role: (url.searchParams.get("role") || "") as Role,
+              });
+          return bodyPromise
+            .then(async (body) => {
               const password = (body.password || "").trim();
               const role = body.role;
               if (!password) {
