@@ -2263,6 +2263,8 @@ function handlePortsKill(payload: Record<string, unknown>): Record<string, unkno
       killProcessTree(currentPid);
     }
 
+    trackedProxyPorts.delete(portNum);
+
     const remainingPids = lookupListeningPidsForPort(portNum);
     return {
       port: portNum,
@@ -2273,6 +2275,7 @@ function handlePortsKill(payload: Record<string, unknown>): Record<string, unkno
       currentPid: remainingPids[0] ?? null,
     };
   } catch (err) {
+    trackedProxyPorts.delete(portNum);
     throw Object.assign(new Error(`Failed to kill process on port ${portNum}`), { code: "EPERM" });
   }
 }

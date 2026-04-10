@@ -104,7 +104,7 @@ export class V2SessionTransport {
     this.options = options;
   }
 
-  async connect(): Promise<void> {
+  async connect(timeoutMs = 90_000): Promise<void> {
     if (this.ws && this.ws.readyState <= WebSocket.OPEN) {
       if (this.secureReadyPromise) {
         return await this.secureReadyPromise;
@@ -205,7 +205,14 @@ export class V2SessionTransport {
     if (!this.secureReadyPromise) {
       throw new Error('secure readiness promise missing');
     }
-    await this.secureReadyPromise;
+    const secureTimeout = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        this.failSecure(new Error('secure handshake timed out'));
+        this.close();
+        reject(new Error('secure handshake timed out'));
+      }, timeoutMs);
+    });
+    await Promise.race([this.secureReadyPromise, secureTimeout]);
   }
 
   async sendMessage(message: Message): Promise<void> {

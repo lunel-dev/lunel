@@ -1004,9 +1004,14 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       const ws = new WebSocket(wsUrl);
       let settled = false;
 
+      const assembleTimeout = setTimeout(() => {
+        fail(new Error('Timed out waiting for session assembly'));
+      }, 60_000);
+
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(assembleTimeout);
         logger.warn('connection', 'assemble websocket failed', {
           code,
           wsUrl,
@@ -1043,6 +1048,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
           }
           if (settled) return;
           settled = true;
+          clearTimeout(assembleTimeout);
           ws.send(JSON.stringify({ type: 'ack' }));
           logger.info('connection', 'assemble websocket completed', {
             code,
@@ -1086,13 +1092,14 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ password }),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
       let message = await readManagerErrorMessage(res, `Proxy lookup failed (${res.status})`);
       if (shouldRetryLegacyManagerRoute(res.status, message)) {
         const legacyUrl = new URL('/v2/proxy', MANAGER_URL);
         legacyUrl.searchParams.set('password', password);
-        res = await fetch(legacyUrl.toString());
+        res = await fetch(legacyUrl.toString(), { signal: AbortSignal.timeout(30_000) });
         if (res.ok) {
           const payload = await res.json() as { proxyUrl?: string };
           if (typeof payload.proxyUrl !== 'string' || !payload.proxyUrl) {
@@ -1120,6 +1127,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         password,
         role: 'app',
       }),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       let message = await readManagerErrorMessage(response, `Reattach failed (${response.status})`);
@@ -1127,7 +1135,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         const legacyUrl = new URL('/v2/reattach/claim', MANAGER_URL);
         legacyUrl.searchParams.set('password', password);
         legacyUrl.searchParams.set('role', 'app');
-        response = await fetch(legacyUrl.toString());
+        response = await fetch(legacyUrl.toString(), { signal: AbortSignal.timeout(30_000) });
         if (response.ok) {
           const payload = await response.json() as { proxyUrl?: string; generation?: number; expiresAt?: number };
           if (typeof payload.proxyUrl !== 'string' || !payload.proxyUrl) {
