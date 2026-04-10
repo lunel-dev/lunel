@@ -14,7 +14,7 @@ import * as fs from "fs/promises";
 import * as fssync from "fs";
 import * as path from "path";
 import * as os from "os";
-import { randomBytes } from "crypto";
+import { randomBytes, createHash } from "crypto";
 import { spawn, spawnSync, ChildProcess, execSync } from "child_process";
 import { createServer, createConnection, Socket } from "net";
 import { createInterface } from "readline";
@@ -36,18 +36,23 @@ const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
 const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
-const PTY_RELEASES: Record<string, { fileName: string; url: string }> = {
+// sha256 hashes are pinned against the published GitHub Release assets.
+// When a new PTY binary is released, update both the fileName/url AND the sha256.
+const PTY_RELEASES: Record<string, { fileName: string; url: string; sha256: string }> = {
   "linux:x64": {
     fileName: "lunel-pty-linux-x8664-0",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-linux-x8664-0`,
+    sha256: "422c260e31cf6324e0347aaf06747b8a4ef50a94f587292b293281f28f7113b1",
   },
   "darwin:arm64": {
     fileName: "lunel-pty-macos-arm64-0",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-macos-arm64-0`,
+    sha256: "8d2fc8cfafc5e3e3b3aecc8045222659d11d9d48d7aeeee6ba4e419930dab5fc",
   },
   "win32:x64": {
     fileName: "lunel-pty-windows-x8664-1.exe",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-windows-x8664-1.exe`,
+    sha256: "c80c522081a339e148e9c9309ea289d7b7ba992462d66aa010a6e7719ba7dfa2",
   },
 };
 
@@ -1450,7 +1455,11 @@ function getPtyBinaryPath(fileName: string): string {
   return path.join(getLunelConfigDir(), "pty-releases", fileName);
 }
 
-async function downloadPtyBinary(url: string, destination: string): Promise<void> {
+async function downloadPtyBinary(
+  url: string,
+  destination: string,
+  expectedSha256: string
+): Promise<void> {
   const tempPath = `${destination}.download`;
   console.log("[pty] Downloading PTY [downloading...]");
   const response = await fetch(url);
@@ -1474,6 +1483,19 @@ async function downloadPtyBinary(url: string, destination: string): Promise<void
   }
 
   const binary = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+
+  // Verify integrity before writing anything to disk. The binary is fully assembled
+  // in memory here — a mismatch aborts cleanly with no partial artifact on disk.
+  const actualSha256 = createHash("sha256").update(binary).digest("hex");
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(
+      `[pty] Integrity check failed for PTY binary.\n` +
+      `  Expected: ${expectedSha256}\n` +
+      `  Got:      ${actualSha256}\n` +
+      `  The release asset may be tampered with or corrupted. Aborting.`
+    );
+  }
+
   await fs.writeFile(tempPath, binary);
   if (os.platform() !== "win32") {
     await fs.chmod(tempPath, 0o755);
@@ -1494,10 +1516,24 @@ async function ensurePtyBinaryReady(): Promise<string | null> {
 
     try {
       await fs.access(binPath);
+      // Verify the cached binary's integrity — the file could have been tampered
+      // with locally. Re-download automatically on mismatch rather than hard-failing,
+      // since a new CLI version may ship a different PTY binary hash.
+      const cached = await fs.readFile(binPath);
+      const cachedHash = createHash("sha256").update(cached).digest("hex");
+      if (cachedHash !== release.sha256) {
+        console.warn(`[pty] Cached PTY binary failed integrity check. Re-downloading...`);
+        await fs.unlink(binPath);
+        throw new Error("hash-mismatch"); // fall through to the download path below
+      }
       return binPath;
-    } catch {
-      console.log(`[pty] PTY missing. Installing ${release.fileName}...`);
-      await downloadPtyBinary(release.url, binPath);
+    } catch (err: unknown) {
+      // "hash-mismatch" is thrown above intentionally; all other errors mean the
+      // file is genuinely absent (fs.access / fs.readFile failed on first run).
+      if (!(err instanceof Error && err.message === "hash-mismatch")) {
+        console.log(`[pty] PTY missing. Installing ${release.fileName}...`);
+      }
+      await downloadPtyBinary(release.url, binPath, release.sha256);
       return binPath;
     }
   })();
