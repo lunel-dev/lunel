@@ -181,14 +181,20 @@ function AISkeleton({ colors, paddingTop = 0 }: { colors: any; paddingTop?: numb
 }
 
 function formatBackendSessionTitle(backend: AiBackend, title?: string) {
-  return backend === "codex" ? "Codex" : "OpenCode";
+  const label = backend === "codex" ? "Codex" : "OpenCode";
+  if (title && !isGenericSessionTitle(title)) return title;
+  return label;
 }
 
 function isGenericSessionTitle(title?: string): boolean {
   const normalized = (title || "").trim().toLowerCase();
-  return normalized.length === 0
-    || normalized === "conversation"
-    || /^session\s+\d+$/.test(normalized);
+  if (normalized.length === 0) return true;
+  if (normalized === "conversation" || normalized === "new conversation") return true;
+  if (/^session[\s_-]*\d*$/.test(normalized)) return true;
+  if (/^(new\s+)?chat[\s_-]*\d*$/.test(normalized)) return true;
+  if (/^untitled[\s_-]*\d*$/.test(normalized)) return true;
+  if (/^\d+$/.test(normalized)) return true;
+  return false;
 }
 
 function resolveSessionTitle(backend: AiBackend, sessionId: string, title?: string, fallbackTitle?: string): string {
@@ -1703,28 +1709,32 @@ function ConfigureSheet({
               sheetAnimatedStyle,
             ]}
         >
+          <View style={{ alignItems: "center", paddingTop: 8, paddingBottom: 4 }}>
+            <View style={{ width: 36, height: 4, borderRadius: 2, backgroundColor: colors.border.secondary }} />
+          </View>
           <View style={styles.sheetHeader}>
-            <Text style={{ flex: 1, color: colors.fg.default, fontSize: 18, fontFamily: fonts.sans.semibold }}>Configure</Text>
+            <Text style={{ flex: 1, color: colors.fg.default, fontSize: 17, fontFamily: fonts.sans.semibold, letterSpacing: -0.3 }}>Configure</Text>
             <TouchableOpacity
               onPress={() => {
                 void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 onClose();
               }}
               activeOpacity={0.7}
-              style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: colors.bg.base, alignItems: "center", justifyContent: "center" }}
+              style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: colors.bg.base, alignItems: "center", justifyContent: "center" }}
             >
-              <X size={18} color={colors.fg.default} strokeWidth={2} />
+              <X size={16} color={colors.fg.muted} strokeWidth={2.5} />
             </TouchableOpacity>
           </View>
 
           <ScrollView
             style={{ flex: 1, marginBottom: 20 }}
-            contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 18, gap: 10 }}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24, gap: 20 }}
             keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
           >
             {backend === "opencode" && modeOptions.length > 0 ? (
               <View style={{ gap: 8 }}>
-                <Text style={{ color: colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
+                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2, textTransform: "uppercase", letterSpacing: 0.5 }}>
                   Agent Mode
                 </Text>
                 {modeOptions.map((option) => {
@@ -1770,8 +1780,8 @@ function ConfigureSheet({
               </View>
             ) : null}
 
-            <View style={{ gap: 6 }}>
-              <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
+            <View style={{ gap: 8 }}>
+              <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 Model
               </Text>
               {modelOptions.length > 0 ? modelOptions.map((option) => {
@@ -1779,13 +1789,16 @@ function ConfigureSheet({
                 return (
                   <TouchableOpacity
                     key={option.id}
-                    style={[
-                      styles.sheetRow,
-                      {
-                        backgroundColor: selected ? colors.bg.base : colors.bg.raised,
-                        borderRadius: 10,
-                      },
-                    ]}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: selected ? colors.accent.default : colors.border.secondary,
+                      backgroundColor: selected ? colors.bg.raised : colors.bg.base,
+                      borderRadius: 12,
+                      paddingVertical: 12,
+                      paddingHorizontal: 14,
+                      flexDirection: "row",
+                      alignItems: "center",
+                    }}
                     onPress={() => onSelectModel(option.id)}
                     activeOpacity={0.7}
                   >
@@ -2606,10 +2619,14 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
                 ? DEFAULT_OPENCODE_AGENTS
                 : deduplicatedMapped;
               setAgentsByBackend((prev) => ({ ...prev, [backend]: resolvedAgents }));
-              setSelectedAgentByBackend((prev) => ({
-                ...prev,
-                [backend]: prev[backend] || resolvedAgents[0]?.id || "",
-              }));
+              setSelectedAgentByBackend((prev) => {
+                const current = prev[backend];
+                const validCurrent = current && resolvedAgents.some((a) => a.id === current);
+                return {
+                  ...prev,
+                  [backend]: validCurrent ? current : resolvedAgents[0]?.id || "",
+                };
+              });
             } else if (backend === "codex") {
               setAgentsByBackend((prev) => ({ ...prev, codex: [] }));
               setSelectedAgentByBackend((prev) => ({ ...prev, codex: "" }));
@@ -2848,16 +2865,22 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     const storedConfig = sessionConfigs[key];
 
     if (activeBackend === 'opencode') {
-      const fallbackAgent = configDefaultsByBackend.opencode.agent || agentsByBackend.opencode[0]?.id || 'build';
+      const availableAgents = agentsByBackend.opencode;
+      const fallbackAgent = configDefaultsByBackend.opencode.agent || availableAgents[0]?.id || 'build';
       const fallbackModel = toModelOptionId(configDefaultsByBackend.opencode.model) || modelOptionsByBackend.opencode[0]?.id || '';
       const fallbackVariant = configDefaultsByBackend.opencode.variant || '';
+      const restoredAgent = storedConfig?.agent;
+      const validRestoredAgent = restoredAgent && availableAgents.some((a) => a.id === restoredAgent);
       setSelectedAgentByBackend((prev) => ({
         ...prev,
-        opencode: storedConfig?.agent || fallbackAgent,
+        opencode: validRestoredAgent ? restoredAgent : fallbackAgent,
       }));
+      const availableModels = modelOptionsByBackend.opencode;
+      const restoredModel = storedConfig?.model;
+      const validRestoredModel = restoredModel && (availableModels.length === 0 || availableModels.some((m) => m.id === restoredModel));
       setSelectedModelByBackend((prev) => ({
         ...prev,
-        opencode: storedConfig?.model || fallbackModel,
+        opencode: validRestoredModel ? restoredModel : fallbackModel,
       }));
       setSelectedVariantByBackend((prev) => ({
         ...prev,
@@ -4000,19 +4023,22 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               />
 
               {pendingImage ? (
-                <View
+                <Animated.View
+                  entering={ZoomIn.duration(200)}
                   style={{
-                    marginTop: 8,
-                    marginBottom: 4,
+                    marginTop: 10,
+                    marginBottom: 2,
                     alignSelf: "flex-start",
-                    borderRadius: radius.lg,
+                    borderRadius: 12,
                     overflow: "hidden",
+                    borderWidth: 1,
+                    borderColor: colors.border.secondary,
                   }}
                 >
                   <View style={{ position: "relative" }}>
                     <Image
                       source={{ uri: pendingImage.previewUri || pendingImage.url }}
-                      style={{ width: 88, height: 88, borderRadius: radius.lg, backgroundColor: colors.bg.raised }}
+                      style={{ width: 80, height: 80, borderRadius: 11, backgroundColor: colors.bg.base }}
                       resizeMode="cover"
                     />
                     <TouchableOpacity
@@ -4054,7 +4080,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       <Check size={14} color={'#ffffff'} strokeWidth={2.4} />
                     </TouchableOpacity>
                   </View>
-                </View>
+                </Animated.View>
               ) : null}
 
               <View style={styles.composerBottomBar}>
@@ -4282,7 +4308,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             <ConfigureSheet
               visible={activeSheet === "configure"}
               backend={activeBackend}
-              modeOptions={agents.map((a) => ({ id: a.id, name: a.name, description: (a as any).description, icon: a.icon }))}
+              modeOptions={agents.filter((a) => shouldShowAgentInPicker(a as unknown as AIAgent)).map((a) => ({ id: a.id, name: a.name, description: (a as any).description, icon: a.icon }))}
               selectedModeId={selectedAgent}
               onSelectMode={(id) => {
                 setSelectedAgentByBackend((prev) => ({ ...prev, [activeBackend]: id }));

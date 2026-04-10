@@ -475,7 +475,15 @@ export class OpenCodeProvider implements AIProvider {
 
     return input
       .map((value) => this.toAgentInfo(value))
-      .filter((value): value is AgentInfo => Boolean(value));
+      .filter((value): value is AgentInfo => Boolean(value))
+      .filter((agent) => {
+        const id = agent.id.toLowerCase();
+        const mode = (agent.mode || "").toLowerCase();
+        if (mode === "subagent") return false;
+        if (["compaction", "summary", "title"].includes(id)) return false;
+        if (id.startsWith("ui5-") || id.startsWith("cap-")) return false;
+        return true;
+      });
   }
 
   private toAgentInfo(input: unknown): AgentInfo | undefined {

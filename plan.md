@@ -2,24 +2,24 @@
 
 ## Current status
 - Completed code clusters:
-  - lower-layer security/bootstrap hardening
-  - session lifecycle and background reconnect handling changes
-  - OpenCode fetch normalization
-  - mobile thinking toggle visibility
-  - port-close behavior follow-up to clear proxy tracking along with process kill
-- Verified so far:
-  - CLI local build passes
-  - manager local typecheck passes
-  - proxy local typecheck passes
-  - app dependency install succeeds with `NPM_CONFIG_LEGACY_PEER_DEPS=true`
-  - app editor webview build passes
-- Remaining execution path:
-  1. uninstall old global `lunel-cli`
-  2. relink and verify local `lunel-cli`
-  3. generate Android native project and build release APK
-  4. copy only the final `.apk` to `/home/dhruvkejri1/lucel-builds`
-  5. run end-to-end validation for the requested flows
-  6. run final senior-review pass and fix any findings
+  - [x] V2 transport connection fix (buildSessionV2WsUrl parameter order, connect timeout)
+  - [x] lower-layer security/bootstrap hardening (#6, #8, #10, #11)
+  - [x] session lifecycle and background reconnect handling
+  - [x] port-close clears trackedProxyPorts + process tree kill
+  - [x] OpenCode fetch normalization
+  - [x] mobile thinking toggle visibility
+  - [x] agent mode filtering (CLI-side + app-side, removes subagents/internal modes)
+  - [x] session title improvements (generic title detection, real title display)
+  - [x] ConfigureSheet UI polish (handle bar, consistent cards, typography)
+  - [x] nonce replay protection restored in both transports
+- Build verified:
+  - [x] CLI: `npm install` + `npm run build` passes
+- Remaining:
+  - [ ] image attachment visibility in chat UI
+  - [ ] slash commands for both backends
+  - [ ] session config restore (last model/mode)
+  - [ ] Android APK build
+  - [ ] end-to-end runtime verification
 
 ## Goal
 Fix all user-reported issues plus GitHub issues #6, #8, #10, #11, and #13, then rebuild `lunel-cli` locally and produce the Android APK.
