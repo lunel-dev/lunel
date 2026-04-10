@@ -8,7 +8,7 @@
  */
 
 import { useCallback } from 'react';
-import { useConnection, Response } from '@/contexts/ConnectionContext';
+import { useConnection, ProtocolResponse } from '@/contexts/ConnectionContext';
 import { logger } from '@/lib/logger';
 
 // ============================================================================
@@ -88,6 +88,14 @@ export interface PortInfo {
   address: string;
 }
 
+export interface PortKillResult {
+  port: number;
+  pid: number | null;
+  killed: boolean;
+  stillListening: boolean;
+  currentPid: number | null;
+}
+
 export interface CpuInfo {
   usage: number;
   cores: number[];
@@ -147,7 +155,7 @@ export class ApiError extends Error {
   }
 }
 
-function handleResponse<T>(response: Response): T {
+function handleResponse<T>(response: ProtocolResponse): T {
   if (!response.ok) {
     throw new ApiError(
       response.error?.code || 'UNKNOWN',
@@ -467,9 +475,9 @@ export function useApi() {
     /**
      * Kill process using port
      */
-    kill: useCallback(async (port: number): Promise<void> => {
+    kill: useCallback(async (port: number): Promise<PortKillResult> => {
       const response = await sendControl('ports', 'kill', { port });
-      handleResponse<{ port: number; pid: number }>(response);
+      return handleResponse<PortKillResult>(response);
     }, [sendControl]),
   };
 

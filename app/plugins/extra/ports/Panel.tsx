@@ -15,7 +15,7 @@ import Loading from '@/components/Loading';
 import { useConnection } from '@/contexts/ConnectionContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { PluginPanelProps } from '../../types';
-import { useApi, PortInfo, ApiError } from '@/hooks/useApi';
+import { useApi, PortInfo, ApiError, PortKillResult } from '@/hooks/useApi';
 
 function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
   const { colors, fonts, spacing, radius } = useTheme();
@@ -60,7 +60,18 @@ function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
   const killPort = async (port: number) => {
     setKillingPorts(prev => new Set(prev).add(port));
     try {
-      await portsApi.kill(port);
+      const result: PortKillResult = await portsApi.kill(port);
+      if (result.stillListening) {
+        await loadPorts();
+        const rebound = result.currentPid != null && result.currentPid !== result.pid;
+        Alert.alert(
+          rebound ? 'Port restarted' : 'Port still active',
+          rebound
+            ? `Port ${port} was rebound by PID ${result.currentPid}.`
+            : `Port ${port} is still listening after the kill attempt.`,
+        );
+        return;
+      }
       if (trackedProxyPorts.includes(port)) {
         await untrackProxyPort(port);
       }

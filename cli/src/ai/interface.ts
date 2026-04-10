@@ -12,10 +12,11 @@ export type AiEventEmitter = (event: AiEvent) => void;
 export interface ModelSelector {
   providerID: string;
   modelID: string;
+  variant?: string;
 }
 
 export interface CodexPromptOptions {
-  reasoningEffort?: "low" | "medium" | "high";
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   speed?: "fast" | "balanced" | "quality";
 }
 
@@ -44,6 +45,7 @@ export interface ShareInfo {
 export interface ProviderInfo {
   providers: unknown[];
   default: Record<string, string>;
+  configDefaults?: Record<string, unknown>;
   [key: string]: unknown;
 }
 

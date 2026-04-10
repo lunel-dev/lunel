@@ -149,6 +149,7 @@ export function buildSessionV2WsUrl(
   gatewayUrl: string,
   role: "cli" | "app",
   generation?: number | null,
+  password?: string | null,
 ): string {
   const wsBase = gatewayUrl.replace(/^https:/, "wss:");
   if (!wsBase.startsWith("wss://")) {
@@ -157,6 +158,9 @@ export function buildSessionV2WsUrl(
   const query = new URLSearchParams();
   if (typeof generation === "number" && Number.isFinite(generation) && generation > 0) {
     query.set("generation", String(generation));
+  }
+  if (typeof password === "string" && password.trim()) {
+    query.set("password", password.trim());
   }
   const queryString = query.toString();
   return `${wsBase}/v2/ws/${role}${queryString ? `?${queryString}` : ""}`;

@@ -18,10 +18,11 @@ export interface AISession {
 export interface ModelRef {
   providerID: string;
   modelID: string;
+  variant?: string;
 }
 
 export interface CodexPromptOptions {
-  reasoningEffort?: "low" | "medium" | "high";
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   speed?: "fast" | "balanced" | "quality";
 }
 
@@ -33,6 +34,7 @@ export interface AIFileAttachment {
 }
 
 export interface AIAgent {
+  id?: string;
   name: string;
   description?: string;
   mode: string;
@@ -42,12 +44,25 @@ export interface AIModel {
   id: string;
   name: string;
   provider: string;
+  options?: Record<string, unknown>;
+  capabilities?: {
+    reasoningEfforts?: string[];
+    variants?: string[];
+  };
 }
 
 export interface AIProvider {
   id: string;
   name: string;
   models: Record<string, AIModel>;
+}
+
+export interface AIConfigDefaults {
+  agent?: string;
+  model?: ModelRef;
+  variant?: string;
+  codexReasoningEffort?: NonNullable<CodexPromptOptions["reasoningEffort"]>;
+  codexSpeed?: NonNullable<CodexPromptOptions["speed"]>;
 }
 
 export interface AIPart {

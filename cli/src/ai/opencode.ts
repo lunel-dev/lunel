@@ -2,6 +2,7 @@
 // All logic extracted verbatim from cli/src/index.ts AI handlers section.
 
 import * as crypto from "crypto";
+import * as fs from "fs/promises";
 import { createOpencodeServer, createOpencodeClient } from "@opencode-ai/sdk";
 import type {
   AIProvider,
@@ -20,6 +21,13 @@ const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG === "1" || process.env.LUNEL_DEB
 const SSE_BACKOFF_INITIAL_MS = 500;
 const SSE_BACKOFF_CAP_MS = 30_000;
 const SSE_MAX_RETRIES = 20;
+const OPENCODE_CONFIG_PATH = `${process.env.HOME || ""}/.config/opencode/opencode.json`;
+
+interface OpenCodeConfigDefaults extends Record<string, unknown> {
+  agent?: string;
+  model?: ModelSelector;
+  variant?: string;
+}
 
 interface RequestInitWithDuplex extends RequestInit {
   duplex?: "half";
@@ -52,12 +60,14 @@ function requireData<T>(response: { data?: T; error?: unknown }, label: string):
 export class OpenCodeProvider implements AIProvider {
   private client: ReturnType<typeof createOpencodeClient> | null = null;
   private server: Awaited<ReturnType<typeof createOpencodeServer>> | null = null;
+  private serverAbortController: AbortController | null = null;
   private authHeader: string | null = null;
   private lastActiveSessionId: string | null = null;
   private shuttingDown = false;
   private emitter: AiEventEmitter | null = null;
   private knownPendingPermissionIds = new Set<string>();
   private knownPendingQuestionIds = new Set<string>();
+  private configDefaults: OpenCodeConfigDefaults = {};
 
   async init(): Promise<void> {
     const opencodeUsername = "lunel";
@@ -67,12 +77,14 @@ export class OpenCodeProvider implements AIProvider {
     process.env.OPENCODE_SERVER_USERNAME = opencodeUsername;
     process.env.OPENCODE_SERVER_PASSWORD = opencodePassword;
     this.authHeader = authHeader;
+    this.serverAbortController = new AbortController();
 
     if (VERBOSE_AI_LOGS) console.log("Starting OpenCode...");
     this.server = await createOpencodeServer({
       hostname: "127.0.0.1",
       port: 0,
       timeout: 15000,
+      signal: this.serverAbortController.signal,
     });
     if (VERBOSE_AI_LOGS) console.log(`OpenCode server listening on ${this.server.url}`);
 
@@ -98,12 +110,33 @@ export class OpenCodeProvider implements AIProvider {
       headers: { Authorization: authHeader },
       fetch: normalizedFetch,
     });
+    this.configDefaults = await this.loadConfigDefaults();
     if (VERBOSE_AI_LOGS) console.log("OpenCode ready.\n");
   }
 
   async destroy(): Promise<void> {
     this.shuttingDown = true;
+    this.emitter = null;
     this.authHeader = null;
+    this.lastActiveSessionId = null;
+    this.knownPendingPermissionIds.clear();
+    this.knownPendingQuestionIds.clear();
+
+    const controller = this.serverAbortController;
+    this.serverAbortController = null;
+    controller?.abort();
+
+    const server = this.server;
+    this.server = null;
+    this.client = null;
+
+    if (server) {
+      try {
+        await Promise.resolve(server.close());
+      } catch {
+        // best effort shutdown
+      }
+    }
   }
 
   subscribe(emitter: AiEventEmitter): () => void {
@@ -272,10 +305,49 @@ export class OpenCodeProvider implements AIProvider {
           redactSensitive(JSON.stringify(data.default))
         );
       }
-      return { providers: data.providers, default: data.default };
+      return {
+        providers: data.providers,
+        default: data.default,
+        configDefaults: this.configDefaults,
+      };
     } catch (err) {
       console.error("[ai] getProviders exception:", (err as Error).message);
       throw err;
+    }
+  }
+
+  private async loadConfigDefaults(): Promise<OpenCodeConfigDefaults> {
+    try {
+      const raw = await fs.readFile(OPENCODE_CONFIG_PATH, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const defaults: OpenCodeConfigDefaults = {};
+      const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
+      if (model.includes("/")) {
+        const [providerID, modelID] = model.split("/");
+        if (providerID && modelID) {
+          defaults.model = { providerID, modelID };
+        }
+      }
+
+      const agentConfig = parsed.agent && typeof parsed.agent === "object"
+        ? parsed.agent as Record<string, unknown>
+        : null;
+      if (agentConfig) {
+        const [firstAgentId, firstAgentValue] = Object.entries(agentConfig)[0] || [];
+        if (firstAgentId) {
+          defaults.agent = firstAgentId;
+        }
+        if (firstAgentValue && typeof firstAgentValue === "object") {
+          const variant = (firstAgentValue as Record<string, unknown>).variant;
+          if (typeof variant === "string" && variant.trim()) {
+            defaults.variant = variant.trim();
+          }
+        }
+      }
+
+      return defaults;
+    } catch {
+      return {};
     }
   }
 
@@ -472,7 +544,13 @@ export class OpenCodeProvider implements AIProvider {
           ...(text.trim().length > 0 ? [{ type: "text", text }] : []),
           ...files,
         ],
-        ...(model ? { model } : {}),
+        ...(model ? {
+          model: {
+            providerID: model.providerID,
+            modelID: model.modelID,
+          },
+        } : {}),
+        ...(model?.variant ? { variant: model.variant } : {}),
         ...(agent ? { agent } : {}),
       }),
     });

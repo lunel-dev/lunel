@@ -24,7 +24,7 @@ export interface Message {
   payload: Record<string, unknown>;
 }
 
-export interface Response {
+export interface ProtocolResponse {
   v: 1;
   id: string;
   ns: string;
@@ -41,7 +41,7 @@ type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 export type SessionState = 'idle' | 'pending' | 'active' | 'app_offline_grace' | 'cli_offline_grace' | 'ended' | 'expired';
 
 interface PendingRequest {
-  resolve: (response: Response) => void;
+  resolve: (response: ProtocolResponse) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
   startedAt: number;
@@ -77,6 +77,26 @@ class ProxyLookupError extends Error {
     this.name = 'ProxyLookupError';
     this.status = status;
   }
+}
+
+interface ManagerErrorPayload {
+  error?: string;
+  reason?: string;
+}
+
+async function readManagerErrorMessage(response: globalThis.Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json() as ManagerErrorPayload;
+    if (payload.error) return payload.error;
+    if (payload.reason) return payload.reason;
+  } catch {
+    // ignore json parse failures and use fallback
+  }
+  return fallback;
+}
+
+function shouldRetryLegacyManagerRoute(status: number, message: string): boolean {
+  return status === 405 || (status === 404 && /not found/i.test(message));
 }
 
 interface ManagerHealthProbeResult {
@@ -128,8 +148,8 @@ interface ConnectionContextType {
   refreshProxyState: () => Promise<void>;
   trackProxyPort: (port: number) => Promise<void>;
   untrackProxyPort: (port: number) => Promise<void>;
-  sendControl: (ns: string, action: string, payload?: Record<string, unknown>, timeoutMs?: number) => Promise<Response>;
-  sendData: (ns: string, action: string, payload?: Record<string, unknown>, timeoutMs?: number) => Promise<Response>;
+  sendControl: (ns: string, action: string, payload?: Record<string, unknown>, timeoutMs?: number) => Promise<ProtocolResponse>;
+  sendData: (ns: string, action: string, payload?: Record<string, unknown>, timeoutMs?: number) => Promise<ProtocolResponse>;
   fireData: (ns: string, action: string, payload?: Record<string, unknown>) => void;
   onDataEvent: (handler: (message: Message) => void) => () => void;
 }
@@ -320,7 +340,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const gatewaysRef = useRef<string[]>([DEFAULT_GATEWAY]);
   const activeGatewayRef = useRef<string>(DEFAULT_GATEWAY);
   const reattachGenerationRef = useRef<number | null>(null);
-  const sendControlRef = useRef<((ns: string, action: string, payload?: Record<string, unknown>) => Promise<Response>) | null>(null);
+  const sendControlRef = useRef<((ns: string, action: string, payload?: Record<string, unknown>) => Promise<ProtocolResponse>) | null>(null);
   const reconnectWithPasswordRef = useRef<(() => Promise<{ ok: boolean; terminal: boolean; message?: string }>) | null>(null);
   const runReconnectLoopRef = useRef<((source: 'app_active' | 'network_restored' | 'transport_closed') => Promise<void>) | null>(null);
   const manualDisconnectRef = useRef(false);
@@ -560,7 +580,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     action: string,
     payload: Record<string, unknown> = {},
     timeoutMs = 60000,
-  ): Promise<Response> => {
+  ): Promise<ProtocolResponse> => {
     return new Promise((resolve, reject) => {
       const transport = v2TransportRef.current;
       if (!transport) {
@@ -609,7 +629,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     action: string,
     payload: Record<string, unknown> = {},
     timeoutMs = 60000,
-  ): Promise<Response> => {
+  ): Promise<ProtocolResponse> => {
     return new Promise((resolve, reject) => {
       const transport = v2TransportRef.current;
       if (!transport) {
@@ -979,48 +999,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const assembleWithCode = useCallback(async (code: string): Promise<AssembleResult> => {
     const wsUrl = `${MANAGER_URL.replace(/^https:/, 'wss:')}/v2/assemble?code=${encodeURIComponent(code)}&role=app`;
-    const healthUrl = new URL('/health', MANAGER_URL).toString();
-
-    try {
-      logger.info('connection', 'probing manager health before assemble websocket', {
-        code,
-        healthUrl,
-      });
-      const healthProbe = await Promise.race<ManagerHealthProbeResult>([
-        (async () => {
-          const response = await fetch(healthUrl, {
-            method: 'GET',
-            headers: { Accept: 'application/json,text/plain,*/*' },
-          });
-          const body = await response.text().catch(() => null);
-          return {
-            ok: response.ok,
-            status: response.status,
-            body: body ? body.slice(0, 200) : null,
-          };
-        })(),
-        new Promise<ManagerHealthProbeResult>((resolve) => {
-          setTimeout(() => resolve({
-            ok: false,
-            status: null,
-            body: 'timeout',
-          }), 5000);
-        }),
-      ]);
-      logger.info('connection', 'manager health probe completed', {
-        code,
-        healthUrl,
-        ok: healthProbe.ok,
-        status: healthProbe.status,
-        bodyPreview: healthProbe.body,
-      });
-    } catch (error) {
-      logger.warn('connection', 'manager health probe failed before assemble websocket', {
-        code,
-        healthUrl,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
 
     return await new Promise<AssembleResult>((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
@@ -1102,7 +1080,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const getAssignedProxyUrl = useCallback(async (password: string): Promise<string> => {
     const url = new URL('/v2/proxy', MANAGER_URL);
-    const res = await fetch(url.toString(), {
+    let res = await fetch(url.toString(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1110,16 +1088,19 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       body: JSON.stringify({ password }),
     });
     if (!res.ok) {
-      let message = `Proxy lookup failed (${res.status})`;
-      try {
-        const payload = await res.json() as { error?: string; reason?: string };
-        if (payload.error) {
-          message = payload.error;
-        } else if (payload.reason) {
-          message = payload.reason;
+      let message = await readManagerErrorMessage(res, `Proxy lookup failed (${res.status})`);
+      if (shouldRetryLegacyManagerRoute(res.status, message)) {
+        const legacyUrl = new URL('/v2/proxy', MANAGER_URL);
+        legacyUrl.searchParams.set('password', password);
+        res = await fetch(legacyUrl.toString());
+        if (res.ok) {
+          const payload = await res.json() as { proxyUrl?: string };
+          if (typeof payload.proxyUrl !== 'string' || !payload.proxyUrl) {
+            throw new Error('Invalid proxy lookup response');
+          }
+          return normalizeGateway(payload.proxyUrl);
         }
-      } catch {
-        // ignore json parse failures and use fallback message
+        message = await readManagerErrorMessage(res, `Proxy lookup failed (${res.status})`);
       }
       throw new ProxyLookupError(message, res.status);
     }
@@ -1131,7 +1112,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const claimReattach = useCallback(async (password: string): Promise<ReattachClaimResult> => {
-    const response = await fetch(new URL('/v2/reattach/claim', MANAGER_URL).toString(), {
+    const routeUrl = new URL('/v2/reattach/claim', MANAGER_URL);
+    let response = await fetch(routeUrl.toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1140,16 +1122,30 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       }),
     });
     if (!response.ok) {
-      let message = `Reattach failed (${response.status})`;
-      try {
-        const payload = await response.json() as { error?: string; reason?: string };
-        if (payload.error) {
-          message = payload.error;
-        } else if (payload.reason) {
-          message = payload.reason;
+      let message = await readManagerErrorMessage(response, `Reattach failed (${response.status})`);
+      if (shouldRetryLegacyManagerRoute(response.status, message)) {
+        const legacyUrl = new URL('/v2/reattach/claim', MANAGER_URL);
+        legacyUrl.searchParams.set('password', password);
+        legacyUrl.searchParams.set('role', 'app');
+        response = await fetch(legacyUrl.toString());
+        if (response.ok) {
+          const payload = await response.json() as { proxyUrl?: string; generation?: number; expiresAt?: number };
+          if (typeof payload.proxyUrl !== 'string' || !payload.proxyUrl) {
+            throw new Error('Invalid reattach proxy response');
+          }
+          if (typeof payload.generation !== 'number' || !Number.isFinite(payload.generation) || payload.generation < 1) {
+            throw new Error('Invalid reattach generation');
+          }
+          if (typeof payload.expiresAt !== 'number' || !Number.isFinite(payload.expiresAt)) {
+            throw new Error('Invalid reattach expiry');
+          }
+          return {
+            proxyUrl: normalizeGateway(payload.proxyUrl),
+            generation: payload.generation,
+            expiresAt: payload.expiresAt,
+          };
         }
-      } catch {
-        // ignore json parse failures and use fallback message
+        message = await readManagerErrorMessage(response, `Reattach failed (${response.status})`);
       }
       throw new ProxyLookupError(message, response.status);
     }
@@ -1282,7 +1278,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
           return;
         }
 
-        const baseDelay = Math.min(500 * 2 ** Math.min(reconnectAttemptRef.current, 5), 5_000);
+        const baseDelay = Math.min(250 * 2 ** Math.min(reconnectAttemptRef.current, 4), 2_000);
         reconnectAttemptRef.current += 1;
         await delay(baseDelay);
       }
@@ -1539,7 +1535,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         }
         return;
       }
-      stopAllServers();
+      logger.info('connection', 'app moved out of foreground; preserving session transport and proxy state');
     });
 
     return () => {

@@ -480,23 +480,8 @@ export default function Auth() {
 
   const handleSessionPress = useCallback((session: PairedSession) => {
     setShowPastSessionsSheet(false);
-    setTimeout(() => {
-      Alert.alert(
-        'Connect to Session',
-        `${session.hostname}\n${session.root}`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Connect',
-            onPress: () => {
-              setTimeout(() => {
-                void handlePairedSession(session);
-              }, 100);
-            },
-          },
-        ]
-      );
-    }, 280);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    void handlePairedSession(session);
   }, [handlePairedSession]);
 
   const handleSessionLongPress = useCallback((session: PairedSession) => {

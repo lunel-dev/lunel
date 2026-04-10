@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { WebSocket } from "ws";
+import { Agent, setGlobalDispatcher } from "undici";
 import qrcode from "qrcode-terminal";
 import shell from "shelljs";
 import { createAiManager } from "./ai/index.js";
@@ -35,6 +36,15 @@ import { createRequire } from "module";
 const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
+const FETCH_CONNECT_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.LUNEL_FETCH_CONNECT_TIMEOUT_MS || "60000");
+  return Number.isFinite(raw) && raw >= 1_000 ? raw : 60_000;
+})();
+setGlobalDispatcher(new Agent({
+  connect: {
+    timeout: FETCH_CONNECT_TIMEOUT_MS,
+  },
+}));
 const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
 const PTY_RELEASES: Record<string, { fileName: string; url: string; sha256: string }> = {
   "linux:x64": {
@@ -154,7 +164,7 @@ let lastCpuInfo: { idle: number; total: number }[] | null = null;
 
 // AI manager — runs OpenCode and Codex simultaneously, routes by backend
 let aiManager: AiManager | null = null;
-let aiManagerInitPromise: Promise<void> | null = null;
+let aiManagerInitPromise: Promise<AiManager> | null = null;
 // Proxy tunnel management
 let currentSessionCode: string | null = null;
 let currentSessionPassword: string | null = null;
@@ -2112,6 +2122,39 @@ function handlePortsIsAvailable(payload: Record<string, unknown>): Record<string
   }) as unknown as Record<string, unknown>;
 }
 
+function lookupListeningPidsForPort(portNum: number): number[] {
+  const platform = os.platform();
+
+  if (platform === "darwin" || platform === "linux") {
+    const result = spawnSync("lsof", ["-tiTCP:" + String(portNum), "-sTCP:LISTEN", "-P", "-n"], { encoding: "utf-8" });
+    return (result.stdout || "")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((pidStr) => parseInt(pidStr, 10))
+      .filter((pid) => Number.isFinite(pid) && pid > 0);
+  }
+
+  if (platform === "win32") {
+    const result = spawnSync("netstat", ["-ano"], { encoding: "utf-8" });
+    const lines = (result.stdout || "").trim().split("\n");
+    const pids = new Set<number>();
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 5) continue;
+      const localAddr = parts[1] ?? "";
+      if (!localAddr.endsWith(`:${portNum}`)) continue;
+      const pid = parseInt(parts[4], 10);
+      if (Number.isFinite(pid) && pid > 0) {
+        pids.add(pid);
+      }
+    }
+    return Array.from(pids);
+  }
+
+  return [];
+}
+
 function handlePortsKill(payload: Record<string, unknown>): Record<string, unknown> {
   const port = payload.port as number;
   if (!port) throw Object.assign(new Error("port is required"), { code: "EINVAL" });
@@ -2125,40 +2168,25 @@ function handlePortsKill(payload: Record<string, unknown>): Record<string, unkno
   const platform = os.platform();
 
   try {
-    let pid: number | null = null;
+    const pids = lookupListeningPidsForPort(portNum);
+    const pid = pids[0] ?? null;
 
-    if (platform === "darwin" || platform === "linux") {
-      // Use spawnSync with an explicit args array — never shell: true — so portNum
-      // cannot escape into a shell command even if it were somehow non-numeric.
-      const result = spawnSync("lsof", ["-ti", String(portNum)], { encoding: "utf-8" });
-      const pids = (result.stdout || "").trim().split("\n").filter(Boolean);
-      for (const pidStr of pids) {
-        const p = parseInt(pidStr, 10);
-        if (!Number.isFinite(p) || p <= 0) continue;
-        if (pid === null) pid = p;
-        // Send SIGKILL directly via process.kill — no shell involved.
-        try { process.kill(p, "SIGKILL"); } catch { /* already dead */ }
-      }
-    } else if (platform === "win32") {
-      // Use netstat via args array, parse PIDs, then taskkill via args array.
-      const result = spawnSync("netstat", ["-ano"], { encoding: "utf-8" });
-      const lines = (result.stdout || "").trim().split("\n");
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        // netstat -ano columns: Proto  Local  Foreign  State  PID
-        // Match only lines where the local address ends with :<portNum>
-        if (parts.length < 5) continue;
-        const localAddr = parts[1] ?? "";
-        if (!localAddr.endsWith(`:${portNum}`)) continue;
-        const p = parseInt(parts[4], 10);
-        if (!Number.isFinite(p) || p <= 0) continue;
-        if (pid === null) pid = p;
-        spawnSync("taskkill", ["/F", "/PID", String(p)], { encoding: "utf-8" });
-        break;
+    for (const currentPid of pids) {
+      if (platform === "win32") {
+        spawnSync("taskkill", ["/F", "/PID", String(currentPid)], { encoding: "utf-8" });
+      } else {
+        try { process.kill(currentPid, "SIGKILL"); } catch { /* already dead */ }
       }
     }
 
-    return { port: portNum, pid };
+    const remainingPids = lookupListeningPidsForPort(portNum);
+    return {
+      port: portNum,
+      pid,
+      killed: pids.length > 0,
+      stillListening: remainingPids.length > 0,
+      currentPid: remainingPids[0] ?? null,
+    };
   } catch (err) {
     throw Object.assign(new Error(`Failed to kill process on port ${portNum}`), { code: "EPERM" });
   }
@@ -3181,14 +3209,14 @@ async function processMessage(message: Message): Promise<Response> {
         break;
 
       case "ai": {
-        if (!aiManager) throw Object.assign(new Error("AI manager not initialized"), { code: "EUNAVAILABLE" });
+        const manager = await ensureAiManager();
         const backend = ((payload.backend as string) === "codex" ? "codex" : "opencode") as AiBackend;
         switch (action) {
           case "backends":
-            result = { backends: aiManager.availableBackends() };
+            result = { backends: manager.availableBackends() };
             break;
           case "prompt":
-            result = await aiManager.prompt(
+            result = await manager.prompt(
               backend,
               payload.sessionId as string,
               payload.text as string,
@@ -3198,28 +3226,28 @@ async function processMessage(message: Message): Promise<Response> {
               payload.codexOptions as { reasoningEffort?: "low" | "medium" | "high"; speed?: "fast" | "balanced" | "quality" } | undefined,
             );
             break;
-          case "createSession":  result = await aiManager.createSession(backend, payload.title as string | undefined); break;
-          case "listSessions":   result = await aiManager.listAllSessions(); break;
-          case "getSession":     result = await aiManager.getSession(backend, payload.id as string); break;
-          case "deleteSession":  result = await aiManager.deleteSession(backend, payload.id as string); break;
-          case "getMessages":    result = await aiManager.getMessages(backend, payload.id as string); break;
-          case "abort":          result = await aiManager.abort(backend, payload.sessionId as string); break;
-          case "agents":         result = await aiManager.agents(backend); break;
-          case "providers":      result = await aiManager.providers(backend); break;
-          case "setAuth":        result = await aiManager.setAuth(backend, payload.providerId as string, payload.key as string); break;
-          case "command":        result = await aiManager.command(backend, payload.sessionId as string, payload.command as string, (payload.arguments as string) || ""); break;
-          case "revert":         result = await aiManager.revert(backend, payload.sessionId as string, payload.messageId as string); break;
-          case "unrevert":       result = await aiManager.unrevert(backend, payload.sessionId as string); break;
-          case "share":          result = await aiManager.share(backend, payload.sessionId as string); break;
+          case "createSession":  result = await manager.createSession(backend, payload.title as string | undefined); break;
+          case "listSessions":   result = await manager.listAllSessions(); break;
+          case "getSession":     result = await manager.getSession(backend, payload.id as string); break;
+          case "deleteSession":  result = await manager.deleteSession(backend, payload.id as string); break;
+          case "getMessages":    result = await manager.getMessages(backend, payload.id as string); break;
+          case "abort":          result = await manager.abort(backend, payload.sessionId as string); break;
+          case "agents":         result = await manager.agents(backend); break;
+          case "providers":      result = await manager.providers(backend); break;
+          case "setAuth":        result = await manager.setAuth(backend, payload.providerId as string, payload.key as string); break;
+          case "command":        result = await manager.command(backend, payload.sessionId as string, payload.command as string, (payload.arguments as string) || ""); break;
+          case "revert":         result = await manager.revert(backend, payload.sessionId as string, payload.messageId as string); break;
+          case "unrevert":       result = await manager.unrevert(backend, payload.sessionId as string); break;
+          case "share":          result = await manager.share(backend, payload.sessionId as string); break;
           case "permission": {
             const r = payload.response as string | undefined;
             const permResp: "once" | "always" | "reject" =
               r === "once" || r === "always" || r === "reject" ? r : (payload.approved ? "once" : "reject");
-            result = await aiManager.permissionReply(backend, payload.sessionId as string, payload.permissionId as string, permResp);
+            result = await manager.permissionReply(backend, payload.sessionId as string, payload.permissionId as string, permResp);
             break;
           }
           case "questionReply":
-            result = await aiManager.questionReply(
+            result = await manager.questionReply(
               backend,
               payload.sessionId as string,
               payload.questionId as string,
@@ -3227,7 +3255,7 @@ async function processMessage(message: Message): Promise<Response> {
             );
             break;
           case "questionReject":
-            result = await aiManager.questionReject(
+            result = await manager.questionReject(
               backend,
               payload.sessionId as string,
               payload.questionId as string,
@@ -3325,7 +3353,27 @@ interface ReattachClaimResponse {
   expiresAt: number;
 }
 
+interface ManagerErrorPayload {
+  error?: string;
+  reason?: string;
+}
+
 let currentReattachGeneration: number | null = null;
+
+async function readManagerErrorMessage(response: globalThis.Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json() as ManagerErrorPayload;
+    if (payload.error) return payload.error;
+    if (payload.reason) return payload.reason;
+  } catch {
+    // ignore parse failures and use fallback message
+  }
+  return fallback;
+}
+
+function shouldRetryLegacyManagerRoute(status: number, message: string): boolean {
+  return status === 405 || (status === 404 && /not found/i.test(message));
+}
 
 function normalizeGatewayUrl(input: string): string {
   const raw = input.trim();
@@ -3412,22 +3460,26 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
 }
 
 async function getAssignedProxyUrl(password: string): Promise<string> {
-  const response = await fetch(new URL("/v2/proxy", MANAGER_URL), {
+  const routeUrl = new URL("/v2/proxy", MANAGER_URL);
+  let response = await fetch(routeUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password }),
   });
   if (!response.ok) {
-    let message = `Failed to get proxy from manager: ${response.status}`;
-    try {
-      const payload = await response.json() as { error?: string; reason?: string };
-      if (payload.error) {
-        message = payload.error;
-      } else if (payload.reason) {
-        message = payload.reason;
+    let message = await readManagerErrorMessage(response, `Failed to get proxy from manager: ${response.status}`);
+    if (shouldRetryLegacyManagerRoute(response.status, message)) {
+      const legacyUrl = new URL("/v2/proxy", MANAGER_URL);
+      legacyUrl.searchParams.set("password", password);
+      response = await fetch(legacyUrl);
+      if (response.ok) {
+        const payload = await response.json() as Partial<ManagerProxyResponse>;
+        if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
+          throw new Error("Manager returned invalid proxy assignment");
+        }
+        return normalizeGatewayUrl(payload.proxyUrl);
       }
-    } catch {
-      // ignore parse failures and use the fallback message
+      message = await readManagerErrorMessage(response, `Failed to get proxy from manager: ${response.status}`);
     }
     throw new Error(message);
   }
@@ -3439,7 +3491,8 @@ async function getAssignedProxyUrl(password: string): Promise<string> {
 }
 
 async function claimReattach(password: string): Promise<ReattachClaimResponse> {
-  const response = await fetch(new URL("/v2/reattach/claim", MANAGER_URL), {
+  const routeUrl = new URL("/v2/reattach/claim", MANAGER_URL);
+  let response = await fetch(routeUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -3448,16 +3501,30 @@ async function claimReattach(password: string): Promise<ReattachClaimResponse> {
     }),
   });
   if (!response.ok) {
-    let message = `Failed to claim reattach from manager: ${response.status}`;
-    try {
-      const payload = await response.json() as { error?: string; reason?: string };
-      if (payload.error) {
-        message = payload.error;
-      } else if (payload.reason) {
-        message = payload.reason;
+    let message = await readManagerErrorMessage(response, `Failed to claim reattach from manager: ${response.status}`);
+    if (shouldRetryLegacyManagerRoute(response.status, message)) {
+      const legacyUrl = new URL("/v2/reattach/claim", MANAGER_URL);
+      legacyUrl.searchParams.set("password", password);
+      legacyUrl.searchParams.set("role", "cli");
+      response = await fetch(legacyUrl);
+      if (response.ok) {
+        const payload = await response.json() as Partial<ReattachClaimResponse>;
+        if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
+          throw new Error("Manager returned invalid reattach proxy assignment");
+        }
+        if (typeof payload.generation !== "number" || !Number.isFinite(payload.generation) || payload.generation < 1) {
+          throw new Error("Manager returned invalid reattach generation");
+        }
+        if (typeof payload.expiresAt !== "number" || !Number.isFinite(payload.expiresAt)) {
+          throw new Error("Manager returned invalid reattach expiry");
+        }
+        return {
+          proxyUrl: normalizeGatewayUrl(payload.proxyUrl),
+          generation: payload.generation,
+          expiresAt: payload.expiresAt,
+        };
       }
-    } catch {
-      // ignore parse failures and use the fallback message
+      message = await readManagerErrorMessage(response, `Failed to claim reattach from manager: ${response.status}`);
     }
     throw new Error(message);
   }
@@ -3550,42 +3617,64 @@ function displaySavedSessionNotice(): void {
   console.log("");
 }
 
+let gracefulShutdownPromise: Promise<void> | null = null;
+
 function gracefulShutdown(): void {
-  shuttingDown = true;
-  console.log("\nShutting down...");
-  void aiManager?.destroy();
-  stopPortSync();
-  for (const trackedDir of trackedEditorDirectories.values()) {
-    trackedDir.watcher.close();
-  }
-  trackedEditorDirectories.clear();
-  trackedEditorFiles.clear();
-  pendingTrackedFileChecks.clear();
-  activeV2Transport?.close();
-  activeV2Transport = null;
-  if (ptyProcess) {
-    ptyProcess.kill();
-    ptyProcess = null;
-  }
-  terminals.clear();
-  for (const [pid, managedProc] of processes) {
-    managedProc.proc.kill();
-  }
-  processes.clear();
-  processOutputBuffers.clear();
-  cleanupAllTunnels();
-  process.exit(0);
+  if (gracefulShutdownPromise) return;
+
+  gracefulShutdownPromise = (async () => {
+    shuttingDown = true;
+    console.log("\nShutting down...");
+
+    try {
+      await aiManagerInitPromise?.catch(() => null);
+      if (aiManager) {
+        await aiManager.destroy();
+        aiManager = null;
+      }
+    } catch {
+      // best effort shutdown
+    }
+
+    stopPortSync();
+    for (const trackedDir of trackedEditorDirectories.values()) {
+      trackedDir.watcher.close();
+    }
+    trackedEditorDirectories.clear();
+    trackedEditorFiles.clear();
+    pendingTrackedFileChecks.clear();
+    activeV2Transport?.close();
+    activeV2Transport = null;
+    if (ptyProcess) {
+      ptyProcess.kill();
+      ptyProcess = null;
+    }
+    terminals.clear();
+    for (const [, managedProc] of processes) {
+      managedProc.proc.kill();
+    }
+    processes.clear();
+    processOutputBuffers.clear();
+    cleanupAllTunnels();
+    process.exit(0);
+  })().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[shutdown] ${message}`);
+    process.exit(1);
+  });
 }
 
-function startAiManagerInBackground(): void {
-  if (aiManager || aiManagerInitPromise) return;
+async function ensureAiManager(): Promise<AiManager> {
+  if (aiManager) {
+    return aiManager;
+  }
 
-  aiManagerInitPromise = (async () => {
-    try {
+  if (!aiManagerInitPromise) {
+    aiManagerInitPromise = (async () => {
       const manager = await createAiManager();
       if (shuttingDown) {
         await manager.destroy();
-        return;
+        throw new Error("AI manager initialization cancelled during shutdown");
       }
 
       aiManager = manager;
@@ -3598,15 +3687,13 @@ function startAiManagerInBackground(): void {
           payload: { ...event, backend },
         });
       });
-    } catch (error) {
-      if (DEBUG_MODE) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[ai] background init failed: ${message}`);
-      }
-    } finally {
+      return manager;
+    })().finally(() => {
       aiManagerInitPromise = null;
-    }
-  })();
+    });
+  }
+
+  return await aiManagerInitPromise;
 }
 
 async function connectWebSocketV2(): Promise<void> {
@@ -3741,8 +3828,6 @@ async function main(): Promise<void> {
 
     // Start AI backends in the background so missing or slow AI runtimes never
     // block QR/session startup for the rest of the CLI.
-    startAiManagerInBackground();
-
     let sessionCodeToUse: string | null = null;
     let sessionPasswordToUse: string;
 

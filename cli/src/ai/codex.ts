@@ -286,7 +286,7 @@ export class CodexProvider implements AIProvider {
         let imageUrlKey: "url" | "image_url" = "url";
         while (true) {
           try {
-            const effortLevels: Array<NonNullable<CodexPromptOptions["reasoningEffort"]>> = ["low", "medium", "high"];
+            const effortLevels: Array<NonNullable<CodexPromptOptions["reasoningEffort"]>> = ["low", "medium", "high", "xhigh"];
             const speedDelta: Record<NonNullable<CodexPromptOptions["speed"]>, number> = {
               fast: -1,
               balanced: 0,
@@ -357,6 +357,9 @@ export class CodexProvider implements AIProvider {
           name: item.displayName || item.model,
           provider: "codex",
           description: item.description,
+          capabilities: {
+            reasoningEfforts: ["low", "medium", "high", "xhigh"],
+          },
         },
       ])
     );
@@ -367,6 +370,10 @@ export class CodexProvider implements AIProvider {
         ? [{ id: "codex", name: "Codex", models }]
         : [],
       default: defaultModel ? { codex: defaultModel } : {},
+      configDefaults: {
+        codexReasoningEffort: "high",
+        codexSpeed: "balanced",
+      },
     };
   }
 
