@@ -1227,8 +1227,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     reconnectingRef.current = false;
     clearPendingRequests('Offline');
     stopAllServers();
-    v2TransportRef.current?.close();
-    v2TransportRef.current = null;
+    // Do NOT close the V2 transport here. Manager reachability and session transport
+    // health are separate concerns — the proxy keeps sessions alive independently.
+    // Closing the transport on every health probe failure causes a 1006 reconnect
+    // loop. The transport manages its own lifecycle via ws.onclose / ws.onerror.
     setReconnectUiState('offline');
   }, [clearPendingRequests, interactionBlockReason, setReconnectUiState]);
 
@@ -1240,6 +1242,12 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     logger.info('connection', 'manager reachability restored');
     networkReachableRef.current = true;
     if (!manualDisconnectRef.current && sessionPasswordRef.current) {
+      // Close any stale transport before reconnecting. While manager was unreachable
+      // the proxy may have expired the session — give the reconnect loop a clean slate
+      // and avoid leaking an orphaned WebSocket.
+      const stale = v2TransportRef.current;
+      v2TransportRef.current = null;
+      stale?.close();
       void runReconnectLoop('network_restored');
     }
   }, [runReconnectLoop]);
