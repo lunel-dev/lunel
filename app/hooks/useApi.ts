@@ -91,6 +91,7 @@ export interface PortInfo {
 export interface PortKillResult {
   port: number;
   pid: number | null;
+  ownerPid?: number | null;
   killed: boolean;
   stillListening: boolean;
   currentPid: number | null;

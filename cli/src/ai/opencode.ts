@@ -3,8 +3,10 @@
 
 import * as crypto from "crypto";
 import * as fs from "fs/promises";
+import { spawnSync } from "child_process";
 import { createOpencodeServer, createOpencodeClient } from "@opencode-ai/sdk";
 import type {
+  AgentInfo,
   AIProvider,
   AiEventEmitter,
   CodexPromptOptions,
@@ -57,11 +59,113 @@ function requireData<T>(response: { data?: T; error?: unknown }, label: string):
   return response.data;
 }
 
+function listManagedOpenCodeServerPids(): number[] {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  const result = spawnSync("ps", ["-eo", "pid=,ppid=,command="], { encoding: "utf-8" });
+  return (result.stdout || "")
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/))
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .filter((match) => Number(match[2]) === process.pid && match[3]?.includes("opencode") && match[3]?.includes("serve"))
+    .map((match) => Number(match[1]))
+    .filter((pid) => Number.isFinite(pid) && pid > 0);
+}
+
+function listAllOpenCodeServePids(): number[] {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  const result = spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf-8" });
+  return (result.stdout || "")
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.match(/^(\d+)\s+(.*)$/))
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .filter((match) => match[2]?.includes("opencode") && match[2]?.includes("serve"))
+    .map((match) => Number(match[1]))
+    .filter((pid) => Number.isFinite(pid) && pid > 0);
+}
+
+function listChildPids(pid: number): number[] {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  const result = spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf-8" });
+  return (result.stdout || "")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+}
+
+function listProcessTreePids(rootPid: number, visited = new Set<number>()): number[] {
+  if (visited.has(rootPid)) {
+    return [];
+  }
+  visited.add(rootPid);
+  const children = listChildPids(rootPid).flatMap((childPid) => listProcessTreePids(childPid, visited));
+  return [...children, rootPid];
+}
+
+function killManagedOpenCodeServerProcesses(): void {
+  const pids = listManagedOpenCodeServerPids().flatMap((pid) => listProcessTreePids(pid));
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+  if (pids.length > 0) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+function killProcessList(pids: number[]): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+  if (pids.length > 0) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+
 export class OpenCodeProvider implements AIProvider {
   private client: ReturnType<typeof createOpencodeClient> | null = null;
   private server: Awaited<ReturnType<typeof createOpencodeServer>> | null = null;
   private serverAbortController: AbortController | null = null;
   private authHeader: string | null = null;
+  private sseLoopRunning = false;
+  private managedServerPids = new Set<number>();
   private lastActiveSessionId: string | null = null;
   private shuttingDown = false;
   private emitter: AiEventEmitter | null = null;
@@ -78,6 +182,7 @@ export class OpenCodeProvider implements AIProvider {
     process.env.OPENCODE_SERVER_PASSWORD = opencodePassword;
     this.authHeader = authHeader;
     this.serverAbortController = new AbortController();
+    const existingServePids = new Set(listAllOpenCodeServePids());
 
     if (VERBOSE_AI_LOGS) console.log("Starting OpenCode...");
     this.server = await createOpencodeServer({
@@ -86,6 +191,7 @@ export class OpenCodeProvider implements AIProvider {
       timeout: 15000,
       signal: this.serverAbortController.signal,
     });
+    this.managedServerPids = new Set(listAllOpenCodeServePids().filter((pid) => !existingServePids.has(pid)));
     if (VERBOSE_AI_LOGS) console.log(`OpenCode server listening on ${this.server.url}`);
 
     const normalizedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<globalThis.Response> => {
@@ -116,6 +222,7 @@ export class OpenCodeProvider implements AIProvider {
 
   async destroy(): Promise<void> {
     this.shuttingDown = true;
+    this.sseLoopRunning = false;
     this.emitter = null;
     this.authHeader = null;
     this.lastActiveSessionId = null;
@@ -137,13 +244,22 @@ export class OpenCodeProvider implements AIProvider {
         // best effort shutdown
       }
     }
+
+    const managedPids = Array.from(this.managedServerPids).flatMap((pid) => listProcessTreePids(pid));
+    this.managedServerPids.clear();
+    killProcessList(managedPids);
+    killManagedOpenCodeServerProcesses();
   }
 
   subscribe(emitter: AiEventEmitter): () => void {
     this.emitter = emitter;
     this.shuttingDown = false;
-    // Run the SSE loop in the background — it will call emitter for each event.
-    this.runSseLoop();
+    if (!this.sseLoopRunning) {
+      this.sseLoopRunning = true;
+      void this.runSseLoop().finally(() => {
+        this.sseLoopRunning = false;
+      });
+    }
     return () => {
       this.emitter = null;
     };
@@ -274,15 +390,16 @@ export class OpenCodeProvider implements AIProvider {
   // Metadata
   // -------------------------------------------------------------------------
 
-  async agents(): Promise<{ agents: unknown }> {
+  async agents(): Promise<{ agents: AgentInfo[] }> {
     if (VERBOSE_AI_LOGS) console.log("[ai] getAgents called");
     try {
       const response = await this.client!.app.agents();
       const data = requireData(response, "app.agents");
+      const agents = this.toAgentInfoList(data);
       if (VERBOSE_AI_LOGS) {
-        console.log("[ai] getAgents returned:", redactSensitive(JSON.stringify(data).substring(0, 300)));
+        console.log("[ai] getAgents returned:", redactSensitive(JSON.stringify(agents).substring(0, 300)));
       }
-      return { agents: data };
+      return { agents };
     } catch (err) {
       console.error("[ai] getAgents exception:", (err as Error).message);
       throw err;
@@ -349,6 +466,44 @@ export class OpenCodeProvider implements AIProvider {
     } catch {
       return {};
     }
+  }
+
+  private toAgentInfoList(input: unknown): AgentInfo[] {
+    if (!Array.isArray(input)) {
+      return [];
+    }
+
+    return input
+      .map((value) => this.toAgentInfo(value))
+      .filter((value): value is AgentInfo => Boolean(value));
+  }
+
+  private toAgentInfo(input: unknown): AgentInfo | undefined {
+    if (!input || typeof input !== "object") {
+      return undefined;
+    }
+
+    const record = input as Record<string, unknown>;
+    const rawId = typeof record.id === "string" ? record.id.trim() : "";
+    const rawName = typeof record.name === "string" ? record.name.trim() : "";
+    const id = rawId || rawName;
+    if (!id) {
+      return undefined;
+    }
+
+    const description = typeof record.description === "string"
+      ? record.description.trim()
+      : "";
+    const mode = typeof record.mode === "string"
+      ? record.mode.trim()
+      : "";
+
+    return {
+      id,
+      name: rawName || id,
+      ...(description ? { description } : {}),
+      ...(mode ? { mode } : {}),
+    };
   }
 
   // -------------------------------------------------------------------------

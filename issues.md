@@ -39,6 +39,36 @@
 - [ ] OpenCode build/plan or other supported modes are visible when the backend supports them.
 - [ ] The app resumes the last working OpenCode model and mode for an existing session.
 
+## Latest user-reported regressions (2026-04-10)
+- [ ] Bug: the AI agent UI is still buggy and appears to select multiple agent modes by default.
+- [ ] Bug: internal/subagent-only OpenCode entries are showing as normal agent options, including subagents plus entries such as `compaction`, `summary`, `title`, `ui5-*`, and `cap-*`.
+- [ ] Bug: OpenCode thinking/model selection is still using the awkward bottom scroller instead of a cleaner Codex-style selection flow.
+- [ ] Requirement: OpenCode thinking/model selection should follow the Codex-style UI pattern where model and thinking controls are easier to access and not hidden behind a bottom scroller workflow.
+- [ ] Requirement: use the APK currently being tested from `/home/dhruvkejri1/lunel-builds/` as the reference for this regression pass.
+- [ ] Bug: session titles still collapse into repeated generic names like `Session 111`, `Session 102`, `Session 102`.
+- [ ] Bug: RAM usage is still too high at runtime.
+- [ ] Bug: multiple `opencode serve` processes can exist at once and need lifecycle investigation.
+- [ ] Bug: port kill from the app cross button can stop the listening port while leaving the parent watcher/process behavior unclear (example: `cds watch` on port `4004`).
+- [ ] Requirement: port kill behavior should be explicit about whether only the listening port was stopped or whether the owning watcher/process tree was actually terminated.
+- [ ] Bug: image selection no longer errors, but the selected image does not visibly appear in the chat UI for either OpenCode or Codex.
+- [ ] Requirement: after image selection, the attachment should visibly appear in the mobile chat UI before send for both OpenCode and Codex so the user can tell it was attached.
+- [ ] Requirement: slash commands must work in the mobile AI app for both OpenCode and Codex.
+- [ ] Requirement: implement this regression pass on clean branches and merge with clean history.
+
+## Exact checklist from the latest user report
+- [ ] Bug: many agent modes are being selected at once by default in the UI.
+- [ ] Bug: subagents are visible in the normal agent mode picker.
+- [ ] Bug: `compaction` appears as a normal agent mode option.
+- [ ] Bug: `summary` appears as a normal agent mode option.
+- [ ] Bug: `title` appears as a normal agent mode option.
+- [ ] Bug: `ui5-app-*` style entries appear as normal agent mode options.
+- [ ] Bug: `cap-cds-modeler` style entries appear as normal agent mode options.
+- [ ] Bug: session names still repeat as generic numbered entries.
+- [ ] Bug: high RAM usage must be investigated using the live local environment.
+- [ ] Bug: image selection currently provides no visible insertion feedback in the chat for either backend.
+- [ ] Requirement: `/` commands should work for both OpenCode and Codex in the mobile app.
+- [ ] Requirement: do the changes in branches and then merge them with clean history.
+
 ## GitHub issues to fix
 - [ ] #6 Windows startup hits DEP0190.
 - [ ] #8 CLI root sandbox symlink-parent escape.

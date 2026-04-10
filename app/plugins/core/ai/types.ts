@@ -37,7 +37,7 @@ export interface AIAgent {
   id?: string;
   name: string;
   description?: string;
-  mode: string;
+  mode?: string;
 }
 
 export interface AIModel {

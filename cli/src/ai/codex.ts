@@ -7,6 +7,7 @@ import * as path from "path";
 import { spawn, ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import type {
+  AgentInfo,
   AIProvider,
   AiEventEmitter,
   CodexPromptOptions,
@@ -64,6 +65,7 @@ interface ThreadListEntry {
 interface PendingRpc {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
+  timeout: NodeJS.Timeout;
 }
 
 interface PendingPermission {
@@ -151,6 +153,17 @@ export class CodexProvider implements AIProvider {
 
   async destroy(): Promise<void> {
     this.shuttingDown = true;
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error("Codex provider shutting down"));
+    }
+    this.pending.clear();
+    this.sessions.clear();
+    this.deletedThreadIds.clear();
+    this.resumedThreadIds.clear();
+    this.pendingPermissionRequestIds.clear();
+    this.assistantMessageIdByTurnId.clear();
+    this.partTextById.clear();
     this.proc?.stdin?.end();
     this.proc?.kill();
     this.proc = null;
@@ -343,7 +356,7 @@ export class CodexProvider implements AIProvider {
     return {};
   }
 
-  async agents(): Promise<{ agents: unknown }> {
+  async agents(): Promise<{ agents: AgentInfo[] }> {
     return { agents: [] };
   }
 
@@ -444,15 +457,16 @@ export class CodexProvider implements AIProvider {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const key = String(id);
-      this.pending.set(key, { resolve, reject });
-      this.send({ jsonrpc: "2.0", id, method, params });
-
-      setTimeout(() => {
-        if (this.pending.has(key)) {
-          this.pending.delete(key);
-          reject(new Error(`Codex RPC timeout: ${method} (id=${id})`));
+      const timeout = setTimeout(() => {
+        const pending = this.pending.get(key);
+        if (!pending) {
+          return;
         }
+        this.pending.delete(key);
+        reject(new Error(`Codex RPC timeout: ${method} (id=${id})`));
       }, 30_000);
+      this.pending.set(key, { resolve, reject, timeout });
+      this.send({ jsonrpc: "2.0", id, method, params });
     });
   }
 
@@ -481,6 +495,7 @@ export class CodexProvider implements AIProvider {
       if (!pending) return;
 
       this.pending.delete(String(resp.id));
+      clearTimeout(pending.timeout);
       if (resp.error) {
         pending.reject(new Error(resp.error.message));
       } else {

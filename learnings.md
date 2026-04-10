@@ -46,3 +46,19 @@ cp /home/dhruvkejri1/projects/lunel/app/android/app/build/outputs/apk/release/ap
 - `lunel-cli -n` should not eagerly spawn fresh OpenCode processes just for pairing.
 - Check live processes after CLI startup when changing AI manager lifecycle behavior.
 - Backgrounding the app should not tear down local session/proxy state unless the code explicitly intends to end the session.
+
+## Global MCP setup for Android debugging
+
+- OpenCode global MCP config lives in `~/.config/opencode/opencode.json` under the root `mcp` object.
+- Added Android-debugging MCP entries globally:
+  - `dta` → `dta-cli mcp`
+  - `mobile-mcp` → `npx -y @mobilenext/mobile-mcp@latest`
+- OpenCode expects local MCP commands in array form, for example `"command": ["npx", "-y", "..."]`.
+- Use `-y` for `npx`-backed MCPs to avoid interactive install hangs.
+- OpenCode should be restarted after MCP config changes so newly added MCPs are picked up.
+- On this machine, `npx` is present on PATH, but `dta-cli` was not found during verification and may need installation before the `dta` MCP can actually start.
+
+## Research workflow reminder
+
+- For current library/tooling behavior, prefer live docs lookup instead of relying only on stale local assumptions.
+- Use `websearch`/Context7 when the task depends on up-to-date package behavior, config schema, or external integration details.

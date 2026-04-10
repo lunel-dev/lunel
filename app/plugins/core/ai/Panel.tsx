@@ -82,7 +82,7 @@ const DEFAULT_OPENCODE_AGENTS: { id: string; name: string; description?: string;
   { id: "plan", name: "Plan", description: "Analyze codebase and create architectural plans", icon: MapIcon },
 ];
 
-type ComposerSheet = "configure" | "codex-preferences" | null;
+type ComposerSheet = "configure" | "backend-preferences" | null;
 
 type SessionConfigRecord = {
   agent?: string;
@@ -107,12 +107,22 @@ function toModelOptionId(model?: ModelRef | null): string {
 }
 
 function normalizeAgentId(agent: AIAgent): string {
-  const fromMode = typeof agent.mode === "string" ? agent.mode.trim() : "";
-  if (fromMode) return fromMode;
   const fromId = typeof (agent as any).id === "string" ? String((agent as any).id).trim() : "";
   if (fromId) return fromId;
+  const fromMode = typeof agent.mode === "string" ? agent.mode.trim() : "";
+  if (fromMode) return fromMode;
   const fromName = typeof agent.name === "string" ? agent.name.trim().toLowerCase() : "";
   return fromName;
+}
+
+function shouldShowAgentInPicker(agent: AIAgent): boolean {
+  const id = normalizeAgentId(agent).toLowerCase();
+  const mode = typeof agent.mode === "string" ? agent.mode.trim().toLowerCase() : "";
+  if (!id) return false;
+  if (mode === "subagent") return false;
+  if (["compaction", "summary", "title"].includes(id)) return false;
+  if (id.startsWith("ui5-") || id.startsWith("cap-")) return false;
+  return true;
 }
 
 function toDisplayAgentName(agent: AIAgent, fallbackId: string): string {
@@ -174,6 +184,27 @@ function formatBackendSessionTitle(backend: AiBackend, title?: string) {
   return backend === "codex" ? "Codex" : "OpenCode";
 }
 
+function isGenericSessionTitle(title?: string): boolean {
+  const normalized = (title || "").trim().toLowerCase();
+  return normalized.length === 0
+    || normalized === "conversation"
+    || /^session\s+\d+$/.test(normalized);
+}
+
+function resolveSessionTitle(backend: AiBackend, sessionId: string, title?: string, fallbackTitle?: string): string {
+  const explicit = (title || "").trim();
+  if (explicit && !isGenericSessionTitle(explicit)) {
+    return explicit;
+  }
+
+  const fallback = (fallbackTitle || "").trim();
+  if (fallback && !isGenericSessionTitle(fallback)) {
+    return fallback;
+  }
+
+  return `${formatBackendSessionTitle(backend)} • ${sessionId.slice(0, 6)}`;
+}
+
 function sortTabsByUpdatedAt(tabs: AITab[]): AITab[] {
   return [...tabs].sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
 }
@@ -190,7 +221,7 @@ function mergeSessionTabs(existingTabs: AITab[], incomingSessions: AISession[]):
       const backend = session.backend ?? "opencode";
       const key = `${backend}:${session.id}`;
       const existing = byKey.get(key);
-      const nextTitle = (session.title || "").trim() || existing?.title || formatBackendSessionTitle(backend);
+      const nextTitle = resolveSessionTitle(backend, session.id, session.title, existing?.title);
       const nextUpdatedAt = session.time?.updated;
 
     byKey.set(key, {
@@ -1581,9 +1612,6 @@ function ConfigureSheet({
   modeOptions,
   selectedModeId,
   onSelectMode,
-  reasoningOptions,
-  selectedReasoningId,
-  onSelectReasoning,
   modelOptions,
   selectedModelId,
   onSelectModel,
@@ -1599,9 +1627,6 @@ function ConfigureSheet({
   modeOptions: { id: string; name: string; description?: string; icon?: React.ComponentType<any> }[];
   selectedModeId: string;
   onSelectMode: (id: string) => void;
-  reasoningOptions: { id: string; name: string }[];
-  selectedReasoningId: string;
-  onSelectReasoning: (id: string) => void;
   modelOptions: { id: string; name: string }[];
   selectedModelId: string;
   onSelectModel: (id: string) => void;
@@ -1768,89 +1793,23 @@ function ConfigureSheet({
                       numberOfLines={1}
                       style={{
                         flex: 1,
-                        color: colors.fg.default,
+                        color: selected ? colors.accent.default : colors.fg.default,
                         fontSize: 14,
-                        fontFamily: fonts.sans.medium,
+                        fontFamily: fonts.sans.semibold,
                       }}
                     >
                       {option.name}
                     </Text>
+                    {selected && <Check size={16} color={colors.accent.default} />}
                   </TouchableOpacity>
                 );
               }) : (
-                <View
-                  style={[
-                    styles.backendOption,
-                    {
-                      backgroundColor: colors.bg.base,
-                      borderRadius: 10,
-                      opacity: 0.7,
-                    },
-                  ]}
-                >
-                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular }}>
-                    {backend === "codex" ? "Auto" : "No models available"}
-                  </Text>
-                </View>
+                <Text style={{ color: colors.fg.subtle, fontSize: 13, fontFamily: fonts.sans.regular, paddingHorizontal: 2 }}>
+                  No models available
+                </Text>
               )}
             </View>
-              {backend === "opencode" && reasoningOptions.length > 0 ? (
-                <View style={{ gap: 6 }}>
-                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
-                    Reasoning
-                  </Text>
-                  {reasoningOptions.map((option) => {
-                    const selected = option.id === selectedReasoningId;
-                    return (
-                      <TouchableOpacity
-                        key={option.id}
-                        style={[
-                          styles.sheetRow,
-                          {
-                            backgroundColor: selected ? colors.bg.base : colors.bg.raised,
-                            borderRadius: 10,
-                          },
-                        ]}
-                        onPress={() => onSelectReasoning(option.id)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={{ flex: 1, color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
-                          {option.name}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ) : null}
-
-              {backend === "opencode" && (
-                <View style={{ gap: 6 }}>
-                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
-                    Reasoning Visibility
-                  </Text>
-                  <TouchableOpacity
-                    style={[
-                      styles.sheetRow,
-                      {
-                        backgroundColor: showDetailedView ? colors.bg.base : colors.bg.raised,
-                        borderRadius: 10,
-                      },
-                    ]}
-                    onPress={() => onToggleDetailedView(!showDetailedView)}
-                    activeOpacity={0.7}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
-                        Detailed View
-                      </Text>
-                      <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular, marginTop: 2 }}>
-                        {showDetailedView ? "Thinking details visible." : "Thinking details hidden."}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </ScrollView>
+          </ScrollView>
           </Animated.View>
         </View>
       </GestureHandlerRootView>
@@ -1858,13 +1817,17 @@ function ConfigureSheet({
   );
 }
 
-function CodexPreferencesSheet({
+function BackendPreferencesSheet({
   visible,
+  backend,
   selectedReasoningEffort,
   selectedSpeed,
   availableReasoningOptions,
   onSelectReasoningEffort,
   onSelectSpeed,
+  opencodeVariantOptions,
+  selectedVariant,
+  onSelectVariant,
   showDetailedView,
   onToggleDetailedView,
   onClose,
@@ -1873,11 +1836,15 @@ function CodexPreferencesSheet({
   fonts,
 }: {
   visible: boolean;
+  backend: AiBackend;
   selectedReasoningEffort: NonNullable<CodexPromptOptions["reasoningEffort"]>;
   selectedSpeed: NonNullable<CodexPromptOptions["speed"]>;
   availableReasoningOptions: Array<NonNullable<CodexPromptOptions["reasoningEffort"]>>;
   onSelectReasoningEffort: (value: NonNullable<CodexPromptOptions["reasoningEffort"]>) => void;
   onSelectSpeed: (value: NonNullable<CodexPromptOptions["speed"]>) => void;
+  opencodeVariantOptions: Array<{id: string; name: string}>;
+  selectedVariant: string;
+  onSelectVariant: (value: string) => void;
   showDetailedView: boolean;
   onToggleDetailedView: (value: boolean) => void;
   onClose: () => void;
@@ -1964,7 +1931,7 @@ function CodexPreferencesSheet({
             ]}
           >
             <View style={styles.sheetHeader}>
-              <Text style={{ flex: 1, color: colors.fg.default, fontSize: 18, fontFamily: fonts.sans.semibold }}>Codex Preferences</Text>
+              <Text style={{ flex: 1, color: colors.fg.default, fontSize: 18, fontFamily: fonts.sans.semibold }}>{backend === 'opencode' ? 'OpenCode Preferences' : 'Codex Preferences'}</Text>
               <TouchableOpacity
                 onPress={() => {
                   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1982,69 +1949,105 @@ function CodexPreferencesSheet({
               contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 18, gap: 12 }}
               keyboardDismissMode="on-drag"
             >
-              <View style={{ gap: 6 }}>
-                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
-                  Reasoning
-                </Text>
-                {reasoningOptions.map((option) => {
-                  const selected = option.id === selectedReasoningEffort;
-                  return (
-                    <TouchableOpacity
-                      key={option.id}
-                      style={[
-                        styles.sheetRow,
-                        {
-                          backgroundColor: selected ? colors.bg.base : colors.bg.raised,
-                          borderRadius: 10,
-                        },
-                      ]}
-                      onPress={() => onSelectReasoningEffort(option.id)}
-                      activeOpacity={0.7}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
-                          {option.label}
-                        </Text>
-                        <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular, marginTop: 2 }}>
-                          {option.description}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              {backend === "opencode" ? (
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
+                    Reasoning Variant
+                  </Text>
+                  {opencodeVariantOptions.map((option) => {
+                    const selected = option.id === selectedVariant;
+                    return (
+                      <TouchableOpacity
+                        key={option.id}
+                        style={[
+                          styles.sheetRow,
+                          {
+                            backgroundColor: selected ? colors.bg.base : colors.bg.raised,
+                            borderRadius: 10,
+                          },
+                        ]}
+                        onPress={() => onSelectVariant(option.id)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
+                            {option.name}
+                          </Text>
+                        </View>
+                        {selected && <Check size={16} color={colors.accent.default} />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : (
+                <>
+                  <View style={{ gap: 6 }}>
+                    <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
+                      Reasoning
+                    </Text>
+                    {reasoningOptions.map((option) => {
+                      const selected = option.id === selectedReasoningEffort;
+                      return (
+                        <TouchableOpacity
+                          key={option.id}
+                          style={[
+                            styles.sheetRow,
+                            {
+                              backgroundColor: selected ? colors.bg.base : colors.bg.raised,
+                              borderRadius: 10,
+                            },
+                          ]}
+                          onPress={() => onSelectReasoningEffort(option.id)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
+                              {option.label}
+                            </Text>
+                            <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular, marginTop: 2 }}>
+                              {option.description}
+                            </Text>
+                          </View>
+                          {selected && <Check size={16} color={colors.accent.default} />}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
 
-              <View style={{ gap: 6 }}>
-                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
-                  Speed
-                </Text>
-                {speedOptions.map((option) => {
-                  const selected = option.id === selectedSpeed;
-                  return (
-                    <TouchableOpacity
-                      key={option.id}
-                      style={[
-                        styles.sheetRow,
-                        {
-                          backgroundColor: selected ? colors.bg.base : colors.bg.raised,
-                          borderRadius: 10,
-                        },
-                      ]}
-                      onPress={() => onSelectSpeed(option.id)}
-                      activeOpacity={0.7}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
-                          {option.label}
-                        </Text>
-                        <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular, marginTop: 2 }}>
-                          {option.description}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+                  <View style={{ gap: 6 }}>
+                    <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
+                      Speed
+                    </Text>
+                    {speedOptions.map((option) => {
+                      const selected = option.id === selectedSpeed;
+                      return (
+                        <TouchableOpacity
+                          key={option.id}
+                          style={[
+                            styles.sheetRow,
+                            {
+                              backgroundColor: selected ? colors.bg.base : colors.bg.raised,
+                              borderRadius: 10,
+                            },
+                          ]}
+                          onPress={() => onSelectSpeed(option.id)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
+                              {option.label}
+                            </Text>
+                            <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular, marginTop: 2 }}>
+                              {option.description}
+                            </Text>
+                          </View>
+                          {selected && <Check size={16} color={colors.accent.default} />}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
 
               <View style={{ gap: 6 }}>
                 <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.semibold, paddingHorizontal: 2 }}>
@@ -2225,7 +2228,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   // UI state
   const [inputText, setInputText] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
-  const [pendingImage, setPendingImage] = useState<AIFileAttachment | null>(null);
+  const [pendingImage, setPendingImage] = useState<(AIFileAttachment & { previewUri?: string }) | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<AIPermission | null>(null);
@@ -2454,7 +2457,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
                 const updated = [...prev];
                 updated[existingIndex] = {
                   ...updated[existingIndex],
-                  title: title || updated[existingIndex].title,
+                  title: resolveSessionTitle(backend, sessId, title, updated[existingIndex].title),
                   updatedAt: typeof updatedAt === "number" ? updatedAt : updated[existingIndex].updatedAt,
                 };
                 updated.sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
@@ -2463,7 +2466,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 
               return mergeSessionTabs(prev, [{
                 id: sessId,
-                title: title || "Conversation",
+                title: resolveSessionTitle(backend, sessId, title),
                 backend,
                 time: {
                   created: Date.now(),
@@ -2581,21 +2584,27 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           try {
             const agentsList = await ai.getAgents(backend);
             if (Array.isArray(agentsList) && agentsList.length > 0) {
-              const mapped = (agentsList as AIAgent[]).map((a) => {
-                const raw = normalizeAgentId(a);
-                let icon = Sparkles;
-                if (raw === "build") icon = Hammer;
-                if (raw === "plan") icon = MapIcon;
-                return {
-                  id: raw,
-                  name: toDisplayAgentName(a, raw),
-                  description: a.description || undefined,
-                  icon,
-                };
-              });
-              const resolvedAgents = backend === "opencode" && mapped.length === 0
+              const mapped = (agentsList as AIAgent[])
+                .filter((agent) => shouldShowAgentInPicker(agent))
+                .map((a) => {
+                  const raw = normalizeAgentId(a);
+                  let icon = Sparkles;
+                  if (raw === "build") icon = Hammer;
+                  if (raw === "plan") icon = MapIcon;
+                  return {
+                    id: raw,
+                    name: toDisplayAgentName(a, raw),
+                    description: a.description || undefined,
+                    icon,
+                  };
+                });
+              const uniqueAgents = new Map<string, any>();
+              mapped.forEach(a => { if (!uniqueAgents.has(a.id)) uniqueAgents.set(a.id, a); });
+              const deduplicatedMapped = Array.from(uniqueAgents.values());
+
+              const resolvedAgents = backend === "opencode" && deduplicatedMapped.length === 0
                 ? DEFAULT_OPENCODE_AGENTS
-                : mapped;
+                : deduplicatedMapped;
               setAgentsByBackend((prev) => ({ ...prev, [backend]: resolvedAgents }));
               setSelectedAgentByBackend((prev) => ({
                 ...prev,
@@ -2889,18 +2898,24 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
     || (activeBackend === "codex" ? "Auto" : "Select model");
   const selectedModelName = selectedModelNameFull.length > 12 ? selectedModelNameFull.slice(0, 12) + "…" : selectedModelNameFull;
-  const codexPrefsLabel = activeBackend !== "codex"
-    ? ""
-    : `${codexReasoningEffort[0].toUpperCase()}${codexReasoningEffort.slice(1)} · ${codexSpeed[0].toUpperCase()}${codexSpeed.slice(1)}`;
-  const selectedVariantName = selectedVariant
-    ? `${selectedVariant.charAt(0).toUpperCase()}${selectedVariant.slice(1)}`
-    : "";
+  const prefsLabel = activeBackend === "codex"
+    ? `${codexReasoningEffort[0].toUpperCase()}${codexReasoningEffort.slice(1)} · ${codexSpeed[0].toUpperCase()}${codexSpeed.slice(1)}`
+    : (selectedVariant ? `${selectedVariant.charAt(0).toUpperCase()}${selectedVariant.slice(1)}` : "Default");
+
   const selectedAgentNameFull = activeBackend === "codex" && agents.length === 0
     ? ""
     : ((agents.find((a) => a.id === selectedAgent)?.name || selectedAgent) as string);
   const combinedConfigLabel = activeBackend === "opencode" && selectedAgentNameFull
-    ? [selectedAgentNameFull, selectedVariantName, selectedModelName].filter(Boolean).join(" · ")
+    ? [selectedAgentNameFull, selectedModelName].filter(Boolean).join(" · ")
     : selectedModelName;
+  const slashCommands = activeBackend === "codex"
+    ? [{ cmd: "/abort", desc: "Abort current task" }]
+    : [
+        { cmd: "/undo", desc: "Undo last prompt" },
+        { cmd: "/redo", desc: "Redo undone prompt" },
+        { cmd: "/abort", desc: "Abort current task" },
+        { cmd: "/init", desc: "Initialize AGENTS.md" },
+      ];
   useEffect(() => {
     isNearBottomRef.current = true;
     autoFollowRef.current = isStreaming;
@@ -3161,7 +3176,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         mime,
         filename,
         url: `data:${mime};base64,${base64}`,
-      });
+        previewUri: asset.uri,
+      } as AIFileAttachment & { previewUri?: string });
     } catch (err) {
       console.error("Image pick error:", err);
     }
@@ -3181,7 +3197,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               mime,
               filename,
               url: `data:${mime};base64,${base64}`,
-            });
+              previewUri: asset.uri,
+            } as AIFileAttachment & { previewUri?: string });
           } catch (error) {
             console.error("Pending image recovery error:", error);
           }
@@ -3351,7 +3368,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         getModelRef(),
         selectedAgentForBackend,
         activeBackend,
-        pendingImage ? [pendingImage] : undefined,
+        pendingImage ? [{ type: "file", mime: pendingImage.mime, filename: pendingImage.filename, url: pendingImage.url }] : undefined,
         getCodexPromptOptions(),
       );
       setSessionConfigs((prev) => ({
@@ -3889,6 +3906,46 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             </View>
 
 
+            {inputText.startsWith("/") && !pendingImage ? (
+              <View style={{
+                position: "absolute",
+                bottom: composerHeight + 16,
+                left: 12,
+                right: 12,
+                backgroundColor: colors.bg.raised,
+                borderRadius: radius.md,
+                borderWidth: 1,
+                borderColor: colors.border.main,
+                padding: 4,
+                zIndex: 10,
+              }}>
+                {slashCommands.filter(c => c.cmd.startsWith(inputText.toLowerCase())).map((c, i) => (
+                  <TouchableOpacity
+                    key={c.cmd}
+                    style={{
+                      padding: 10,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      backgroundColor: i === 0 ? colors.bg.base : "transparent",
+                      borderRadius: radius.sm,
+                    }}
+                    onPress={() => {
+                      setInputText(c.cmd + " ");
+                      inputRef.current?.focus();
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{ color: colors.fg.default, fontFamily: fonts.mono.regular, fontSize: 13, width: 60 }}>
+                      {c.cmd}
+                    </Text>
+                    <Text style={{ color: colors.fg.muted, fontFamily: fonts.sans.regular, fontSize: 12, flex: 1 }}>
+                      {c.desc}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
             {/* Composer */}
             <LinearGradient
               colors={[colors.bg.base + "1a", colors.bg.base + "ff"]}
@@ -3900,6 +3957,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               pointerEvents={isVoiceMode ? "none" : "auto"}
               style={[
                 styles.inputContainer,
+                inputWrapperAnimatedStyle,
                 {
                   backgroundColor: colors.bg.raised,
                   borderColor: colors.border.main,
@@ -3953,7 +4011,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                 >
                   <View style={{ position: "relative" }}>
                     <Image
-                      source={{ uri: pendingImage.url }}
+                      source={{ uri: pendingImage.previewUri || pendingImage.url }}
                       style={{ width: 88, height: 88, borderRadius: radius.lg, backgroundColor: colors.bg.raised }}
                       resizeMode="cover"
                     />
@@ -4027,17 +4085,17 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                         <ChevronDown size={13} color={colors.fg.subtle} />
                       </TouchableOpacity>
 
-                      {activeBackend === "codex" ? (
+                      {activeBackend === "codex" || activeBackend === "opencode" ? (
                         <TouchableOpacity
                           style={[styles.modelButton, { borderColor: colors.border.secondary, maxWidth: 220 }]}
-                          onPress={() => setActiveSheet("codex-preferences")}
+                          onPress={() => setActiveSheet("backend-preferences")}
                           activeOpacity={0.7}
                         >
                           <Text
                             numberOfLines={1}
                             style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}
                           >
-                            {codexPrefsLabel}
+                            {prefsLabel}
                           </Text>
                           <ChevronDown size={13} color={colors.fg.subtle} />
                         </TouchableOpacity>
@@ -4229,11 +4287,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               onSelectMode={(id) => {
                 setSelectedAgentByBackend((prev) => ({ ...prev, [activeBackend]: id }));
               }}
-              reasoningOptions={activeBackend === 'opencode' ? opencodeVariantOptions : []}
-              selectedReasoningId={selectedVariant}
-              onSelectReasoning={(id) => {
-                setSelectedVariantByBackend((prev) => ({ ...prev, [activeBackend]: id }));
-              }}
               modelOptions={modelOptions}
               selectedModelId={selectedModel}
               onSelectModel={(id) => {
@@ -4247,13 +4300,17 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               fonts={fonts}
             />
 
-            <CodexPreferencesSheet
-              visible={activeSheet === "codex-preferences"}
+            <BackendPreferencesSheet
+              visible={activeSheet === "backend-preferences"}
+              backend={activeBackend}
               selectedReasoningEffort={codexReasoningEffort}
               selectedSpeed={codexSpeed}
               availableReasoningOptions={codexReasoningOptions}
               onSelectReasoningEffort={(value) => setCodexReasoningEffort(value)}
               onSelectSpeed={(value) => setCodexSpeed(value)}
+              opencodeVariantOptions={opencodeVariantOptions}
+              selectedVariant={selectedVariant}
+              onSelectVariant={(id) => setSelectedVariantByBackend((prev) => ({ ...prev, [activeBackend]: id }))}
               showDetailedView={showDetailedView}
               onToggleDetailedView={handleDetailedViewAction}
               onClose={() => setActiveSheet(null)}

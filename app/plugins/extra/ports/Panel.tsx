@@ -72,6 +72,12 @@ function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
         );
         return;
       }
+      if (result.ownerPid && result.ownerPid !== result.pid) {
+        Alert.alert(
+          'Watcher stopped',
+          `Killed the owning process ${result.ownerPid} for port ${port}.`,
+        );
+      }
       if (trackedProxyPorts.includes(port)) {
         await untrackProxyPort(port);
       }
@@ -198,7 +204,7 @@ function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
           showsVerticalScrollIndicator={false}
         >
           {sortedPorts.length === 0 ? (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: spacing[16] }}>
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: spacing[8] }}>
               <Wifi size={36} color={colors.fg.subtle} strokeWidth={1.5} />
               <Text style={{
                 fontSize: 14,

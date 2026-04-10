@@ -42,6 +42,13 @@ export interface ShareInfo {
   [key: string]: unknown;
 }
 
+export interface AgentInfo {
+  id: string;
+  name: string;
+  description?: string;
+  mode?: string;
+}
+
 export interface ProviderInfo {
   providers: unknown[];
   default: Record<string, string>;
@@ -90,7 +97,7 @@ export interface AIProvider {
   abort(sessionId: string): Promise<Record<string, never>>;
 
   // Metadata
-  agents(): Promise<{ agents: unknown }>;
+  agents(): Promise<{ agents: AgentInfo[] }>;
   providers(): Promise<ProviderInfo>;
 
   // Auth
