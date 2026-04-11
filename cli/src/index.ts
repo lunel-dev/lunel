@@ -3447,6 +3447,9 @@ interface ManagerErrorPayload {
   reason?: string;
 }
 
+const MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS = 4;
+const MANAGER_PROXY_ASSIGN_RETRY_BASE_DELAY_MS = 350;
+
 let currentReattachGeneration: number | null = null;
 
 async function readManagerErrorMessage(response: globalThis.Response, fallback: string): Promise<string> {
@@ -3462,6 +3465,12 @@ async function readManagerErrorMessage(response: globalThis.Response, fallback: 
 
 function shouldRetryLegacyManagerRoute(status: number, message: string): boolean {
   return status === 405 || (status === 404 && /not found/i.test(message));
+}
+
+function shouldRetryProxyAssignment(status: number, message: string): boolean {
+  if (status === 404 && /(not found|password invalid)/i.test(message)) return true;
+  if (status === 503) return true;
+  return false;
 }
 
 function normalizeGatewayUrl(input: string): string {
@@ -3550,12 +3559,21 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
 
 async function getAssignedProxyUrl(password: string): Promise<string> {
   const routeUrl = new URL("/v2/proxy", MANAGER_URL);
-  let response = await fetch(routeUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
-  });
-  if (!response.ok) {
+  for (let attempt = 0; attempt <= MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS; attempt += 1) {
+    let response = await fetch(routeUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+
+    if (response.ok) {
+      const payload = await response.json() as Partial<ManagerProxyResponse>;
+      if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
+        throw new Error("Manager returned invalid proxy assignment");
+      }
+      return normalizeGatewayUrl(payload.proxyUrl);
+    }
+
     let message = await readManagerErrorMessage(response, `Failed to get proxy from manager: ${response.status}`);
     if (shouldRetryLegacyManagerRoute(response.status, message)) {
       const legacyUrl = new URL("/v2/proxy", MANAGER_URL);
@@ -3570,13 +3588,23 @@ async function getAssignedProxyUrl(password: string): Promise<string> {
       }
       message = await readManagerErrorMessage(response, `Failed to get proxy from manager: ${response.status}`);
     }
+
+    if (attempt < MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS && shouldRetryProxyAssignment(response.status, message)) {
+      const delayMs = Math.round(
+        MANAGER_PROXY_ASSIGN_RETRY_BASE_DELAY_MS * (attempt + 1) * (0.85 + Math.random() * 0.3),
+      );
+      debugWarn(`[manager] proxy lookup retry ${attempt + 1}/${MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS} in ${delayMs}ms`, {
+        status: response.status,
+        message,
+      });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      continue;
+    }
+
     throw new Error(message);
   }
-  const payload = await response.json() as Partial<ManagerProxyResponse>;
-  if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
-    throw new Error("Manager returned invalid proxy assignment");
-  }
-  return normalizeGatewayUrl(payload.proxyUrl);
+
+  throw new Error("Failed to get proxy from manager after retries");
 }
 
 async function claimReattach(password: string): Promise<ReattachClaimResponse> {

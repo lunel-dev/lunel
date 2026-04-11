@@ -128,12 +128,12 @@ export class V2SessionTransport {
       this.secureReadyReject = reject;
     });
 
-    const connectAttempt = async (useLegacyQuery: boolean): Promise<void> => {
+    const connectAttempt = async (): Promise<void> => {
       const wsUrl = buildSessionV2WsUrl(
         this.options.gatewayUrl,
         this.options.role,
         this.options.generation,
-        Platform.OS === 'web' || useLegacyQuery ? this.options.password : null,
+        this.options.password,
       );
 
       await new Promise<void>((resolve, reject) => {
@@ -198,13 +198,13 @@ export class V2SessionTransport {
     };
 
     if (Platform.OS === 'web') {
-      await connectAttempt(false);
+      await connectAttempt();
     } else {
       try {
-        await connectAttempt(false);
+        await connectAttempt();
       } catch (error) {
         this.options.debugLog?.('[transport:v2] primary connect failed', error instanceof Error ? error.message : String(error));
-        await connectAttempt(true);
+        await connectAttempt();
       }
     }
 

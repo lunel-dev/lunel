@@ -98,6 +98,9 @@ interface ManagerErrorPayload {
   reason?: string;
 }
 
+const MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS = 4;
+const MANAGER_PROXY_ASSIGN_RETRY_BASE_DELAY_MS = 350;
+
 async function readManagerErrorMessage(response: globalThis.Response, fallback: string): Promise<string> {
   try {
     const payload = await response.json() as ManagerErrorPayload;
@@ -111,6 +114,12 @@ async function readManagerErrorMessage(response: globalThis.Response, fallback: 
 
 function shouldRetryLegacyManagerRoute(status: number, message: string): boolean {
   return status === 405 || (status === 404 && /not found/i.test(message));
+}
+
+function shouldRetryProxyAssignment(status: number, message: string): boolean {
+  if (status === 404 && /(not found|password invalid)/i.test(message)) return true;
+  if (status === 503) return true;
+  return false;
 }
 
 interface ManagerHealthProbeResult {
@@ -1101,16 +1110,25 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const getAssignedProxyUrl = useCallback(async (password: string): Promise<string> => {
-    const url = new URL('/v2/proxy', MANAGER_URL);
-    let res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ password }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
+    const routeUrl = new URL('/v2/proxy', MANAGER_URL);
+    for (let attempt = 0; attempt <= MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS; attempt += 1) {
+      let res = await fetch(routeUrl.toString(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password }),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (res.ok) {
+        const payload = await res.json() as { proxyUrl?: string };
+        if (typeof payload.proxyUrl !== 'string' || !payload.proxyUrl) {
+          throw new Error('Invalid proxy lookup response');
+        }
+        return normalizeGateway(payload.proxyUrl);
+      }
+
       let message = await readManagerErrorMessage(res, `Proxy lookup failed (${res.status})`);
       if (shouldRetryLegacyManagerRoute(res.status, message)) {
         const legacyUrl = new URL('/v2/proxy', MANAGER_URL);
@@ -1125,13 +1143,26 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         }
         message = await readManagerErrorMessage(res, `Proxy lookup failed (${res.status})`);
       }
+
+      if (attempt < MANAGER_PROXY_ASSIGN_RETRY_ATTEMPTS && shouldRetryProxyAssignment(res.status, message)) {
+        const delayMs = Math.round(
+          MANAGER_PROXY_ASSIGN_RETRY_BASE_DELAY_MS * (attempt + 1) * (0.85 + Math.random() * 0.3),
+        );
+        logger.warn('connection', 'proxy lookup retry scheduled', {
+          attempt: attempt + 1,
+          nextAttempt: attempt + 2,
+          status: res.status,
+          message,
+          delayMs,
+        });
+        await delay(delayMs);
+        continue;
+      }
+
       throw new ProxyLookupError(message, res.status);
     }
-    const payload = await res.json() as { proxyUrl?: string };
-    if (typeof payload.proxyUrl !== 'string' || !payload.proxyUrl) {
-      throw new Error('Invalid proxy lookup response');
-    }
-    return normalizeGateway(payload.proxyUrl);
+
+    throw new ProxyLookupError('Proxy lookup exhausted retries', 503);
   }, []);
 
   const claimReattach = useCallback(async (password: string): Promise<ReattachClaimResult> => {
