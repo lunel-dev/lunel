@@ -25,6 +25,7 @@ type MobileWebSocketConstructor = {
   new (url: string, protocols?: string | string[], options?: MobileWebSocketOptions): WebSocket;
 };
 const MobileWebSocket = WebSocket as unknown as MobileWebSocketConstructor;
+const TRUSTED_NATIVE_ORIGIN = 'https://lunel.dev';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -86,6 +87,15 @@ function decodeUtf8(value: Uint8Array): string {
   return decoder.decode(value);
 }
 
+function buildNativeWebSocketOptions(password?: string): MobileWebSocketOptions {
+  return {
+    headers: {
+      Origin: TRUSTED_NATIVE_ORIGIN,
+      ...(password ? { 'x-session-password': password } : {}),
+    },
+  };
+}
+
 export class V2SessionTransport {
   private readonly options: V2TransportOptions;
   private ws: WebSocket | null = null;
@@ -129,11 +139,7 @@ export class V2SessionTransport {
       await new Promise<void>((resolve, reject) => {
         const ws = Platform.OS === 'web'
           ? new WebSocket(wsUrl)
-          : new MobileWebSocket(wsUrl, undefined, {
-              headers: {
-                'x-session-password': this.options.password,
-              },
-            });
+          : new MobileWebSocket(wsUrl, undefined, buildNativeWebSocketOptions(this.options.password));
       let opened = false;
       this.ws = ws;
       this.closed = false;

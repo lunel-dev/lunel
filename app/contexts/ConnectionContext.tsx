@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { configureProxy, startPortServers, stopAllServers } from '@/lib/proxyServer';
 import { logger } from '@/lib/logger';
 import { V2SessionTransport } from '@/lib/transport/v2';
@@ -11,6 +11,20 @@ const MANAGER_URL = 'https://manager.lunel.dev';
 const LAST_SESSION_STORAGE_KEY = 'lunel_last_session';
 const LAST_SESSION_FALLBACK_STORAGE_KEY = '@lunel_last_session_fallback';
 const PAIRED_SESSIONS_STORAGE_KEY = 'lunel_paired_sessions';
+const TRUSTED_NATIVE_ORIGIN = 'https://lunel.dev';
+type MobileWebSocketOptions = { headers?: Record<string, string> };
+type MobileWebSocketConstructor = {
+  new (url: string, protocols?: string | string[], options?: MobileWebSocketOptions): WebSocket;
+};
+const MobileWebSocket = WebSocket as unknown as MobileWebSocketConstructor;
+
+function buildNativeWebSocketOptions(): MobileWebSocketOptions {
+  return {
+    headers: {
+      Origin: TRUSTED_NATIVE_ORIGIN,
+    },
+  };
+}
 
 // ============================================================================
 // Types
@@ -1001,7 +1015,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     const wsUrl = `${MANAGER_URL.replace(/^https:/, 'wss:')}/v2/assemble?code=${encodeURIComponent(code)}&role=app`;
 
     return await new Promise<AssembleResult>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = Platform.OS === 'web'
+        ? new WebSocket(wsUrl)
+        : new MobileWebSocket(wsUrl, undefined, buildNativeWebSocketOptions());
       let settled = false;
 
       const assembleTimeout = setTimeout(() => {

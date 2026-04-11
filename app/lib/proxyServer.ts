@@ -7,6 +7,16 @@ type MobileWebSocketConstructor = {
   new (url: string, protocols?: string | string[], options?: MobileWebSocketOptions): WebSocket;
 };
 const MobileWebSocket = WebSocket as unknown as MobileWebSocketConstructor;
+const TRUSTED_NATIVE_ORIGIN = 'https://lunel.dev';
+
+function buildNativeWebSocketOptions(sessionPassword: string | null): MobileWebSocketOptions {
+  return {
+    headers: {
+      Origin: TRUSTED_NATIVE_ORIGIN,
+      ...(sessionPassword ? { 'x-session-password': sessionPassword } : {}),
+    },
+  };
+}
 try {
   const tcpSocketModule = require('react-native-tcp-socket');
   TcpSocket = (tcpSocketModule?.default ?? tcpSocketModule) as typeof import('react-native-tcp-socket').default;
@@ -572,17 +582,7 @@ async function connectProxyWsWithRetry(
     })();
     const proxyWs = Platform.OS === 'web'
       ? new WebSocket(wsUrl)
-      : new MobileWebSocket(
-          wsUrl,
-          undefined,
-          sessionPassword
-            ? {
-                headers: {
-                  'x-session-password': sessionPassword,
-                },
-              }
-            : undefined,
-        );
+      : new MobileWebSocket(wsUrl, undefined, buildNativeWebSocketOptions(sessionPassword));
     proxyWs.binaryType = 'arraybuffer';
 
     try {
