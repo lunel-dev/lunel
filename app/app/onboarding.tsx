@@ -22,6 +22,7 @@ import {
   Shield,
   Sparkles,
 } from "lucide-react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -30,6 +31,7 @@ import {
   FlatList,
   Image,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -82,29 +84,18 @@ const PAGES: Page[] = [
   },
   {
     id: "4",
-    Icon: SquareTerminal as LucideIcon,
-    label: "Full Shell Access",
-    title: "Real Terminal",
-    description:
-      "A complete terminal emulator with SSH access to your machine, or spin up secure cloud sandboxes instantly.",
-    color: "#06b6d4",
+    Icon: Smartphone as LucideIcon,
+    label: "",
+    title: "",
+    description: "",
+    color: "#6366f1",
   },
   {
     id: "5",
-    Icon: FolderGit2 as LucideIcon,
-    label: "Complete Workflow",
-    title: "Files, Editor & Git",
-    description:
-      "Browse your file system, edit code with syntax highlighting across 11+ languages, and commit with built-in Git.",
-    color: "#10b981",
-  },
-  {
-    id: "6",
     Icon: QrCode as LucideIcon,
-    label: "Secure Connection",
-    title: "Pair in Seconds",
-    description:
-      "Scan a QR code to securely connect to your machine. Your code, your environment — always with you.",
+    label: "Lunel Connect",
+    title: "Connect in Seconds",
+    description: "",
     color: "#f59e0b",
   },
 ];
@@ -222,83 +213,90 @@ function ProductModePage() {
   const { colors, fonts } = useTheme();
 
   return (
-    <View style={{ width: SCREEN_WIDTH, flex: 1, paddingHorizontal: 28 }}>
+    <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 28, paddingBottom: 80 }}>
 
-      {/* Header */}
-      <View style={{ paddingTop: 35, marginBottom: 36 }}>
-        <Text style={{ fontSize: 25, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 32, marginBottom: 6 }}>
-          Two ways to ship
-        </Text>
-        <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 22, marginBottom: 16 }}>
-          Connect your machine or code straight from the cloud
-        </Text>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
-            <Ionicons name="scan-outline" size={13} color={colors.fg.default} />
-            <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Scan to connect</Text>
-          </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
-            <Entypo name="cloud" size={13} color={colors.fg.default} />
-            <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Cloud sandbox</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Lunel Connect */}
-      <View style={{ marginBottom: 28 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
-          <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
-            <Ionicons name="scan-outline" size={18} color={colors.fg.default} />
-          </View>
-          <Text style={{ fontSize: 17, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>
-            Lunel Connect
+        {/* Header */}
+        <View style={{ paddingTop: 35, marginBottom: 36 }}>
+          <Text style={{ fontSize: 24, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 30, marginBottom: 6 }}>
+            Two ways to ship
           </Text>
-        </View>
-
-        <View style={{ gap: 7, marginBottom: 14 }}>
-          {CONNECT_POINTS.map((point) => (
-            <View key={point} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: colors.fg.muted }} />
-              <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, flex: 1 }}>{point}</Text>
-            </View>
-          ))}
-        </View>
-
-        <View style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, backgroundColor: colors.bg.raised }}>
-          <Ionicons name="gift" size={14} color={colors.fg.default} />
-          <Text style={{ fontFamily: fonts.sans.medium, fontSize: 12, color: colors.fg.default }}>Lifetime free</Text>
-        </View>
-      </View>
-
-      {/* Lunel Cloud */}
-      <View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
-          <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
-            <Entypo name="cloud" size={18} color={colors.fg.default} />
-          </View>
-          <Text style={{ fontSize: 17, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>
-            Lunel Cloud
+          <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 22, marginBottom: 16 }}>
+            Connect your machine or code straight from the cloud
           </Text>
-          <View style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: "#22c55e18" }}>
-            <Text style={{ fontSize: 9, fontFamily: fonts.sans.semibold, color: "#22c55e", letterSpacing: 0.6 }}>COMING SOON</Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+              <Ionicons name="scan-outline" size={13} color={colors.fg.default} />
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Scan to connect</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+              <Entypo name="cloud" size={13} color={colors.fg.default} />
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Cloud sandbox</Text>
+            </View>
           </View>
         </View>
 
-        <View style={{ gap: 7, marginBottom: 14 }}>
-          {CLOUD_POINTS.map((point) => (
-            <View key={point} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: colors.fg.muted }} />
-              <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, flex: 1 }}>{point}</Text>
+        {/* Lunel Connect */}
+        <View style={{ marginBottom: 28 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="scan-outline" size={18} color={colors.fg.default} />
             </View>
-          ))}
+            <Text style={{ fontSize: 17, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>
+              Lunel Connect
+            </Text>
+          </View>
+
+          <View style={{ gap: 7, marginBottom: 14 }}>
+            {CONNECT_POINTS.map((point) => (
+              <View key={point} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: colors.fg.muted }} />
+                <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, flex: 1 }}>{point}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, backgroundColor: colors.bg.raised }}>
+            <Ionicons name="gift" size={14} color={colors.fg.default} />
+            <Text style={{ fontFamily: fonts.sans.medium, fontSize: 12, color: colors.fg.default }}>Lifetime free</Text>
+          </View>
         </View>
 
-        <View style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, backgroundColor: colors.bg.raised }}>
-          <FontAwesome name="tag" size={14} color={colors.fg.muted} />
-          <Text style={{ fontFamily: fonts.sans.medium, fontSize: 12, color: colors.fg.default }}>Competitively priced</Text>
-        </View>
-      </View>
+        {/* Lunel Cloud */}
+        <View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
+              <Entypo name="cloud" size={18} color={colors.fg.default} />
+            </View>
+            <Text style={{ fontSize: 17, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>
+              Lunel Cloud
+            </Text>
+            <View style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: "#22c55e18" }}>
+              <Text style={{ fontSize: 9, fontFamily: fonts.sans.semibold, color: "#22c55e", letterSpacing: 0.6 }}>COMING SOON</Text>
+            </View>
+          </View>
 
+          <View style={{ gap: 7, marginBottom: 14 }}>
+            {CLOUD_POINTS.map((point) => (
+              <View key={point} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: colors.fg.muted }} />
+                <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, flex: 1 }}>{point}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, backgroundColor: colors.bg.raised }}>
+            <FontAwesome name="tag" size={14} color={colors.fg.muted} />
+            <Text style={{ fontFamily: fonts.sans.medium, fontSize: 12, color: colors.fg.default }}>Competitively priced</Text>
+          </View>
+        </View>
+
+      </ScrollView>
+
+      <LinearGradient
+        colors={[colors.bg.base + "00", colors.bg.base]}
+        style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 80, pointerEvents: "none" }}
+      />
     </View>
   );
 }
@@ -515,7 +513,7 @@ function FeaturesPage() {
       >
         {/* Header */}
         <View style={{ paddingTop: 35, paddingHorizontal: 24, marginBottom: 20 }}>
-          <Text style={{ fontSize: 25, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 32, marginBottom: 6 }}>
+          <Text style={{ fontSize: 24, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 30, marginBottom: 6 }}>
             What's inside
           </Text>
           <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 22, marginBottom: 16 }}>
@@ -550,6 +548,272 @@ function FeaturesPage() {
   );
 }
 
+function CopyableCommand({ command, fonts, colors }: { command: string; fonts: ReturnType<typeof useTheme>["fonts"]; colors: ReturnType<typeof useTheme>["colors"] }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const Clipboard = await import("expo-clipboard");
+    await Clipboard.setStringAsync(command);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+
+  return (
+    <View style={{ backgroundColor: colors.bg.raised, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Terminal size={14} color={colors.fg.muted} strokeWidth={2} />
+      <Text style={{ fontFamily: fonts.mono.regular, fontSize: 12, color: colors.fg.default, flex: 1 }}>
+        {command}
+      </Text>
+      <Pressable onPress={handleCopy} hitSlop={8} style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}>
+        {copied
+          ? <Ionicons name="checkmark" size={14} color={colors.fg.muted} />
+          : <Ionicons name="copy-outline" size={14} color={colors.fg.muted} />
+        }
+      </Pressable>
+    </View>
+  );
+}
+
+function LunelConnectPage() {
+  const { colors, fonts } = useTheme();
+
+  return (
+    <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 90 }}>
+
+        {/* Header */}
+        <View style={{ paddingTop: 35, paddingHorizontal: 28, marginBottom: 32 }}>
+          <Text style={{ fontSize: 24, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 30, marginBottom: 6 }}>
+            Connect in seconds
+          </Text>
+          <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 22 }}>
+            Three steps and your whole machine is on your phone
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+              <Ionicons name="gift" size={13} color={colors.fg.default} />
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Free</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+              <MaterialCommunityIcons name="shield-lock" size={13} color={colors.fg.default} />
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>End-to-end encrypted</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Steps */}
+        <View style={{ paddingHorizontal: 28 }}>
+
+          {/* Step 1 */}
+          <View style={{ flexDirection: "row", gap: 14 }}>
+            <View style={{ alignItems: "center", width: 22 }}>
+              <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ fontSize: 11, fontFamily: fonts.sans.semibold, color: colors.fg.muted }}>1</Text>
+              </View>
+              <View style={{ width: 1, flex: 1, backgroundColor: colors.fg.default + "12", marginTop: 4, marginBottom: 4 }} />
+            </View>
+            <View style={{ flex: 1, paddingBottom: 20 }}>
+              <Text style={{ fontSize: 14, fontFamily: fonts.sans.semibold, color: colors.fg.default, marginBottom: 4, lineHeight: 22 }}>
+                Open your terminal on your PC
+              </Text>
+              <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 20 }}>
+                Navigate to the repository where you want Lunel to work
+              </Text>
+            </View>
+          </View>
+
+          {/* Step 2 */}
+          <View style={{ flexDirection: "row", gap: 14 }}>
+            <View style={{ alignItems: "center", width: 22 }}>
+              <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ fontSize: 11, fontFamily: fonts.sans.semibold, color: colors.fg.muted }}>2</Text>
+              </View>
+              <View style={{ width: 1, flex: 1, backgroundColor: colors.fg.default + "12", marginTop: 4, marginBottom: 4 }} />
+            </View>
+            <View style={{ flex: 1, paddingBottom: 20 }}>
+              <Text style={{ fontSize: 14, fontFamily: fonts.sans.semibold, color: colors.fg.default, marginBottom: 4, lineHeight: 22 }}>
+                Run the command
+              </Text>
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 18, marginBottom: 8 }}>
+                First time in a repo it gives you a QR code to connect. Run it again and it just resumes the last session without a new QR. To reconnect, tap the previous session in the app
+              </Text>
+              <CopyableCommand command="npx lunel-cli" fonts={fonts} colors={colors} />
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 18, marginTop: 8, marginBottom: 6 }}>
+                Need a fresh code?
+              </Text>
+              <CopyableCommand command="npx lunel-cli -n" fonts={fonts} colors={colors} />
+            </View>
+          </View>
+
+          {/* Step 3 */}
+          <View style={{ flexDirection: "row", gap: 14 }}>
+            <View style={{ alignItems: "center", width: 22 }}>
+              <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ fontSize: 11, fontFamily: fonts.sans.semibold, color: colors.fg.muted }}>3</Text>
+              </View>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 14, fontFamily: fonts.sans.semibold, color: colors.fg.default, marginBottom: 4, lineHeight: 22 }}>
+                Scan or type the code
+              </Text>
+              <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 20 }}>
+                A QR code and a short code appear in your terminal. Scan with your camera or type the code in the input field and you're in
+              </Text>
+            </View>
+          </View>
+
+        </View>
+
+        {/* Done */}
+        <View style={{ marginHorizontal: 28, marginTop: 24 }}>
+          <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 20 }}>
+            Once connected, your whole machine lives in your pocket. Ship from the couch, the toilet, anywhere
+          </Text>
+        </View>
+
+        {/* YouTube */}
+        <Pressable
+          onPress={() => Linking.openURL("https://www.youtube.com/@uselunel")}
+          style={({ pressed }) => ({
+            marginHorizontal: 28,
+            marginTop: 20,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            opacity: pressed ? 0.5 : 1,
+          })}
+        >
+          <FontAwesome name="youtube-play" size={15} color={colors.fg.muted} />
+          <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted }}>
+            Watch the tutorial on YouTube
+          </Text>
+          <Ionicons name="chevron-forward" size={13} color={colors.fg.muted} style={{ marginLeft: -4 } as any} />
+        </Pressable>
+
+      </ScrollView>
+
+      <LinearGradient
+        colors={[colors.bg.base + "00", colors.bg.base]}
+        style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 80, pointerEvents: "none" }}
+      />
+    </View>
+  );
+}
+
+const GLAZE_POINTS = [
+  { icon: "github" as const, label: "Open source", sub: "Built in public. Every line on GitHub" },
+  { icon: "shield-lock" as const, label: "End-to-end encrypted", sub: "Your code never touches our servers" },
+  { icon: "gift" as const, label: "Free forever", sub: "Lunel Connect costs nothing, ever" },
+  { icon: "earth" as const, label: "Works with any stack", sub: "Next.js, Node, React Native and more" },
+];
+
+const REVIEWS = [
+  {
+    name: "nafderlin",
+    title: "Game changer for on-the-go devs",
+    text: "Pushed a hotfix from my phone on the train and it just worked. Full terminal, real shell, everything. Can't believe this is free.",
+    stars: 5,
+  },
+  {
+    name: "kenny",
+    title: "Finally a real mobile IDE",
+    text: "Every other app I tried felt like a toy. Lunel actually lets me work. The editor is solid, git is built in, and the QR connect is seamless.",
+    stars: 5,
+  },
+  {
+    name: "max",
+    title: "Setup took literally 10 seconds",
+    text: "Scanned the QR from my terminal and I was in my repo instantly. End to end encrypted too which gives me peace of mind. Highly recommend.",
+    stars: 5,
+  },
+];
+
+function StarRow({ count, colors }: { count: number; colors: ReturnType<typeof useTheme>["colors"] }) {
+  return (
+    <View style={{ flexDirection: "row", gap: 2 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <Ionicons key={i} name="star" size={14} color="#f59e0b" />
+      ))}
+    </View>
+  );
+}
+
+function GlazePage() {
+  const { colors, fonts } = useTheme();
+
+  return (
+    <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 28, paddingBottom: 90 }}>
+        <View style={{ paddingTop: 35, marginBottom: 28 }}>
+          <Text style={{ fontSize: 24, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 30, marginBottom: 6 }}>
+            Built different
+          </Text>
+          <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 22 }}>
+            A few things worth knowing before you dive in
+          </Text>
+        </View>
+
+        <View style={{ gap: 10, marginBottom: 28 }}>
+          {GLAZE_POINTS.map((point) => (
+            <View key={point.label} style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+              <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bg.raised, alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {point.icon === "github"
+                  ? <FontAwesome name="github" size={16} color={colors.fg.default} />
+                  : point.icon === "shield-lock"
+                  ? <MaterialCommunityIcons name="shield-lock" size={16} color={colors.fg.default} />
+                  : point.icon === "gift"
+                  ? <Ionicons name="gift" size={16} color={colors.fg.default} />
+                  : <Ionicons name="earth" size={16} color={colors.fg.default} />
+                }
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontFamily: fonts.sans.semibold, color: colors.fg.default, marginBottom: 1 }}>
+                  {point.label}
+                </Text>
+                <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 18 }}>
+                  {point.sub}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+
+        {/* Reviews */}
+        <Text style={{ fontSize: 14, fontFamily: fonts.sans.medium, color: colors.fg.default, marginBottom: 14 }}>
+          What people are saying
+        </Text>
+        <View style={{ gap: 8 }}>
+          {REVIEWS.map((r) => (
+            <View key={r.name} style={{ backgroundColor: colors.bg.raised, borderRadius: 14, padding: 14, gap: 6 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                <StarRow count={r.stars} colors={colors} />
+                <Text style={{ fontSize: 11, fontFamily: fonts.sans.regular, color: colors.fg.muted }}>{r.name}</Text>
+              </View>
+              <Text style={{ fontSize: 13, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 18 }}>
+                {r.title}
+              </Text>
+              <Text style={{ fontSize: 12, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 18 }}>
+                {r.text}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={{ marginTop: 20 }}>
+          <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 20 }}>
+            If Lunel looks good to you, leaving a quick review helps more developers find it
+          </Text>
+        </View>
+      </ScrollView>
+
+      <LinearGradient
+        colors={[colors.bg.base + "00", colors.bg.base]}
+        style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 80, pointerEvents: "none" }}
+      />
+    </View>
+  );
+}
+
 function OnboardingPage({ page }: { page: Page }) {
   const { colors, fonts } = useTheme();
   const { Icon } = page;
@@ -564,6 +828,14 @@ function OnboardingPage({ page }: { page: Page }) {
 
   if (page.id === "3") {
     return <FeaturesPage />;
+  }
+
+  if (page.id === "4") {
+    return <GlazePage />;
+  }
+
+  if (page.id === "5") {
+    return <LunelConnectPage />;
   }
 
   return (
@@ -644,21 +916,46 @@ export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(0);
   const flatListRef = useRef<FlatList>(null);
+  const dotAnims = useRef(PAGES.map((_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
+
+  useEffect(() => {
+    PAGES.forEach((_, i) => {
+      Animated.spring(dotAnims[i], {
+        toValue: i === currentIndex ? 1 : 0,
+        useNativeDriver: false,
+        speed: 20,
+        bounciness: 4,
+      }).start();
+    });
+  }, [currentIndex]);
 
   const isLastPage = currentIndex === PAGES.length - 1;
+  const isReviewPage = currentIndex === 3;
+  const showReviewButton = isReviewPage && Platform.OS === "ios";
+  const IOS_REVIEW_URL = "https://apps.apple.com/app/apple-store/id6759504065?action=write-review";
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
+    await AsyncStorage.setItem("@lunel_onboarding_done", "true");
     router.replace("/auth");
+  };
+
+  const goNext = () => {
+    const nextIndex = currentIndex + 1;
+    flatListRef.current?.scrollToIndex({ index: nextIndex, animated: true });
+    setCurrentIndex(nextIndex);
   };
 
   const handleNext = () => {
     if (!isLastPage) {
-      const nextIndex = currentIndex + 1;
-      flatListRef.current?.scrollToIndex({ index: nextIndex, animated: true });
-      setCurrentIndex(nextIndex);
+      goNext();
     } else {
       handleComplete();
     }
+  };
+
+  const handleReview = () => {
+    Linking.openURL(IOS_REVIEW_URL);
+    goNext();
   };
 
   const onViewableItemsChanged = useRef(
@@ -671,6 +968,7 @@ export default function OnboardingScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
+
       <FlatList
         ref={flatListRef}
         data={PAGES}
@@ -695,21 +993,20 @@ export default function OnboardingScreen() {
       >
         {/* Dot indicators */}
         <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, height: 8, marginBottom: 8 }}>
-          {PAGES.map((_, i) => (
-            <View
-              key={i}
-              style={{
-                width: i === currentIndex ? 22 : 6,
-                height: 6,
-                borderRadius: 3,
-                backgroundColor: i === currentIndex ? colors.accent.default : colors.fg.default + "1a",
-              }}
-            />
-          ))}
+          {PAGES.map((_, i) => {
+            const width = dotAnims[i].interpolate({ inputRange: [0, 1], outputRange: [6, 22] });
+            const bg = dotAnims[i].interpolate({ inputRange: [0, 1], outputRange: [colors.fg.default + "1a", colors.accent.default] });
+            return (
+              <Animated.View
+                key={i}
+                style={{ width, height: 6, borderRadius: 3, backgroundColor: bg }}
+              />
+            );
+          })}
         </View>
 
         <Pressable
-          onPress={handleNext}
+          onPress={showReviewButton ? handleReview : handleNext}
           style={({ pressed }) => ({
             backgroundColor: colors.accent.default,
             borderRadius: 16,
@@ -719,7 +1016,7 @@ export default function OnboardingScreen() {
           })}
         >
           <Text style={{ fontSize: 16, fontFamily: fonts.sans.semibold, color: "#ffffff", letterSpacing: 0.3 }}>
-            {isLastPage ? "Get Started" : "Continue"}
+            {showReviewButton ? "Leave a Review" : isLastPage ? "Get Started" : "Continue"}
           </Text>
         </Pressable>
       </View>
