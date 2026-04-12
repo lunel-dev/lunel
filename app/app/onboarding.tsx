@@ -1,4 +1,5 @@
 import { useTheme } from "@/contexts/ThemeContext";
+import Entypo from "@expo/vector-icons/Entypo";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
@@ -53,6 +54,14 @@ const PAGES: Page[] = [
   },
   {
     id: "2",
+    Icon: Smartphone as LucideIcon,
+    label: "Choose Your Path",
+    title: "Two Ways to Use Lunel",
+    description: "",
+    color: "#6366f1",
+  },
+  {
+    id: "3",
     Icon: Bot as LucideIcon,
     label: "Code Smarter",
     title: "AI-Powered Assistant",
@@ -61,7 +70,7 @@ const PAGES: Page[] = [
     color: "#8b5cf6",
   },
   {
-    id: "3",
+    id: "4",
     Icon: SquareTerminal as LucideIcon,
     label: "Full Shell Access",
     title: "Real Terminal",
@@ -70,7 +79,7 @@ const PAGES: Page[] = [
     color: "#06b6d4",
   },
   {
-    id: "4",
+    id: "5",
     Icon: FolderGit2 as LucideIcon,
     label: "Complete Workflow",
     title: "Files, Editor & Git",
@@ -79,7 +88,7 @@ const PAGES: Page[] = [
     color: "#10b981",
   },
   {
-    id: "5",
+    id: "6",
     Icon: QrCode as LucideIcon,
     label: "Secure Connection",
     title: "Pair in Seconds",
@@ -88,7 +97,6 @@ const PAGES: Page[] = [
     color: "#f59e0b",
   },
 ];
-
 
 const midW = Math.round(SCREEN_WIDTH * 0.52);
 const midH = Math.round(midW * 16 / 9);
@@ -99,26 +107,31 @@ const sideOffset = Math.round(SCREEN_WIDTH * 0.20);
 function WelcomePage() {
   const { colors, fonts, isDark } = useTheme();
   const anim = useRef(new Animated.Value(0)).current;
+  const giftShake = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
+    // Phone slide animation
     Animated.loop(
       Animated.sequence([
         Animated.delay(3000),
-        Animated.timing(anim, {
-          toValue: 1,
-          duration: 1200,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
+        Animated.timing(anim, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
         Animated.delay(800),
-        Animated.timing(anim, {
-          toValue: 0,
-          duration: 1200,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
+        Animated.timing(anim, { toValue: 0, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ])
+    ).start();
+
+    // Gift shake: still 2.5s → rapid wiggle → repeat
+    Animated.loop(
+      Animated.sequence([
+        Animated.delay(2500),
+        Animated.timing(giftShake, { toValue: 1,  duration: 70, easing: Easing.linear, useNativeDriver: true }),
+        Animated.timing(giftShake, { toValue: -1, duration: 70, easing: Easing.linear, useNativeDriver: true }),
+        Animated.timing(giftShake, { toValue: 0,  duration: 70, easing: Easing.linear, useNativeDriver: true }),
       ])
     ).start();
   }, []);
+
+  const giftRotate = giftShake.interpolate({ inputRange: [-1, 1], outputRange: ["-18deg", "18deg"] });
 
   const leftRotate = anim.interpolate({ inputRange: [0, 1], outputRange: ["-8deg", "0deg"] });
   const rightRotate = anim.interpolate({ inputRange: [0, 1], outputRange: ["8deg", "0deg"] });
@@ -136,19 +149,16 @@ function WelcomePage() {
       </Pressable>
 
       <View style={{ width: SCREEN_WIDTH, height: midH, alignItems: "center", justifyContent: "center", overflow: "visible" }}>
-        {/* Left phone */}
         <Animated.Image
           source={isDark ? require("@/assets/images/onboarding/1/right-dark.png") : require("@/assets/images/onboarding/1/right.png")}
           style={{ position: "absolute", width: sideW, height: sideH, transform: [{ translateX: leftX }, { translateY: 16 }, { rotate: leftRotate }] }}
           resizeMode="contain"
         />
-        {/* Right phone */}
         <Animated.Image
           source={isDark ? require("@/assets/images/onboarding/1/left-dark.png") : require("@/assets/images/onboarding/1/left.png")}
           style={{ position: "absolute", width: sideW, height: sideH, transform: [{ translateX: rightX }, { translateY: 16 }, { rotate: rightRotate }] }}
           resizeMode="contain"
         />
-        {/* Middle phone — rendered last = on top */}
         <Image
           source={isDark ? require("@/assets/images/onboarding/1/middle-dark.png") : require("@/assets/images/onboarding/1/middle.png")}
           style={{ position: "absolute", width: midW, height: midH }}
@@ -170,11 +180,92 @@ function WelcomePage() {
             <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>End-to-end encryption</Text>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.bg.raised, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5 }}>
-            <Ionicons name="gift" size={14} color={colors.fg.default} />
+            <Animated.View style={{ transform: [{ rotate: giftRotate }] }}>
+              <Ionicons name="gift" size={14} color={colors.fg.default} />
+            </Animated.View>
             <Text style={{ fontSize: 12, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>Free</Text>
           </View>
         </View>
       </View>
+    </View>
+  );
+}
+
+const CONNECT_COLOR = "#8b5cf6";
+const CLOUD_COLOR = "#38bdf8";
+
+function ProductModePage() {
+  const { colors, fonts, isDark } = useTheme();
+
+  return (
+    <View style={{ width: SCREEN_WIDTH, flex: 1, paddingHorizontal: 28 }}>
+
+      {/* Top — heading + tags */}
+      <View style={{ paddingTop: 35, marginBottom: 44 }}>
+        <Text style={{ fontSize: 25, fontFamily: fonts.sans.semibold, color: colors.fg.default, lineHeight: 32, marginBottom: 4 }}>
+          Two ways to ship
+        </Text>
+        <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 22, marginBottom: 16 }}>
+          Connect your machine or code straight from the cloud
+        </Text>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+            <Ionicons name="scan-outline" size={13} color={colors.fg.default} />
+            <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Scan to connect</Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+            <Entypo name="cloud" size={13} color={colors.fg.default} />
+            <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Cloud sandbox</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Lunel Connect */}
+      <View style={{ flexDirection: "row", gap: 18, marginBottom: 36 }}>
+        {/* Icon */}
+        <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: CONNECT_COLOR + "18", alignItems: "center", justifyContent: "center" }}>
+          <Ionicons name="scan-outline" size={24} color={CONNECT_COLOR} />
+        </View>
+
+        {/* Content */}
+        <View style={{ flex: 1, paddingTop: 4 }}>
+          <Text style={{ fontSize: 19, fontFamily: fonts.sans.semibold, color: colors.fg.default, marginBottom: 6 }}>
+            Lunel Connect
+          </Text>
+          <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 21, marginBottom: 14 }}>
+            Run one command and scan. Your terminal, editor, and git — all live on your phone. Everything stays on your machine.
+          </Text>
+          {/* Command pill */}
+          <View style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, backgroundColor: CONNECT_COLOR + "12" }}>
+            <Ionicons name="terminal-outline" size={12} color={CONNECT_COLOR} />
+            <Text style={{ fontFamily: fonts.mono.regular, fontSize: 12, color: CONNECT_COLOR }}>npx lunel-cli</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Lunel Cloud */}
+      <View style={{ flexDirection: "row", gap: 18 }}>
+        {/* Icon — no connector below */}
+        <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: CLOUD_COLOR + "18", alignItems: "center", justifyContent: "center" }}>
+          <Entypo name="cloud" size={24} color={CLOUD_COLOR} />
+        </View>
+
+        {/* Content */}
+        <View style={{ flex: 1, paddingTop: 4 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <Text style={{ fontSize: 19, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>
+              Lunel Cloud
+            </Text>
+            <View style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: CLOUD_COLOR + "18" }}>
+              <Text style={{ fontSize: 9, fontFamily: fonts.sans.semibold, color: CLOUD_COLOR, letterSpacing: 0.6 }}>COMING SOON</Text>
+            </View>
+          </View>
+          <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 21 }}>
+            No laptop? No problem. Spin up a secure cloud sandbox instantly — zero setup, code from anywhere.
+          </Text>
+        </View>
+      </View>
+
     </View>
   );
 }
@@ -187,9 +278,12 @@ function OnboardingPage({ page }: { page: Page }) {
     return <WelcomePage />;
   }
 
+  if (page.id === "2") {
+    return <ProductModePage />;
+  }
+
   return (
     <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
-      {/* Illustration */}
       <View style={{ alignItems: "center", justifyContent: "center", flex: 1 }}>
         <View
           style={{
@@ -217,7 +311,6 @@ function OnboardingPage({ page }: { page: Page }) {
         </View>
       </View>
 
-      {/* Text */}
       <View style={{ paddingHorizontal: 36, paddingBottom: 28, alignItems: "center" }}>
         <Text
           style={{
@@ -262,27 +355,13 @@ function OnboardingPage({ page }: { page: Page }) {
 }
 
 export default function OnboardingScreen() {
-  const { colors, fonts, radius } = useTheme();
+  const { colors, fonts } = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(0);
   const flatListRef = useRef<FlatList>(null);
 
-  const currentPage = PAGES[currentIndex];
   const isLastPage = currentIndex === PAGES.length - 1;
-
-  const dotAnims = useRef(PAGES.map((_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
-
-  useEffect(() => {
-    PAGES.forEach((_, i) => {
-      Animated.timing(dotAnims[i], {
-        toValue: i === currentIndex ? 1 : 0,
-        duration: 300,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }).start();
-    });
-  }, [currentIndex]);
 
   const handleComplete = () => {
     router.replace("/auth");
@@ -308,7 +387,6 @@ export default function OnboardingScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
-      {/* Swipeable Pages */}
       <FlatList
         ref={flatListRef}
         data={PAGES}
@@ -331,37 +409,21 @@ export default function OnboardingScreen() {
           gap: 16,
         }}
       >
-        {/* Page Dot Indicators */}
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "center",
-            alignItems: "center",
-            gap: 6,
-            height: 8,
-            marginBottom: 8,
-          }}
-        >
+        {/* Dot indicators */}
+        <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, height: 8, marginBottom: 8 }}>
           {PAGES.map((_, i) => (
-            <Animated.View
+            <View
               key={i}
               style={{
-                width: dotAnims[i].interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [6, 22],
-                }),
+                width: i === currentIndex ? 22 : 6,
                 height: 6,
                 borderRadius: 3,
-                backgroundColor: dotAnims[i].interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [colors.fg.default + "1a", colors.accent.default],
-                }),
+                backgroundColor: i === currentIndex ? colors.accent.default : colors.fg.default + "1a",
               }}
             />
           ))}
         </View>
 
-        {/* Continue / Get Started Button */}
         <Pressable
           onPress={handleNext}
           style={({ pressed }) => ({
@@ -372,14 +434,7 @@ export default function OnboardingScreen() {
             opacity: pressed ? 0.82 : 1,
           })}
         >
-          <Text
-            style={{
-              fontSize: 16,
-              fontFamily: fonts.sans.semibold,
-              color: "#ffffff",
-              letterSpacing: 0.3,
-            }}
-          >
+          <Text style={{ fontSize: 16, fontFamily: fonts.sans.semibold, color: "#ffffff", letterSpacing: 0.3 }}>
             {isLastPage ? "Get Started" : "Continue"}
           </Text>
         </Pressable>
