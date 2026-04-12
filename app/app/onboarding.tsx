@@ -1,4 +1,7 @@
 import { useTheme } from "@/contexts/ThemeContext";
+import FontAwesome from "@expo/vector-icons/FontAwesome";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { useRouter } from "expo-router";
 import {
   Bot,
@@ -7,10 +10,14 @@ import {
   Smartphone,
   SquareTerminal,
 } from "lucide-react-native";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  Animated,
   Dimensions,
+  Easing,
   FlatList,
+  Image,
+  Linking,
   Pressable,
   Text,
   View,
@@ -41,8 +48,7 @@ const PAGES: Page[] = [
     Icon: Smartphone as LucideIcon,
     label: "Your Mobile IDE",
     title: "Welcome to Lunel",
-    description:
-      "Code on your phone, run on your machine or in secure cloud sandboxes. Full development power in your pocket.",
+    description: "Ship from anywhere.",
     color: "#6366f1",
   },
   {
@@ -83,88 +89,174 @@ const PAGES: Page[] = [
   },
 ];
 
+
+const midW = Math.round(SCREEN_WIDTH * 0.52);
+const midH = Math.round(midW * 16 / 9);
+const sideW = Math.round(SCREEN_WIDTH * 0.42);
+const sideH = Math.round(sideW * 16 / 9);
+const sideOffset = Math.round(SCREEN_WIDTH * 0.20);
+
+function WelcomePage() {
+  const { colors, fonts, isDark } = useTheme();
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.delay(3000),
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.delay(800),
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, []);
+
+  const leftRotate = anim.interpolate({ inputRange: [0, 1], outputRange: ["-8deg", "0deg"] });
+  const rightRotate = anim.interpolate({ inputRange: [0, 1], outputRange: ["8deg", "0deg"] });
+  const leftX = anim.interpolate({ inputRange: [0, 1], outputRange: [-sideOffset, 0] });
+  const rightX = anim.interpolate({ inputRange: [0, 1], outputRange: [sideOffset, 0] });
+
+  return (
+    <View style={{ width: SCREEN_WIDTH, flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <Pressable
+        onPress={() => Linking.openURL("https://github.com/lunel-dev/lunel")}
+        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised, marginBottom: 32, opacity: pressed ? 0.6 : 1, borderWidth: 0.5, borderColor: colors.border.main })}
+      >
+        <FontAwesome name="github" size={14} color={colors.fg.default} />
+        <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>Open Source</Text>
+      </Pressable>
+
+      <View style={{ width: SCREEN_WIDTH, height: midH, alignItems: "center", justifyContent: "center", overflow: "visible" }}>
+        {/* Left phone */}
+        <Animated.Image
+          source={isDark ? require("@/assets/images/onboarding/1/right-dark.png") : require("@/assets/images/onboarding/1/right.png")}
+          style={{ position: "absolute", width: sideW, height: sideH, transform: [{ translateX: leftX }, { translateY: 16 }, { rotate: leftRotate }] }}
+          resizeMode="contain"
+        />
+        {/* Right phone */}
+        <Animated.Image
+          source={isDark ? require("@/assets/images/onboarding/1/left-dark.png") : require("@/assets/images/onboarding/1/left.png")}
+          style={{ position: "absolute", width: sideW, height: sideH, transform: [{ translateX: rightX }, { translateY: 16 }, { rotate: rightRotate }] }}
+          resizeMode="contain"
+        />
+        {/* Middle phone — rendered last = on top */}
+        <Image
+          source={isDark ? require("@/assets/images/onboarding/1/middle-dark.png") : require("@/assets/images/onboarding/1/middle.png")}
+          style={{ position: "absolute", width: midW, height: midH }}
+          resizeMode="contain"
+        />
+      </View>
+
+      <View style={{ alignItems: "center", paddingHorizontal: 32, gap: 10, marginTop: 24 }}>
+        <Text style={{ fontSize: 25, fontFamily: fonts.sans.semibold, color: colors.fg.default, textAlign: "center", lineHeight: 32 }}>
+          Lunel
+        </Text>
+        <Text style={{ fontSize: 14, fontFamily: fonts.sans.regular, color: colors.fg.muted, textAlign: "center", lineHeight: 22, maxWidth: 280, marginTop: -3 }}>
+          lunel brings your whole dev environment in your pocket
+        </Text>
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.bg.raised }}>
+            <MaterialCommunityIcons name="shield-lock" size={14} color={colors.fg.default} />
+            <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.default }}>End-to-end encryption</Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.bg.raised, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5 }}>
+            <Ionicons name="gift" size={14} color={colors.fg.default} />
+            <Text style={{ fontSize: 12, fontFamily: fonts.sans.semibold, color: colors.fg.default }}>Free</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function OnboardingPage({ page }: { page: Page }) {
   const { colors, fonts } = useTheme();
   const { Icon } = page;
 
+  if (page.id === "1") {
+    return <WelcomePage />;
+  }
+
   return (
-    <View
-      style={{
-        width: SCREEN_WIDTH,
-        flex: 1,
-        alignItems: "center",
-        justifyContent: "center",
-        paddingHorizontal: 36,
-      }}
-    >
-      {/* Icon illustration — two nested circles */}
-      <View
-        style={{
-          width: 176,
-          height: 176,
-          borderRadius: 88,
-          backgroundColor: page.color + "14",
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 52,
-        }}
-      >
+    <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+      {/* Illustration */}
+      <View style={{ alignItems: "center", justifyContent: "center", flex: 1 }}>
         <View
           style={{
-            width: 116,
-            height: 116,
-            borderRadius: 58,
-            backgroundColor: page.color + "22",
+            width: 176,
+            height: 176,
+            borderRadius: 88,
+            backgroundColor: page.color + "14",
             alignItems: "center",
             justifyContent: "center",
+            marginBottom: 52,
           }}
         >
-          <Icon size={50} color={page.color} strokeWidth={1.5} />
+          <View
+            style={{
+              width: 116,
+              height: 116,
+              borderRadius: 58,
+              backgroundColor: page.color + "22",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon size={50} color={page.color} strokeWidth={1.5} />
+          </View>
         </View>
       </View>
 
-      {/* Label */}
-      <Text
-        style={{
-          fontSize: 11,
-          fontFamily: fonts.sans.semibold,
-          color: page.color,
-          textTransform: "uppercase",
-          letterSpacing: 2,
-          marginBottom: 14,
-          textAlign: "center",
-        }}
-      >
-        {page.label}
-      </Text>
-
-      {/* Title */}
-      <Text
-        style={{
-          fontSize: 28,
-          fontFamily: fonts.sans.semibold,
-          color: colors.fg.default,
-          textAlign: "center",
-          marginBottom: 16,
-          lineHeight: 36,
-        }}
-      >
-        {page.title}
-      </Text>
-
-      {/* Description */}
-      <Text
-        style={{
-          fontSize: 15,
-          fontFamily: fonts.sans.regular,
-          color: colors.fg.muted,
-          textAlign: "center",
-          lineHeight: 24,
-          maxWidth: 296,
-        }}
-      >
-        {page.description}
-      </Text>
+      {/* Text */}
+      <View style={{ paddingHorizontal: 36, paddingBottom: 28, alignItems: "center" }}>
+        <Text
+          style={{
+            fontSize: 11,
+            fontFamily: fonts.sans.semibold,
+            color: page.color,
+            textTransform: "uppercase",
+            letterSpacing: 2,
+            marginBottom: 14,
+            textAlign: "center",
+          }}
+        >
+          {page.label}
+        </Text>
+        <Text
+          style={{
+            fontSize: 28,
+            fontFamily: fonts.sans.semibold,
+            color: colors.fg.default,
+            textAlign: "center",
+            marginBottom: 16,
+            lineHeight: 36,
+          }}
+        >
+          {page.title}
+        </Text>
+        <Text
+          style={{
+            fontSize: 15,
+            fontFamily: fonts.sans.regular,
+            color: colors.fg.muted,
+            textAlign: "center",
+            lineHeight: 24,
+            maxWidth: 296,
+          }}
+        >
+          {page.description}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -178,6 +270,19 @@ export default function OnboardingScreen() {
 
   const currentPage = PAGES[currentIndex];
   const isLastPage = currentIndex === PAGES.length - 1;
+
+  const dotAnims = useRef(PAGES.map((_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
+
+  useEffect(() => {
+    PAGES.forEach((_, i) => {
+      Animated.timing(dotAnims[i], {
+        toValue: i === currentIndex ? 1 : 0,
+        duration: 300,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    });
+  }, [currentIndex]);
 
   const handleComplete = () => {
     router.replace("/auth");
@@ -202,7 +307,7 @@ export default function OnboardingScreen() {
   ).current;
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg.base, paddingTop: insets.top }}>
+    <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
       {/* Swipeable Pages */}
       <FlatList
         ref={flatListRef}
@@ -218,7 +323,6 @@ export default function OnboardingScreen() {
         scrollEventThrottle={16}
       />
 
-      {/* Bottom Controls */}
       <View
         style={{
           paddingHorizontal: 24,
@@ -235,19 +339,23 @@ export default function OnboardingScreen() {
             alignItems: "center",
             gap: 6,
             height: 8,
+            marginBottom: 8,
           }}
         >
           {PAGES.map((_, i) => (
-            <View
+            <Animated.View
               key={i}
               style={{
-                width: i === currentIndex ? 22 : 6,
+                width: dotAnims[i].interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [6, 22],
+                }),
                 height: 6,
                 borderRadius: 3,
-                backgroundColor:
-                  i === currentIndex
-                    ? currentPage.color
-                    : colors.fg.default + "1a",
+                backgroundColor: dotAnims[i].interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [colors.fg.default + "1a", colors.accent.default],
+                }),
               }}
             />
           ))}
@@ -257,8 +365,8 @@ export default function OnboardingScreen() {
         <Pressable
           onPress={handleNext}
           style={({ pressed }) => ({
-            backgroundColor: currentPage.color,
-            borderRadius: radius.md,
+            backgroundColor: colors.accent.default,
+            borderRadius: 16,
             paddingVertical: 16,
             alignItems: "center",
             opacity: pressed ? 0.82 : 1,
@@ -275,28 +383,6 @@ export default function OnboardingScreen() {
             {isLastPage ? "Get Started" : "Continue"}
           </Text>
         </Pressable>
-
-        {/* Skip */}
-        {!isLastPage && (
-          <Pressable
-            onPress={handleComplete}
-            style={({ pressed }) => ({
-              alignItems: "center",
-              paddingVertical: 4,
-              opacity: pressed ? 0.5 : 1,
-            })}
-          >
-            <Text
-              style={{
-                fontSize: 14,
-                fontFamily: fonts.sans.medium,
-                color: colors.fg.subtle,
-              }}
-            >
-              Skip for now
-            </Text>
-          </Pressable>
-        )}
       </View>
     </View>
   );
