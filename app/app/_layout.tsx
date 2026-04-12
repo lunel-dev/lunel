@@ -133,16 +133,15 @@ function RootLayoutContent() {
   const isSettings = pathname.startsWith("/settings");
   const isHelp = pathname.startsWith("/help");
   const isFeedback = pathname.startsWith("/feedback");
-  const useEdgeToEdgeTopInset = isWorkspace || isSettings || isHelp || isFeedback;
+  const useEdgeToEdgeTopInset = isWorkspace || isSettings || isHelp || isFeedback || isOnboarding;
   const isAuth = pathname.startsWith("/auth");
   const isLunelConnect = pathname.startsWith("/lunel-connect");
+  const isOnboarding = pathname.startsWith("/onboarding");
   const statusBarBg = isLunelConnect
     ? "#000000"
     : isWorkspace
       ? colors.bg.raised
-      : isAuth
-        ? colors.bg.base
-        : colors.bg.base;
+      : colors.bg.base;
   const statusBarStyle = isLunelConnect || isDark ? "light" : "dark";
   const [isReady, setIsReady] = useState(false);
   const [fontsLoaded] = useFonts({

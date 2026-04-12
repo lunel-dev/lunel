@@ -1,5 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as StoreReview from "expo-store-review";
+let StoreReview: typeof import("expo-store-review") | null = null;
+try {
+  StoreReview = require("expo-store-review");
+} catch {
+  // Native module not available (e.g. Expo Go) — store review is disabled.
+}
 import React, {
   createContext,
   ReactNode,
@@ -99,7 +104,7 @@ export function ReviewPromptProvider({ children }: { children: ReactNode }) {
       try {
         const [savedState, hasAction] = await Promise.all([
           AsyncStorage.getItem(REVIEW_PROMPT_STORAGE_KEY),
-          StoreReview.hasAction().catch(() => false),
+          StoreReview?.hasAction().catch(() => false) ?? false,
         ]);
 
         if (!isMounted) {
@@ -235,7 +240,7 @@ export function ReviewPromptProvider({ children }: { children: ReactNode }) {
       if (Platform.OS === "ios") {
         await Linking.openURL(IOS_WRITE_REVIEW_URL);
       } else {
-        await StoreReview.requestReview();
+        await StoreReview?.requestReview();
       }
       const nextState: ReviewPromptStorage = {
         promptCount: storageStateRef.current.promptCount + 1,
