@@ -6,6 +6,7 @@ import { Codex, OpenCode, ClaudeCode } from "@lobehub/icons-rn";
 import { useAppSettings } from "@/contexts/AppSettingsContext";
 import { useSessionRegistryActions } from "@/contexts/SessionRegistry";
 import { useTheme } from "@/contexts/ThemeContext";
+import { typography } from "@/constants/themes";
 import { useConnection } from "@/contexts/ConnectionContext";
 import { useEditorConfig } from "@/contexts/EditorContext";
 import { useAI } from "@/hooks/useAI";
@@ -16,7 +17,7 @@ import FileChange from "./FileChange";
 import {
   Sparkle, Sparkles, Check, X, Plus,
   Hammer, Map as MapIcon, Square, AlertTriangle, Key,
-  EllipsisVertical, ChevronDown, Mic, LoaderCircle, SquaresSubtract,
+  EllipsisVertical, ChevronDown, LoaderCircle, SquaresSubtract,
 } from "lucide-react-native";
 import { Canvas, Circle } from "@shopify/react-native-skia";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -53,6 +54,9 @@ import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
+import Feather from "@expo/vector-icons/Feather";
+import Fontisto from "@expo/vector-icons/Fontisto";
 import { Audio } from "expo-av";
 import Svg, { Path } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -2698,6 +2702,88 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     return uri;
   }, [resetEqualizer]);
 
+  const handleAttachment = useCallback(() => {
+    Alert.alert("Attach", "Choose an option", [
+      {
+        text: "Select from Gallery",
+        onPress: async () => {
+          try {
+            const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (!permission.granted) {
+              Alert.alert("Photos Permission", "Photo library permission is required to upload images.");
+              return;
+            }
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              quality: 0.9,
+              base64: false,
+              allowsMultipleSelection: false,
+              presentationStyle: Platform.OS === "ios" ? ImagePicker.UIImagePickerPresentationStyle.FULL_SCREEN : undefined,
+              preferredAssetRepresentationMode: Platform.OS === "ios"
+                ? ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible
+                : undefined,
+              shouldDownloadFromNetwork: Platform.OS === "ios",
+            });
+            if (result.canceled || !result.assets?.[0]) return;
+            const asset = result.assets[0];
+            const mime = inferImageMime(asset.uri, asset.mimeType);
+            const filename = asset.fileName || asset.uri.split("/").pop() || "image";
+            const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            setPendingImage({ type: "file", mime, filename, url: `data:${mime};base64,${base64}` });
+          } catch (err) {
+            console.error("Gallery pick error:", err);
+            Alert.alert("Error", "Failed to pick image");
+          }
+        },
+      },
+      {
+        text: "Take Photo",
+        onPress: async () => {
+          try {
+            const permission = await ImagePicker.requestCameraPermissionsAsync();
+            if (!permission.granted) {
+              Alert.alert("Camera Permission", "Camera permission is required to take photos.");
+              return;
+            }
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ["images"],
+              quality: 0.9,
+              base64: false,
+              presentationStyle: Platform.OS === "ios" ? ImagePicker.UIImagePickerPresentationStyle.FULL_SCREEN : undefined,
+            });
+            if (result.canceled || !result.assets?.[0]) return;
+            const asset = result.assets[0];
+            const mime = inferImageMime(asset.uri, asset.mimeType);
+            const filename = asset.fileName || asset.uri.split("/").pop() || "photo";
+            const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            setPendingImage({ type: "file", mime, filename, url: `data:${mime};base64,${base64}` });
+          } catch (err) {
+            console.error("Camera error:", err);
+            Alert.alert("Error", "Failed to take photo");
+          }
+        },
+      },
+      {
+        text: "Choose File",
+        onPress: async () => {
+          try {
+            const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+            if (result.canceled || !result.assets?.[0]) return;
+            const asset = result.assets[0];
+            const mime = asset.mimeType || "application/octet-stream";
+            const filename = asset.name;
+            const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            setPendingImage({ type: "file", mime, filename, url: `data:${mime};base64,${base64}` });
+          } catch (err) {
+            console.error("Document pick error:", err);
+            Alert.alert("Error", "Failed to pick file");
+          }
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }, []);
+
   const handlePickImage = useCallback(async () => {
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -3244,17 +3330,18 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                 flexDirection: "row",
                 alignItems: "center",
                 gap: 12,
+                paddingHorizontal: 0,
                 backgroundColor: disabled ? colors.bg.base : "transparent",
                 borderRadius: 10,
                 opacity: disabled ? 0.55 : 1,
               }]}
             >
-              <Icon size={26} color={colors.fg.default} />
+              <Icon size={24} color={colors.fg.default} />
               <View>
-                <Text style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.medium }}>
+                <Text style={{ color: colors.fg.default, fontSize: typography.body, fontFamily: fonts.sans.medium }}>
                   {label}
                 </Text>
-                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular, marginTop: 1 }}>
+                <Text style={{ color: colors.fg.muted, fontSize: typography.caption, fontFamily: fonts.sans.regular, marginTop: 1 }}>
                   {description}
                 </Text>
               </View>
@@ -3543,58 +3630,61 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
               <View style={styles.composerBottomBar}>
                 <View pointerEvents={isVoiceMode ? "none" : "auto"} style={styles.composerRow}>
-                  <TouchableOpacity
-                    style={[styles.actionButton, { borderRadius: 9999 }]}
-                    onPress={handlePickImage}
-                    activeOpacity={0.7}
-                    disabled={isVoiceBusy}
-                  >
-                    <Plus size={18} color={colors.fg.default} strokeWidth={1.7} />
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.modelButton, { borderColor: colors.border.secondary, maxWidth: 260 }]}
-                    onPress={() => setActiveSheet("configure")}
-                    activeOpacity={0.7}
-                    disabled={activeBackend !== "codex" && agents.length === 0 && modelOptions.length === 0}
-                  >
-                    <Text
-                      numberOfLines={1}
-                      style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}
-                    >
-                      {combinedConfigLabel}
-                    </Text>
-                    <ChevronDown size={13} color={colors.fg.subtle} />
-                  </TouchableOpacity>
-
-                  {activeBackend === "codex" ? (
+                  {/* Left group: attachment + model + codex prefs */}
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <TouchableOpacity
-                      style={[styles.modelButton, { borderColor: colors.border.secondary, maxWidth: 220 }]}
-                      onPress={() => setActiveSheet("codex-preferences")}
+                      style={[styles.actionButton, { borderRadius: 9999, overflow: "visible" }]}
+                      onPress={handleAttachment}
                       activeOpacity={0.7}
+                      disabled={isVoiceBusy}
+                    >
+                      <Fontisto name="paperclip" size={18} color={colors.fg.default} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.modelButton, { borderColor: colors.border.secondary, maxWidth: 260 }]}
+                      onPress={() => setActiveSheet("configure")}
+                      activeOpacity={0.7}
+                      disabled={activeBackend !== "codex" && agents.length === 0 && modelOptions.length === 0}
                     >
                       <Text
                         numberOfLines={1}
                         style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}
                       >
-                        {codexPrefsLabel}
+                        {combinedConfigLabel}
                       </Text>
                       <ChevronDown size={13} color={colors.fg.subtle} />
                     </TouchableOpacity>
-                  ) : null}
+
+                    {activeBackend === "codex" ? (
+                      <TouchableOpacity
+                        style={[styles.modelButton, { borderColor: colors.border.secondary, maxWidth: 220 }]}
+                        onPress={() => setActiveSheet("codex-preferences")}
+                        activeOpacity={0.7}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}
+                        >
+                          {codexPrefsLabel}
+                        </Text>
+                        <ChevronDown size={13} color={colors.fg.subtle} />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
 
                   <View style={{ flex: 1 }} />
 
-                  <TouchableOpacity
-                    style={styles.actionButton}
-                    onPress={enterVoiceMode}
-                    disabled={isVoiceBusy}
-                    activeOpacity={0.7}
-                  >
-                    <Mic size={18} color={colors.fg.default} strokeWidth={1.5} />
-                  </TouchableOpacity>
-
-                  <View style={{ width: 2 }} />
+                  {/* Right group: mic + send */}
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <TouchableOpacity
+                      style={styles.actionButton}
+                      onPress={enterVoiceMode}
+                      disabled={isVoiceBusy}
+                      activeOpacity={0.7}
+                    >
+                      <Feather name="mic" size={18} color={colors.fg.default} />
+                    </TouchableOpacity>
 
                   {isStreaming ? (
                     <TouchableOpacity
@@ -3607,8 +3697,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                   ) : (
                     <TouchableOpacity
                       style={[styles.sendButton, {
-                        backgroundColor: (inputText.trim() || pendingImage) ? colors.accent.default : "transparent",
-                        borderColor: colors.border.main,
+                        backgroundColor: (inputText.trim() || pendingImage) ? colors.accent.default : colors.bg.base,
+                        borderColor: "transparent",
                       }]}
                       onPress={() => {
                         sendMessage().catch((err) => {
@@ -3621,6 +3711,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       <SendIcon size={18} color={(inputText.trim() || pendingImage) ? '#ffffff' : colors.fg.subtle} />
                     </TouchableOpacity>
                   )}
+                  </View>
                 </View>
               </View>
 
@@ -4038,7 +4129,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 8,
+    borderRadius: 6,
   },
   modelText: {
     fontSize: 12,
@@ -4047,8 +4138,8 @@ const styles = StyleSheet.create({
 
   // Action buttons
   actionButton: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
     padding: 0,
@@ -4059,8 +4150,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
     marginBottom: 8,
     paddingHorizontal: 10,
-    paddingTop: 14,
-    paddingBottom: 14,
+    paddingVertical: 10,
     borderWidth: StyleSheet.hairlineWidth,
   },
   inputWrapper: {

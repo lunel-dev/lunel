@@ -1,4 +1,5 @@
 import { useTheme } from "@/contexts/ThemeContext";
+import { typography } from "@/constants/themes";
 import * as Haptics from "expo-haptics";
 import { X } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
@@ -27,7 +28,7 @@ type InfoSheetProps = {
 };
 
 export default function InfoSheet({ visible, onClose, title, description, children }: InfoSheetProps) {
-  const { fonts } = useTheme();
+  const { fonts, colors } = useTheme();
   const [modalVisible, setModalVisible] = useState(false);
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const backdropOpacity = useSharedValue(0);
@@ -79,7 +80,7 @@ export default function InfoSheet({ visible, onClose, title, description, childr
             <ReAnimated.View style={[sheetStyles.overlay, backdropStyle]}>
               <TouchableWithoutFeedback>
                 <GestureDetector gesture={pan}>
-                  <ReAnimated.View style={[sheetStyles.sheet, animatedStyle]}>
+                  <ReAnimated.View style={[sheetStyles.sheet, { backgroundColor: colors.bg.base }, animatedStyle]}>
                     {/* Handle */}
                     <View style={sheetStyles.handle} />
 
@@ -96,7 +97,7 @@ export default function InfoSheet({ visible, onClose, title, description, childr
                         }}
                         style={sheetStyles.closeButton}
                       >
-                        <X size={18} color="#FFFFFF" strokeWidth={2} />
+                        <X size={20} color="#FFFFFF" strokeWidth={2} />
                       </TouchableOpacity>
                     </View>
 
@@ -120,9 +121,8 @@ const sheetStyles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.55)",
   },
   sheet: {
-    backgroundColor: "#111111",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     paddingHorizontal: 20,
     paddingTop: 14,
     paddingBottom: 0,
@@ -143,20 +143,18 @@ const sheetStyles = StyleSheet.create({
     marginBottom: 20,
   },
   title: {
-    fontSize: 18,
+    fontSize: typography.heading,
     fontWeight: "700",
     color: "#FFFFFF",
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: typography.caption,
     color: "rgba(255,255,255,0.4)",
     marginTop: 3,
   },
   closeButton: {
     width: 34,
     height: 34,
-    borderRadius: 9999,
-    backgroundColor: "rgba(255,255,255,0.08)",
     alignItems: "center",
     justifyContent: "center",
   },

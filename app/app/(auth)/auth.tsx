@@ -241,12 +241,12 @@ function PastSessionsSheet({
               style={pastSessionsSheetStyles.sessionRow}
             >
               <View style={{ flex: 1 }}>
-                <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionHostname, { fontFamily: fonts.sans.semibold, fontSize: typography.body }]}>
+                <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionHostname, { fontFamily: fonts.sans.regular, fontSize: typography.body }]}>
                   {session.hostname}
                 </Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 }}>
                   <FontAwesome name="folder" size={11} color="rgba(255,255,255,0.35)" />
-                  <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionRoot, { fontFamily: fonts.sans.regular, flex: 1 }]}>
+                  <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionRoot, { fontFamily: fonts.sans.regular, flex: 1, fontSize: typography.caption }]}>
                     {session.root.startsWith("/") ? session.root.slice(1) : session.root}
                   </Text>
                 </View>
