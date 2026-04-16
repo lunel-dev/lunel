@@ -1700,8 +1700,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [inputFocused, setInputFocused] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [pendingImage, setPendingImage] = useState<AIFileAttachment | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
+  const [streamingBySession, setStreamingBySession] = useState<Record<string, true>>({});
   const [pendingPermission, setPendingPermission] = useState<AIPermission | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<AIQuestion | null>(null);
   const [activeSheet, setActiveSheet] = useState<ComposerSheet>(null);
@@ -1797,6 +1796,11 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const activeSessionId = useMemo(() => {
     return tabs.find((t) => t.id === activeTabId)?.sessionId || null;
   }, [tabs, activeTabId]);
+  const isAnySessionStreaming = useMemo(
+    () => Object.keys(streamingBySession).length > 0,
+    [streamingBySession],
+  );
+  const isActiveSessionStreaming = !!activeSessionId && !!streamingBySession[activeSessionId];
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
   const activeBackend: AiBackend = activeTab?.backend ?? pendingBackend ?? "opencode";
   const agents = agentsByBackend[activeBackend] || [];
@@ -1960,7 +1964,12 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
             return next;
           });
           setActiveTabId((prev) => (prev === sessId ? null : prev));
-          setStreamingSessionId((prev) => (prev === sessId ? null : prev));
+          setStreamingBySession((prev) => {
+            if (!prev[sessId]) return prev;
+            const next = { ...prev };
+            delete next[sessId];
+            return next;
+          });
           break;
         }
         case "session.status": {
@@ -1970,9 +1979,18 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           const statusType = typeof statusObj === "object" ? (statusObj?.type as string) : (statusObj as string);
           const normalized = (statusType || "").toLowerCase();
           const streaming = normalized === "busy" || normalized === "running" || normalized === "working";
-          setIsStreaming(streaming);
-          if (streaming && sessId) setStreamingSessionId(sessId);
-          if (!streaming) setStreamingSessionId(null);
+          if (sessId) {
+            setStreamingBySession((prev) => {
+              if (streaming) {
+                if (prev[sessId]) return prev;
+                return { ...prev, [sessId]: true };
+              }
+              if (!prev[sessId]) return prev;
+              const next = { ...prev };
+              delete next[sessId];
+              return next;
+            });
+          }
           if (sessId && streaming) {
             setSessionActivityLabels((prev) => {
               const current = prev[sessId];
@@ -1994,8 +2012,13 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
         case "session.idle": {
           const sessId = (props.sessionID as string) || (props.sessionId as string);
           const backend = (event.backend ?? "opencode") as AiBackend;
-          setIsStreaming(false);
           if (sessId) {
+            setStreamingBySession((prev) => {
+              if (!prev[sessId]) return prev;
+              const next = { ...prev };
+              delete next[sessId];
+              return next;
+            });
             setSessionActivityLabels((prev) => ({ ...prev, [sessId]: "Done" }));
             // Codex streams partial deltas; after completion force a canonical
             // re-read so final rendering is clean and fully normalized.
@@ -2041,9 +2064,14 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
         case "prompt_error": {
           const rawErr = props.error;
           const errMsg = typeof rawErr === 'string' ? rawErr : (rawErr && typeof rawErr === 'object' ? ((rawErr as any).message || (rawErr as any).name || JSON.stringify(rawErr)) : null) || "An error occurred";
-          setIsStreaming(false);
           const sessId = (props.sessionID as string) || (props.sessionId as string);
           if (sessId) {
+            setStreamingBySession((prev) => {
+              if (!prev[sessId]) return prev;
+              const next = { ...prev };
+              delete next[sessId];
+              return next;
+            });
             setSessionActivityLabels((prev) => ({ ...prev, [sessId]: "Error" }));
             setErrorMessages((prev) => ({
               ...prev,
@@ -2251,7 +2279,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 
     let cancelled = false;
     const refreshOpenCodeActiveSession = async () => {
-      if (cancelled || isStreaming || activeBackend !== "opencode" || !activeSessionId) {
+      if (cancelled || isActiveSessionStreaming || activeBackend !== "opencode" || !activeSessionId) {
         return;
       }
       await refreshSessionMessages(activeSessionId, activeBackend, false);
@@ -2262,7 +2290,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
       cancelled = true;
       clearInterval(interval);
     };
-  }, [status, isInitialized, isActive, isStreaming, activeBackend, activeSessionId, refreshSessionMessages]);
+  }, [status, isInitialized, isActive, isActiveSessionStreaming, activeBackend, activeSessionId, refreshSessionMessages]);
 
   useEffect(() => {
     const loadDetailedViewPreference = async () => {
@@ -2307,26 +2335,26 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     : selectedModelName;
   useEffect(() => {
     isNearBottomRef.current = true;
-    autoFollowRef.current = isStreaming;
+    autoFollowRef.current = isActiveSessionStreaming;
     setShowScrollToBottom(false);
-  }, [activeSessionId, isStreaming]);
+  }, [activeSessionId, isActiveSessionStreaming]);
 
   useEffect(() => {
     const wasStreaming = prevStreamingRef.current;
 
     if (!settings.brainrotAiChatIntegration) {
-      prevStreamingRef.current = isStreaming;
+      prevStreamingRef.current = isAnySessionStreaming;
       return;
     }
 
-    if (!wasStreaming && isStreaming) {
+    if (!wasStreaming && isAnySessionStreaming) {
       innerApi.showBrainrot();
-    } else if (wasStreaming && !isStreaming) {
+    } else if (wasStreaming && !isAnySessionStreaming) {
       innerApi.showAIChat();
     }
 
-    prevStreamingRef.current = isStreaming;
-  }, [isStreaming, settings.brainrotAiChatIntegration]);
+    prevStreamingRef.current = isAnySessionStreaming;
+  }, [isAnySessionStreaming, settings.brainrotAiChatIntegration]);
 
   const inputWrapperAnimatedStyle = useAnimatedStyle(() => ({
     minHeight: inputHeightSV.value,
@@ -2743,7 +2771,12 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             break;
           case "abort":
             await ai.abort(ensured, messageBackend);
-            setIsStreaming(false);
+            setStreamingBySession((prev) => {
+              if (!prev[ensured]) return prev;
+              const next = { ...prev };
+              delete next[ensured];
+              return next;
+            });
             break;
           case "init":
             if (messageBackend === "codex") {
@@ -2762,8 +2795,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               getCodexPromptOptions(),
             );
             setSessionActivityLabels((prev) => ({ ...prev, [ensured]: "Thinking..." }));
-            setIsStreaming(true);
-            setStreamingSessionId(ensured);
+            setStreamingBySession((prev) => ({ ...prev, [ensured]: true }));
         }
       } catch (err) {
         Alert.alert("Error", (err as Error).message);
@@ -2852,8 +2884,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         return { ...prev, [committedBucketId]: updated };
       });
       setSessionActivityLabels((prev) => ({ ...prev, [ensured]: "Thinking..." }));
-      setIsStreaming(true);
-      setStreamingSessionId(ensured);
+      setStreamingBySession((prev) => ({ ...prev, [ensured]: true }));
       setPendingImage(null);
     } catch (err) {
       const fallbackBucketId = sessId ?? localDraftTabId;
@@ -3018,7 +3049,12 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       try {
         await ai.abort(activeSessionId, activeTab?.backend ?? "opencode");
       } catch {}
-      setIsStreaming(false);
+      setStreamingBySession((prev) => {
+        if (!prev[activeSessionId]) return prev;
+        const next = { ...prev };
+        delete next[activeSessionId];
+        return next;
+      });
     }
   };
 
@@ -3047,7 +3083,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     for (const msg of currentMessages) {
       items.push({ type: "message", data: msg });
     }
-    const shouldShowThinking = isStreaming && streamingSessionId === activeSessionId;
+    const shouldShowThinking = isActiveSessionStreaming;
     if (shouldShowThinking) {
       items.push({ type: "thinking", id: "thinking-indicator", label: activeSessionActivityLabel });
     }
@@ -3055,7 +3091,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       items.push({ type: "error", data: currentErrors[i], id: `err-${i}` });
     }
     return items;
-  }, [currentMessages, currentErrors, isStreaming, streamingSessionId, activeSessionId, activeSessionActivityLabel]);
+  }, [currentMessages, currentErrors, isActiveSessionStreaming, activeSessionId, activeSessionActivityLabel]);
 
   // Tab renderer
   const renderAITab = useCallback(
@@ -3341,7 +3377,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                 onContentSizeChange={(_, contentHeight) => {
                   contentHeightRef.current = contentHeight;
                   const grew = contentHeight > lastContentHeightRef.current;
-                  if (grew && isStreaming && isNearBottomRef.current) {
+                  if (grew && isActiveSessionStreaming && isNearBottomRef.current) {
                     scrollToLatest(false);
                   }
                   lastContentHeightRef.current = contentHeight;
@@ -3359,7 +3395,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                   const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
                   const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
                   const nearBottom = distanceFromBottom <= 24;
-                  if (!nearBottom && isStreaming && userDraggingMessagesRef.current) {
+                  if (!nearBottom && isActiveSessionStreaming && userDraggingMessagesRef.current) {
                     autoFollowRef.current = false;
                   }
                   if (nearBottom) {
@@ -3603,7 +3639,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       <Feather name="mic" size={17} color={colors.fg.default} />
                     </TouchableOpacity>
 
-                  {isStreaming ? (
+                  {isActiveSessionStreaming ? (
                     <TouchableOpacity
                       style={[styles.sendButton, { backgroundColor: "transparent", borderColor: colors.border.main }]}
                       onPress={handleStop}
