@@ -2285,8 +2285,14 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   }, [showDetailedView]);
 
   // Scroll to bottom on new messages
-  const currentMessages = activeSessionId ? messagesMap[activeSessionId] || [] : [];
-  const currentErrors = activeSessionId ? errorMessages[activeSessionId] || [] : [];
+  const activeMessageBucketId = useMemo(() => {
+    if (activeSessionId) return activeSessionId;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (tab && !tab.sessionId) return tab.id;
+    return null;
+  }, [activeSessionId, tabs, activeTabId]);
+  const currentMessages = activeMessageBucketId ? messagesMap[activeMessageBucketId] || [] : [];
+  const currentErrors = activeMessageBucketId ? errorMessages[activeMessageBucketId] || [] : [];
 const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
     || (activeBackend === "codex" ? "Auto" : "Select model");
   const selectedModelName = selectedModelNameFull.length > 12 ? selectedModelNameFull.slice(0, 12) + "…" : selectedModelNameFull;
@@ -2658,19 +2664,34 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       Keyboard.dismiss();
     }
 
-    // Get or create session
+    // Resolve backend + transient draft context
     const activeTab = tabs.find((t) => t.id === activeTabId);
     const messageBackend: "opencode" | "codex" = activeTab?.backend ?? pendingBackend ?? "opencode";
     const selectedAgentForBackend = messageBackend === "opencode" ? selectedAgent : undefined;
     let sessId = activeSessionId;
-    if (!sessId) {
+    let localDraftTabId: string | null = activeTab && !activeTab.sessionId ? activeTab.id : null;
+    if (!sessId && !localDraftTabId) {
+      localDraftTabId = `draft-send-${Date.now().toString(36)}`;
+      const draftTab: AITab = {
+        id: localDraftTabId,
+        title: messageBackend === "codex" ? "Codex" : "OpenCode",
+        backend: messageBackend,
+        updatedAt: Date.now(),
+      };
+      setDraftTabs((prev) => [...prev, draftTab]);
+      setMessagesMap((prev) => ({ ...prev, [localDraftTabId!]: prev[localDraftTabId!] || [] }));
+      setActiveTabId(localDraftTabId);
+    }
+
+    const ensureSession = async (): Promise<string | null> => {
+      if (sessId) return sessId;
       try {
         const session = await ai.createSession(undefined, messageBackend);
         sessId = session.id;
         const sessionTitle = (session.title || "").trim() || (messageBackend === "codex" ? "Codex" : "OpenCode");
         setSessionTabs((prev) => mergeSessionTabs(prev, [{ ...session, backend: messageBackend } as AISession]));
         setPendingBackend(null);
-        const currentActiveTabId = activeTabId;
+        const currentActiveTabId = localDraftTabId ?? activeTabId;
         setDraftTabs((prev) => prev.filter((t) => t.id !== currentActiveTabId));
         setMessagesMap((prev) => {
           if (!currentActiveTabId || currentActiveTabId === session.id) return prev;
@@ -2691,14 +2712,17 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
           ));
         });
         setActiveTabId(session.id);
+        return sessId;
       } catch (err) {
         Alert.alert("Error", "Failed to create AI session");
-        return;
+        return null;
       }
-    }
+    };
 
     // Handle slash commands
     if (text.startsWith("/") && !pendingImage) {
+      const ensured = await ensureSession();
+      if (!ensured) return;
       const cmd = text.slice(1).split(" ")[0].toLowerCase();
       try {
         switch (cmd) {
@@ -2706,30 +2730,30 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             if (messageBackend === "codex") {
               throw new Error("Codex undo is not supported in Lunel yet");
             }
-            const msgs = messagesMap[sessId] || [];
+            const msgs = messagesMap[ensured] || [];
             const lastUserMsg = [...msgs].reverse().find((m) => m.role === "user");
-            if (lastUserMsg) await ai.revert(sessId, lastUserMsg.id, messageBackend);
+            if (lastUserMsg) await ai.revert(ensured, lastUserMsg.id, messageBackend);
             break;
           }
           case "redo":
             if (messageBackend === "codex") {
               throw new Error("Codex redo is not supported in Lunel yet");
             }
-            await ai.unrevert(sessId, messageBackend);
+            await ai.unrevert(ensured, messageBackend);
             break;
           case "abort":
-            await ai.abort(sessId, messageBackend);
+            await ai.abort(ensured, messageBackend);
             setIsStreaming(false);
             break;
           case "init":
             if (messageBackend === "codex") {
               throw new Error("Codex init is not supported in Lunel yet");
             }
-            await ai.runCommand(sessId, "init", messageBackend);
+            await ai.runCommand(ensured, "init", messageBackend);
             break;
           default:
             await ai.sendPrompt(
-              sessId,
+              ensured,
               text,
               getModelRef(),
               selectedAgentForBackend,
@@ -2737,9 +2761,9 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               undefined,
               getCodexPromptOptions(),
             );
-            setSessionActivityLabels((prev) => ({ ...prev, [sessId]: "Thinking..." }));
+            setSessionActivityLabels((prev) => ({ ...prev, [ensured]: "Thinking..." }));
             setIsStreaming(true);
-            setStreamingSessionId(sessId);
+            setStreamingSessionId(ensured);
         }
       } catch (err) {
         Alert.alert("Error", (err as Error).message);
@@ -2779,14 +2803,28 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       autoFollowRef.current = true;
       isNearBottomRef.current = true;
       setShowScrollToBottom(false);
+      const optimisticBucketId = sessId ?? localDraftTabId;
+      if (!optimisticBucketId) {
+        Alert.alert("Error", "Failed to prepare AI session");
+        return;
+      }
       setMessagesMap((prev) => ({
         ...prev,
-        [sessId!]: [...(prev[sessId!] || []), optimisticMsg],
+        [optimisticBucketId]: [...(prev[optimisticBucketId] || []), optimisticMsg],
       }));
       scrollToLatest(true, true);
 
+      const ensured = await ensureSession();
+      if (!ensured) {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [optimisticBucketId]: (prev[optimisticBucketId] || []).filter((msg) => msg.id !== optimisticMessageId),
+        }));
+        return;
+      }
+
       await ai.sendPrompt(
-        sessId,
+        ensured,
         text,
         getModelRef(),
         selectedAgentForBackend,
@@ -2795,7 +2833,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         getCodexPromptOptions(),
       );
       setMessagesMap((prev) => {
-        const sessionMessages = prev[sessId!] || [];
+        const committedBucketId = ensured;
+        const sessionMessages = prev[committedBucketId] || [];
         const idx = sessionMessages.findIndex((m) => m.id === optimisticMessageId);
         if (idx < 0) return prev;
         const updated = [...sessionMessages];
@@ -2810,17 +2849,18 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
           },
           time: existing.time ?? { created: committedAt, updated: committedAt },
         };
-        return { ...prev, [sessId!]: updated };
+        return { ...prev, [committedBucketId]: updated };
       });
-      setSessionActivityLabels((prev) => ({ ...prev, [sessId]: "Thinking..." }));
+      setSessionActivityLabels((prev) => ({ ...prev, [ensured]: "Thinking..." }));
       setIsStreaming(true);
-      setStreamingSessionId(sessId);
+      setStreamingSessionId(ensured);
       setPendingImage(null);
     } catch (err) {
-      if (sessId) {
+      const fallbackBucketId = sessId ?? localDraftTabId;
+      if (fallbackBucketId) {
         setMessagesMap((prev) => ({
           ...prev,
-          [sessId!]: (prev[sessId!] || []).filter((msg) => !msg.id.startsWith("opt-")),
+          [fallbackBucketId]: (prev[fallbackBucketId] || []).filter((msg) => !msg.id.startsWith("opt-")),
         }));
       }
       Alert.alert("Error", (err as Error).message);
