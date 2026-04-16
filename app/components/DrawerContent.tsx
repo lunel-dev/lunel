@@ -167,17 +167,6 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
   };
 
   const handleSessionClose = (id: string) => {
-    if (effectivePluginId === 'ai') {
-      Alert.alert(
-        'Delete session?',
-        'This will permanently delete the AI session.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: () => reg?.onSessionClose(id) },
-        ],
-      );
-      return;
-    }
     reg?.onSessionClose(id);
   };
 

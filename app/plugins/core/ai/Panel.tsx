@@ -3024,14 +3024,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   const handleDeleteActiveSession = useCallback(() => {
     if (!activeTab) return;
-    Alert.alert(
-      "Delete session?",
-      `Delete "${activeTab.title}" permanently?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => { void closeTab(activeTab.id); } },
-      ],
-    );
+    void closeTab(activeTab.id);
   }, [activeTab, closeTab]);
 
   const hasContent = listData.length > 0;
