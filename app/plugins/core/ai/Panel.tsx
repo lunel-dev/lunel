@@ -116,6 +116,23 @@ function formatBackendSessionTitle(backend: AiBackend, title?: string) {
   return backend === "codex" ? "Codex" : "OpenCode";
 }
 
+function isBackendUnavailableError(message: string): boolean {
+  return (
+    /backend\s+"?(opencode|codex)"?\s+is not available/i.test(message)
+    || /eunavailable/i.test(message)
+    || /no ai backends available/i.test(message)
+    || /ai manager not initialized/i.test(message)
+  );
+}
+
+function showBackendMissingInstallAlert(backend: AiBackend): void {
+  const backendLabel = formatBackendSessionTitle(backend);
+  Alert.alert(
+    `${backendLabel} Not Installed`,
+    `Your PC doesn't have ${backendLabel} installed. Either install it manually, or run npx lunel-cli again and press y when it asks to install missing AI runtimes.`,
+  );
+}
+
 function sortTabsByUpdatedAt(tabs: AITab[]): AITab[] {
   return [...tabs].sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
 }
@@ -2405,7 +2422,18 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     setBackendPickerVisible(true);
   };
 
-  const createNewTabWithBackend = (backend: "opencode" | "codex") => {
+  const createNewTabWithBackend = async (backend: "opencode" | "codex") => {
+    try {
+      const availableBackends = await ai.getBackends();
+      if (!availableBackends.includes(backend)) {
+        setBackendPickerVisible(false);
+        showBackendMissingInstallAlert(backend);
+        return;
+      }
+    } catch {
+      // If backend discovery fails, we still allow the flow and handle errors on session creation.
+    }
+
     setBackendPickerVisible(false);
     setPendingBackend(backend);
     setActiveTabId(null);
@@ -2792,7 +2820,12 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         setActiveTabId(session.id);
         return sessId;
       } catch (err) {
-        Alert.alert("Error", "Failed to create AI session");
+        const message = err instanceof Error ? err.message : String(err ?? "");
+        if (isBackendUnavailableError(message)) {
+          showBackendMissingInstallAlert(messageBackend);
+        } else {
+          Alert.alert("Error", "Failed to create AI session");
+        }
         return null;
       }
     };

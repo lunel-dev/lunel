@@ -36,6 +36,10 @@ const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
 const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
+const AI_RUNTIME_INSTALL_CANDIDATES: Record<AiBackend, string[]> = {
+  opencode: ["opencode-ai", "@opencode-ai/cli", "opencode"],
+  codex: ["@openai/codex", "codex"],
+};
 const PTY_RELEASES: Record<string, { fileName: string; url: string }> = {
   "linux:x64": {
     fileName: "lunel-pty-linux-x8664-0",
@@ -3326,6 +3330,81 @@ function displaySavedSessionNotice(): void {
   console.log("");
 }
 
+function isCommandAvailable(command: string): boolean {
+  const probe = spawnSync(command, ["--version"], {
+    stdio: "ignore",
+    shell: process.platform === "win32",
+  });
+  const err = probe.error as NodeJS.ErrnoException | undefined;
+  if (err && (err.code === "ENOENT" || err.code === "ENOTDIR")) {
+    return false;
+  }
+  return !err;
+}
+
+function askYesNo(question: string, defaultValue = false): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const suffix = defaultValue ? " [Y/n] " : " [y/N] ";
+    rl.question(`${question}${suffix}`, (answer) => {
+      rl.close();
+      const normalized = answer.trim().toLowerCase();
+      if (!normalized) {
+        resolve(defaultValue);
+        return;
+      }
+      resolve(normalized === "y" || normalized === "yes");
+    });
+  });
+}
+
+function installLatestNpmPackage(pkg: string): boolean {
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const result = spawnSync(npmCommand, ["install", "-g", `${pkg}@latest`], {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    env: process.env,
+  });
+  return !result.error && result.status === 0;
+}
+
+async function ensureAiCliRuntimes(): Promise<void> {
+  const missingBackends = (Object.keys(AI_RUNTIME_INSTALL_CANDIDATES) as AiBackend[])
+    .filter((backend) => !isCommandAvailable(backend));
+  if (missingBackends.length === 0) return;
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.warn(`[ai] Missing runtimes: ${missingBackends.join(", ")}. Run in an interactive shell to install them.`);
+    return;
+  }
+
+  const installPrompt = `Missing AI runtimes (${missingBackends.join(", ")}). Install latest versions now?`;
+  const approved = await askYesNo(installPrompt, false);
+  if (!approved) {
+    console.warn("[ai] Skipping AI runtime installation.");
+    return;
+  }
+
+  for (const backend of missingBackends) {
+    if (isCommandAvailable(backend)) continue;
+    const candidates = AI_RUNTIME_INSTALL_CANDIDATES[backend];
+    let installed = false;
+    for (const pkg of candidates) {
+      console.log(`[ai] Installing ${backend} via npm package ${pkg}@latest...`);
+      if (!installLatestNpmPackage(pkg)) continue;
+      if (isCommandAvailable(backend)) {
+        installed = true;
+        console.log(`[ai] ${backend} installed successfully.`);
+        break;
+      }
+    }
+    if (!installed) {
+      console.warn(`[ai] Failed to install ${backend}. You can install it manually and restart the CLI.`);
+    }
+  }
+}
+
 function gracefulShutdown(): void {
   shuttingDown = true;
   console.log("\nShutting down...");
@@ -3514,6 +3593,8 @@ async function main(): Promise<void> {
     } else {
       debugLog(`PTY runtime unsupported on ${os.platform()}/${os.arch()}. Skipping prefetch.\n`);
     }
+
+    await ensureAiCliRuntimes();
 
     // Start AI backends in the background so missing or slow AI runtimes never
     // block QR/session startup for the rest of the CLI.
