@@ -4,7 +4,7 @@
 
 import * as crypto from "crypto";
 import * as path from "path";
-import { spawn, ChildProcess } from "child_process";
+import { ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import type {
   AIProvider,
@@ -17,6 +17,7 @@ import type {
   SessionInfo,
   ShareInfo,
 } from "./interface.js";
+import { spawnPlatformCommand } from "./spawn-command.js";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -120,14 +121,9 @@ export class CodexProvider implements AIProvider {
   async init(): Promise<void> {
     if (DEBUG_MODE) console.log("Starting Codex app-server...");
 
-    const windowsSpawnOptions = process.platform === "win32"
-      ? { shell: true as const }
-      : {};
-
-    this.proc = spawn("codex", ["app-server"], {
+    this.proc = spawnPlatformCommand("codex", ["app-server"], {
       stdio: ["pipe", "pipe", "inherit"],
       env: process.env,
-      ...windowsSpawnOptions,
     });
 
     const rl = createInterface({ input: this.proc.stdout! });
