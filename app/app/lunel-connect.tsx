@@ -498,7 +498,7 @@ const LunelConnect = () => {
 
           {/* YouTube */}
           <Pressable
-            onPress={() => Linking.openURL("https://www.youtube.com/@uselunel")}
+            onPress={() => Linking.openURL("https://youtu.be/LKQ8L98BE20?si=tKmrHR_32jkl0FxJ")}
             style={({ pressed }) => ({
               marginHorizontal: 0,
               marginTop: 20,
