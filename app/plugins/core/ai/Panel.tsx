@@ -402,6 +402,7 @@ function getPermissionFields(permission: AIPermission): Array<{ label: string; v
 function TextPartView({ part, isUser }: { part: AIPart; isUser: boolean }) {
   const text = (part.text as string) || "";
   if (!text) return null;
+  if (!isUser && isHiddenAssistantMetaText(text)) return null;
 
   if (isUser) {
     // User messages: plain text (no markdown), styled for accent bg
@@ -478,6 +479,7 @@ function ReasoningPartView({ part }: { part: AIPart }) {
   const [expanded, setExpanded] = useState(false);
   const text = ((part.text as string) || (typeof part.reasoning === "string" ? part.reasoning : "")).trim();
   if (!text) return null;
+  if (isHiddenAssistantMetaText(text)) return null;
 
   return (
     <View style={styles.reasoningContainer}>
@@ -833,17 +835,39 @@ function buildExplorationSummary(parts: AIPart[]): string {
     else if (kind === "search") searchEntries.add(line);
   }
   const labels: string[] = [];
-  if (readEntries.size > 0) labels.push(`${readEntries.size} read${readEntries.size === 1 ? "" : "s"}`);
-  if (searchEntries.size > 0) labels.push(`${searchEntries.size} search${searchEntries.size === 1 ? "" : "es"}`);
-  return labels.length > 0 ? `Explored  ${labels.join(", ")}` : "Explored";
+  if (readEntries.size > 0) labels.push(`${readEntries.size} Read${readEntries.size === 1 ? "" : "s"}`);
+  if (searchEntries.size > 0) labels.push(`${searchEntries.size} Search${searchEntries.size === 1 ? "" : "es"}`);
+  const eventCount = parts.length;
+  return labels.length > 0 ? `${eventCount} Event${eventCount === 1 ? "" : "s"} · ${labels.join(", ")}` : `${eventCount} Event${eventCount === 1 ? "" : "s"} · Explored`;
 }
 
 function isGroupablePart(part: AIPart): boolean {
   if (part.type === "reasoning") {
     const text = ((part.text as string) || (typeof part.reasoning === "string" ? part.reasoning : "")).trim();
+    if (isHiddenAssistantMetaText(text)) return false;
     return text.length > 0;
   }
   return part.type === "step-start" || part.type === "step-finish";
+}
+
+function isHiddenMetaPart(part: AIPart): boolean {
+  if (part.type === "step-start" || part.type === "step-finish") return true;
+  if (part.type === "text") {
+    return isHiddenAssistantMetaText((part.text as string) || "");
+  }
+  if (part.type === "reasoning") {
+    const text = ((part.text as string) || (typeof part.reasoning === "string" ? part.reasoning : "")).trim();
+    return isHiddenAssistantMetaText(text);
+  }
+  return false;
+}
+
+function isHiddenAssistantMetaText(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized === "responding"
+    || normalized === "responding..."
+    || normalized.startsWith("responding to ");
 }
 
 function buildToolGroupLabel(parts: AIPart[]): string {
@@ -853,10 +877,11 @@ function buildToolGroupLabel(parts: AIPart[]): string {
     if (p.type === "reasoning") thinkingCount += 1;
     else if (p.type === "tool" || p.type === "tool-call" || p.type === "tool-result" || p.type === "file-change") toolCount += 1;
   }
-  if (thinkingCount > 0 && toolCount > 0) return `Thinking · ${toolCount} tool${toolCount !== 1 ? "s" : ""}`;
-  if (thinkingCount > 0) return "Thinking";
-  if (toolCount > 0) return `${toolCount} tool${toolCount !== 1 ? "s" : ""}`;
-  return `${parts.length} step${parts.length !== 1 ? "s" : ""}`;
+  const eventCount = parts.length;
+  if (thinkingCount > 0 && toolCount > 0) return `${eventCount} Event${eventCount === 1 ? "" : "s"} · Thinking, ${toolCount} Tool${toolCount !== 1 ? "s" : ""}`;
+  if (thinkingCount > 0) return `${eventCount} Event${eventCount === 1 ? "" : "s"} · Thinking`;
+  if (toolCount > 0) return `${eventCount} Event${eventCount === 1 ? "" : "s"} · ${toolCount} Tool${toolCount !== 1 ? "s" : ""}`;
+  return `${eventCount} Event${eventCount === 1 ? "" : "s"}`;
 }
 
 function buildMessageDisplayItems(parts: AIPart[]): MessageDisplayItem[] {
@@ -864,6 +889,10 @@ function buildMessageDisplayItems(parts: AIPart[]): MessageDisplayItem[] {
   let i = 0;
   while (i < parts.length) {
     const part = parts[i];
+    if (isHiddenMetaPart(part)) {
+      i += 1;
+      continue;
+    }
     if (isExplorationPart(part)) {
       const runStart = i;
       while (i < parts.length && isExplorationPart(parts[i])) i += 1;
@@ -1087,21 +1116,22 @@ function ExplorationGroup({
     }
     return lines;
   }, [parts]);
-
   return (
     <View style={styles.commandGroupContainer}>
       <TouchableOpacity
         onPress={() => setExpanded((value) => !value)}
         activeOpacity={0.7}
-        style={[styles.commandGroupHeader, { backgroundColor: colors.bg.raised, borderRadius: 8 }]}
+        style={styles.commandGroupHeader}
       >
         <View style={styles.commandGroupHeaderLeft}>
-          <SquaresSubtract size={13} color={colors.fg.muted} strokeWidth={2} />
-          <Text style={{ color: colors.fg.default, fontSize: 12, fontFamily: fonts.sans.medium }}>
+          <View style={[styles.commandGroupIconFrame, { borderColor: `${colors.fg.subtle}4D` }]}>
+            <SquaresSubtract size={15} color={colors.fg.muted} strokeWidth={2} />
+          </View>
+          <Text style={{ color: colors.fg.muted, fontSize: typography.subHeading, fontFamily: fonts.sans.medium, flex: 1 }}>
             {summary}
           </Text>
         </View>
-        <InlineChevronIcon size={14} color={colors.fg.muted} expanded={expanded} />
+        <InlineChevronIcon size={16} color={colors.fg.muted} expanded={expanded} />
       </TouchableOpacity>
       {expanded ? (
         <View style={styles.explorationGroupBody}>
@@ -1144,15 +1174,17 @@ function CommandPartsDropdown({
       <TouchableOpacity
         onPress={() => setExpanded((value) => !value)}
         activeOpacity={0.7}
-        style={[styles.commandGroupHeader, { backgroundColor: colors.bg.raised, borderRadius: 8 }]}
+        style={styles.commandGroupHeader}
       >
         <View style={styles.commandGroupHeaderLeft}>
-          <SquaresSubtract size={13} color={colors.fg.muted} strokeWidth={2} />
-          <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.mono.regular }}>
+          <View style={[styles.commandGroupIconFrame, { borderColor: `${colors.fg.subtle}4D` }]}>
+            <SquaresSubtract size={15} color={colors.fg.muted} strokeWidth={2} />
+          </View>
+          <Text style={{ color: colors.fg.muted, fontSize: typography.subHeading, fontFamily: fonts.sans.medium, flex: 1 }}>
             {label}
           </Text>
         </View>
-        <InlineChevronIcon size={14} color={colors.fg.muted} expanded={expanded} />
+        <InlineChevronIcon size={16} color={colors.fg.muted} expanded={expanded} />
       </TouchableOpacity>
       {expanded ? (
         <View style={styles.commandGroupBody}>
@@ -4257,7 +4289,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     alignItems: "center",
-    borderWidth: 1,
+    borderWidth: 0.5,
   },
   promptButtonText: {
     fontSize: 11,
@@ -4286,16 +4318,27 @@ const styles = StyleSheet.create({
   commandGroupContainer: {
   },
   commandGroupHeader: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 2,
+    paddingVertical: 6,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
   },
   commandGroupHeaderLeft: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    flex: 1,
+  },
+  commandGroupIconFrame: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 0.4,
+    borderRadius: 6,
+    flexShrink: 0,
   },
   commandGroupBody: {
     marginTop: 4,

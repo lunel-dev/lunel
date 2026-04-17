@@ -6,8 +6,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SquaresSubtract } from "lucide-react-native";
 import Svg, { Path } from "react-native-svg";
-import { Terminal, Wrench } from "lucide-react-native";
+import { useEditorConfig } from "@/contexts/EditorContext";
 import type { AIPart, AIPermission, PermissionResponse } from "./types";
 import { looksLikeDiff, parseDiffChunks, classifyDiffLine } from "./diff";
 
@@ -18,29 +19,6 @@ function InlineChevronIcon({ size = 14, color = "currentColor", expanded = false
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={expanded ? { transform: [{ rotate: "90deg" }] } : undefined}>
       <Path d="m9 6l6 6l-6 6" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
-  );
-}
-
-function IconBadge({
-  children,
-  colors,
-}: {
-  children: React.ReactNode;
-  colors: any;
-}) {
-  return (
-    <View
-      style={[
-        styles.iconBadge,
-        {
-          backgroundColor: colors.bg.raised,
-          borderColor: colors.bg.raised,
-          borderRadius: 6,
-        },
-      ]}
-    >
-      {children}
-    </View>
   );
 }
 
@@ -276,12 +254,14 @@ export default function ToolCall({
   compactCommandRow = false,
 }: ToolCallProps) {
   const [expanded, setExpanded] = useState(false);
+  const { config } = useEditorConfig();
 
   const toolName = (part.name as string) || (part.toolName as string) || "tool";
   const commandPreview = isCommandLikeTool(toolName) ? extractCommandPreview(part.input) : null;
   const isCommandRow = !!commandPreview;
   const headerLabel = commandPreview || toolName;
   const state = (part.state as string) || "running";
+  const bodyFontSize = config.aiFontSize;
 
   const isError = state === "error";
   const isCompleted = state === "completed";
@@ -303,7 +283,6 @@ export default function ToolCall({
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <TouchableOpacity
         onPress={canExpand ? () => setExpanded(!expanded) : undefined}
         style={[
@@ -314,21 +293,17 @@ export default function ToolCall({
         activeOpacity={canExpand ? 0.7 : 1}
       >
         <View style={[styles.headerLeft, isCommandRow && expanded ? styles.headerLeftTop : undefined]}>
+          <View style={[styles.iconFrame, { borderColor: `${colors.fg.subtle}4D` }]}>
+            <SquaresSubtract size={15} color={colors.fg.muted} strokeWidth={2} />
+          </View>
           {isCommandRow ? (
             <View
               style={[
                 styles.commandPill,
                 compactCommandRow ? styles.commandPillCompact : undefined,
                 expanded ? styles.commandPillTop : undefined,
-                {
-                  backgroundColor: colors.bg.base,
-                  borderRadius: BOX_RADIUS,
-                },
               ]}
             >
-              <IconBadge colors={colors}>
-                <Terminal size={12} color={colors.fg.muted} strokeWidth={2} />
-              </IconBadge>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -338,7 +313,7 @@ export default function ToolCall({
                 <Text
                   style={[
                     styles.toolName,
-                    { color: colors.fg.default, fontFamily: fonts.mono.regular },
+                    { color: colors.fg.default, fontFamily: fonts.mono.regular, fontSize: bodyFontSize },
                   ]}
                   numberOfLines={expanded ? undefined : 1}
                 >
@@ -347,26 +322,22 @@ export default function ToolCall({
               </ScrollView>
             </View>
           ) : (
-            <>
-              <IconBadge colors={colors}>
-                <Wrench size={12} color={colors.fg.muted} strokeWidth={2} />
-              </IconBadge>
+            <View style={styles.toolTextWrap}>
               <Text
                 style={[
                   styles.toolName,
-                  { color: colors.fg.default, fontFamily: fonts.mono.regular },
+                  { color: colors.fg.default, fontFamily: fonts.mono.regular, fontSize: bodyFontSize },
                 ]}
                 numberOfLines={1}
               >
                 {headerLabel}
               </Text>
-            </>
+            </View>
           )}
-          {canExpand ? <InlineChevronIcon size={14} color={colors.fg.muted} expanded={expanded} /> : null}
         </View>
+        {canExpand ? <InlineChevronIcon size={14} color={colors.fg.muted} expanded={expanded} /> : null}
       </TouchableOpacity>
 
-      {/* Expanded body */}
       {expanded && canExpand && (
         <View
           style={[
@@ -491,6 +462,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 2,
     paddingVertical: 4,
     gap: 8,
@@ -502,38 +474,30 @@ const styles = StyleSheet.create({
   headerLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
     flexShrink: 1,
+    flex: 1,
   },
   headerExpandedTop: {
     alignItems: "flex-start",
   },
   headerLeftTop: {
-    alignItems: "flex-start",
-  },
-  iconBadge: {
-    width: 18,
-    height: 18,
     alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    flexShrink: 0,
   },
   commandPill: {
     flex: 1,
     minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     borderWidth: 0,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
     overflow: "hidden",
   },
   commandPillCompact: {
     paddingHorizontal: 0,
     paddingVertical: 0,
-    paddingLeft: 8,
   },
   commandPillTop: {
     alignItems: "flex-start",
@@ -541,6 +505,19 @@ const styles = StyleSheet.create({
   commandScrollContent: {
     flexGrow: 1,
     paddingRight: 2,
+  },
+  toolTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  iconFrame: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 0.4,
+    borderRadius: 6,
+    flexShrink: 0,
   },
   toolName: {
     fontSize: 12,
