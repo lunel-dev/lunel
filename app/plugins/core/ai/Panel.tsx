@@ -17,7 +17,7 @@ import FileChange from "./FileChange";
 import {
   Sparkle, Sparkles, Check, X, Plus,
   Hammer, Map as MapIcon, Square, AlertTriangle, Key,
-  EllipsisVertical, ChevronDown, LoaderCircle, SquaresSubtract,
+  EllipsisVertical, ChevronDown, LoaderCircle, SquaresSubtract, Search, BookOpen,
 } from "lucide-react-native";
 import { Canvas, Circle } from "@shopify/react-native-skia";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -485,17 +485,21 @@ function ReasoningPartView({ part }: { part: AIPart }) {
     <View style={styles.reasoningContainer}>
       <TouchableOpacity
         onPress={() => setExpanded(!expanded)}
-        style={styles.reasoningHeader}
+        style={[styles.commandGroupHeader, styles.reasoningHeader, expanded ? { backgroundColor: colors.bg.raised } : null]}
         activeOpacity={0.7}
       >
-        <BrainIcon size={14} color={colors.fg.muted} />
-        <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.medium }}>
-          Thinking
-        </Text>
+        <View style={[styles.commandGroupHeaderLeft, styles.reasoningHeaderLeft]}>
+          <View style={[styles.commandGroupIconFrame, { borderColor: `${colors.fg.subtle}4D` }]}>
+            <BrainIcon size={15} color={colors.fg.muted} />
+          </View>
+          <Text style={{ color: colors.fg.muted, fontSize: typography.subHeading, fontFamily: fonts.sans.regular, flex: 1 }}>
+            Thinking
+          </Text>
+        </View>
         <InlineChevronIcon size={14} color={colors.fg.muted} expanded={expanded} />
       </TouchableOpacity>
       {expanded && text ? (
-        <View style={[styles.reasoningBody, { borderColor: colors.bg.raised, backgroundColor: colors.bg.raised, borderRadius: radius.sm }]}>
+        <View style={[styles.reasoningBody, { borderColor: colors.bg.raised, backgroundColor: colors.bg.raised, borderRadius: radius.md }]}>
           <Markdown compact>{text}</Markdown>
         </View>
       ) : null}
@@ -1107,12 +1111,13 @@ function ExplorationGroup({
   const summary = buildExplorationSummary(parts);
   const entries = useMemo(() => {
     const seen = new Set<string>();
-    const lines: string[] = [];
+    const lines: Array<{ kind: "read" | "search"; line: string }> = [];
     for (const part of parts) {
+      const kind = getExplorationKind(part);
       const line = formatExplorationEntry(part);
-      if (!line || seen.has(line)) continue;
+      if (!kind || !line || seen.has(line)) continue;
       seen.add(line);
-      lines.push(line);
+      lines.push({ kind, line });
     }
     return lines;
   }, [parts]);
@@ -1135,13 +1140,15 @@ function ExplorationGroup({
       </TouchableOpacity>
       {expanded ? (
         <View style={styles.explorationGroupBody}>
-          {entries.map((line, index) => (
-            <View key={`${line}:${index}`} style={styles.groupListRow}>
+          {entries.map((entry, index) => (
+            <View key={`${entry.line}:${index}`} style={styles.groupListRow}>
               <View style={[styles.commandGroupIconFrame, { borderColor: `${colors.fg.subtle}4D` }]}>
-                <SquaresSubtract size={15} color={colors.fg.muted} strokeWidth={2} />
+                {entry.kind === "read"
+                  ? <BookOpen size={15} color={colors.fg.muted} strokeWidth={2} />
+                  : <Search size={15} color={colors.fg.muted} strokeWidth={2} />}
               </View>
               <Text style={{ color: colors.fg.muted, fontSize: typography.subHeading, fontFamily: fonts.sans.regular, flex: 1 }}>
-                {line}
+                {entry.line}
               </Text>
             </View>
           ))}
@@ -4350,14 +4357,15 @@ const styles = StyleSheet.create({
   },
   commandGroupBody: {
     marginTop: 8,
-    gap: 8,
-    paddingLeft: 12,
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
   },
   explorationGroupBody: {
     marginTop: 8,
-    gap: 8,
-    paddingLeft: 12,
-    paddingTop: 2,
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
   },
   groupListRowWrap: {
     paddingLeft: 2,
@@ -4374,16 +4382,13 @@ const styles = StyleSheet.create({
     marginVertical: 0,
   },
   reasoningHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 2,
-    paddingVertical: 4,
-    gap: 6,
+  },
+  reasoningHeaderLeft: {
   },
   reasoningBody: {
     padding: 10,
     borderWidth: 1,
-    marginTop: 6,
+    marginTop: 4,
   },
 
   // Step
