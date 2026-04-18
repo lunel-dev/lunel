@@ -374,6 +374,16 @@ function signJwtToken(claims: Record<string, unknown>, secret: string): string {
   return `${signingInput}.${toBase64Url(signature)}`;
 }
 
+function constantTimeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) {
+    timingSafeEqual(ab, ab);
+    return false;
+  }
+  return timingSafeEqual(ab, bb);
+}
+
 function verifyJwtToken(
   token: string,
   secret: string,
@@ -1439,7 +1449,7 @@ function startManager(): void {
     if (allowLegacyAdminPassword) {
       if (!managerAdminPassword) return false;
       const provided = url.searchParams.get("password") || "";
-      return provided === managerAdminPassword;
+      return constantTimeEqual(provided, managerAdminPassword);
     }
     return false;
   };
@@ -3524,7 +3534,7 @@ function startManager(): void {
           .json()
           .then((body: { password?: string }) => {
             const provided = (body.password || "").trim();
-            if (!managerAdminPassword || provided !== managerAdminPassword) {
+            if (!managerAdminPassword || !constantTimeEqual(provided, managerAdminPassword)) {
               console.warn(`[admin] login failed — wrong password (ip=${sourceIp})`);
               recordFailureAndMaybeBlock("admin-login", req, {
                 threshold: 8,
@@ -3960,7 +3970,7 @@ function startManager(): void {
               const gatewayId = normalizeGatewayId(event.gatewayId);
               const proxyRow = gateway ? getProxyPasswordStmt.get(gateway) as { password: string } | null : null;
               const storedPassword = proxyRow?.password || "";
-              if (gateway && storedPassword && event.password === storedPassword) {
+              if (gateway && storedPassword && constantTimeEqual(event.password, storedPassword)) {
                 (ws.data as ManagerControlSocketData).authed = true;
                 (ws.data as ManagerControlSocketData).gatewayId = gatewayId || gateway;
                 (ws.data as ManagerControlSocketData).gatewayUrl = gateway;
