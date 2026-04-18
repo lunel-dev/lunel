@@ -3481,6 +3481,12 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   const enterVoiceMode = useCallback(async () => {
     if (isVoiceBusy) return;
+    setShowMoreOptions(false);
+    setShowCodexReasoningMenu(false);
+    setShowCodexSpeedMenu(false);
+    setShowCodexPermissionMenu(false);
+    setShowCodexContextUsageMenu(false);
+    setIsVoiceMode(true);
     if (voiceWaveIntervalRef.current) {
       clearInterval(voiceWaveIntervalRef.current);
       voiceWaveIntervalRef.current = null;
@@ -3493,6 +3499,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     try {
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
+        setIsVoiceMode(false);
         Alert.alert("Microphone Permission", "Microphone permission is required for voice input. Voice is sent to our servers for transcription only — we don't store or log it.");
         return;
       }
@@ -3517,13 +3524,18 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       await recording.startAsync();
       recordingRef.current = recording;
       setVoiceDurationMs(0);
-      setIsVoiceMode(true);
     } catch (err) {
       console.error("Voice recording start error:", err);
+      setIsVoiceMode(false);
       Alert.alert("Voice Input", "Failed to start recording.");
       resetEqualizer();
     }
-  }, [animateInputHeight, isVoiceBusy, resetEqualizer, updateEqualizer]);
+  }, [
+    animateInputHeight,
+    isVoiceBusy,
+    resetEqualizer,
+    updateEqualizer,
+  ]);
 
   const cancelVoiceMode = useCallback(async () => {
     setIsVoiceMode(false);
@@ -4001,9 +4013,10 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               pointerEvents="none"
             />
             <View style={{ position: "relative" }}>
+            {!isVoiceMode ? (
             <GestureDetector gesture={swipeDownGesture}>
             <Animated.View
-              pointerEvents={isVoiceMode ? "none" : "auto"}
+              pointerEvents="auto"
               style={[
                 styles.inputContainer,
                 {
@@ -4011,7 +4024,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                   borderColor: colors.border.main,
                   borderRadius: 12,
                   borderCurve: 'continuous',
-                  opacity: isVoiceMode ? 0 : 1,
                   zIndex: showAttachMenu ? 200 : 10,
                 },
               ]}
@@ -4319,8 +4331,9 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
             </Animated.View>
             </GestureDetector>
+            ) : null}
 
-            {activeBackend === "codex" && showMoreOptions && (
+            {!isVoiceMode && activeBackend === "codex" && showMoreOptions && (
               <View style={{
                 marginHorizontal: 8,
                 marginBottom: 8,
