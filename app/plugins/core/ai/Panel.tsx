@@ -2210,6 +2210,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const providers = providersByBackend[activeBackend] || [];
   const needsApiKey = needsApiKeyByBackend[activeBackend] || false;
   const isActiveSessionLoading = !!activeSessionId && loadingSessionId === activeSessionId && !messagesMap[activeSessionId];
+  const composerBottomOffset = composerHeight + (activeBackend === "codex" && showMoreOptions ? 40 : 0);
 
   // AI hook with event handling
   const ai = useAI({
@@ -3996,7 +3997,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             {/* Composer */}
             <LinearGradient
               colors={[colors.bg.base + "1a", colors.bg.base + "ff"]}
-              style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: composerHeight + 24 }}
+              style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: composerBottomOffset + 24 }}
               pointerEvents="none"
             />
             <View style={{ position: "relative" }}>
@@ -4568,7 +4569,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                   position: "absolute",
                   left: 0,
                   right: 0,
-                  bottom: isVoiceMode ? 68 : composerHeight + 18,
+                  bottom: isVoiceMode ? 68 : composerBottomOffset + 18,
                   alignItems: "center",
                   zIndex: 100,
                 }}
