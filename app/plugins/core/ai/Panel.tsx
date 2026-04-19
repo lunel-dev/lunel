@@ -3370,7 +3370,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       try {
         const session = await ai.createSession(undefined, messageBackend);
         sessId = session.id;
-        const sessionTitle = (session.title || "").trim() || (messageBackend === "codex" ? "Codex" : "OpenCode");
+        const derivedTitle = displayText.replace(/@[\w.\-]+\s*/g, "").trim().slice(0, 40) || displayText.trim().slice(0, 40);
+        const sessionTitle = (session.title || "").trim() || derivedTitle || (messageBackend === "codex" ? "Codex" : "OpenCode");
         setSessionTabs((prev) => mergeSessionTabs(prev, [{ ...session, backend: messageBackend } as AISession]));
         setPendingBackend(null);
         const currentActiveTabId = localDraftTabId ?? activeTabId;
