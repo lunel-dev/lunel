@@ -68,6 +68,194 @@ Bun-based WebSocket relay server that connects CLI and app using session codes. 
 
 <br />
 
+## Remote Server Mode
+
+If you are already using the hosted relay at `manager.xwserver.top` + `gateway.xwserver.top`, do not use the `local:*` scripts below.
+Use the remote CLI supervisor instead:
+
+```powershell
+npm run remote:start
+npm run remote:status
+npm run remote:ensure
+```
+
+What it does:
+
+- keeps a single managed remote CLI for this repo root
+- reuses `artifacts\tmp-appdata` so saved mobile sessions survive restarts
+- kills stale orphaned `node dist/index.js` processes before relaunch
+- writes runtime state and logs under `%TEMP%\erkai-remote-cli`
+
+Useful commands:
+
+```powershell
+npm run remote:window
+npm run remote:restart
+npm run remote:stop
+```
+
+- `remote:start` starts the CLI in the background when a saved repo session already exists
+- `remote:window` opens a visible window for QR pairing or live debugging
+- `remote:ensure` is safe to run repeatedly; it only restarts when the managed CLI is unhealthy
+- `remote:autostart:install` installs a current-user Scheduled Task that directly runs the long-lived `watch` supervisor at logon
+- `remote:boot:install` opens a UAC prompt and installs the stronger `SYSTEM + AtStartup` task for true boot-time recovery
+- `remote:autostart:status` shows the managed Scheduled Task wiring and whether the old Startup shortcut still exists
+
+Windows Explorer launchers:
+
+```text
+scripts\start-remote-cli.cmd
+scripts\open-remote-cli-window.cmd
+scripts\status-remote-cli.cmd
+scripts\stop-remote-cli.cmd
+scripts\install-remote-cli-autostart.cmd
+scripts\install-remote-cli-boot-start.cmd
+scripts\status-remote-cli-autostart.cmd
+```
+
+This mode is intended for the public remote relay. The actual code still runs on your PC from the current repo root; `manager` and `proxy` are only the relay layer.
+The recommended steady-state wiring is a single Scheduled Task that runs `scripts\remote-cli.ps1 watch` directly. Avoid keeping both a Startup shortcut and a Scheduled Task enabled at the same time, or you risk duplicate supervisors fighting each other.
+
+<br />
+
+## Local Loopback Development
+
+Windows local self-host flow is now scripted for `manager + proxy`.
+
+```powershell
+npm run local:start:fresh
+npm run local:status
+npm run local:stop
+```
+
+One-click env injection and launch:
+
+```powershell
+npm run local:env
+npm run local:cli:dev
+npm run local:cli:window
+npm run local:cli:shell
+npm run local:app:start
+npm run local:app:window
+npm run local:app:shell
+```
+
+Phone / LAN development on the same Wi-Fi:
+
+```powershell
+npm run local:lan:start:fresh
+npm run local:lan:env
+npm run local:lan:app:start
+npm run local:lan:firewall:install
+```
+
+`local:lan:*` auto-detects the primary LAN IPv4 address and injects that address instead of `127.0.0.1`.
+Use this mode only with the repo app / Expo build. A prebuilt official app that is hard-coded to `gateway.lunel.dev` will not switch to your local machine automatically.
+If Windows Defender blocks phone access, run `npm run local:lan:firewall:install` once to allow `3000`, `8081`, `8899`, and Expo dev ports on the `Private` profile.
+
+Windows Explorer double-click launchers:
+
+```text
+scripts\start-local-stack.cmd
+scripts\open-local-cli.cmd
+scripts\open-local-app.cmd
+scripts\stop-local-stack.cmd
+scripts\start-local-lan-stack.cmd
+scripts\open-local-lan-cli.cmd
+scripts\open-local-lan-app.cmd
+scripts\stop-local-lan-stack.cmd
+scripts\install-local-lan-firewall.cmd
+scripts\install-local-shortcuts.cmd
+```
+
+These `.cmd` launchers do not require `make`. `start-local-stack.cmd` boots a fresh local manager/proxy stack, while `open-local-cli.cmd` and `open-local-app.cmd` open new PowerShell windows with the correct loopback env already injected.
+The matching `*-lan-*` launchers do the same thing with the auto-detected LAN IP for phone testing. `install-local-lan-firewall.cmd` prompts for admin rights and installs the required private-network firewall rules.
+
+Desktop shortcut installer:
+
+```powershell
+npm run local:shortcuts:install
+npm run local:shortcuts:list
+npm run local:shortcuts:remove
+```
+
+`local:shortcuts:install` creates eight `.lnk` files on the current user's desktop:
+
+- `Lunel Local Start`
+- `Lunel Local CLI`
+- `Lunel Local App`
+- `Lunel Local Stop`
+- `Lunel LAN Start`
+- `Lunel LAN CLI`
+- `Lunel LAN App`
+- `Lunel LAN Stop`
+- `Lunel LAN Firewall`
+
+Before opening CLI or App windows, the launcher now checks:
+
+- `node` is available and version `>= 18`
+- `npm` is available in `PATH`
+- `cli\node_modules` and `cli\node_modules\.bin\tsc.cmd` exist
+- `app\node_modules` and `app\node_modules\.bin\expo.cmd` exist
+
+If a dependency is missing, the launcher stops immediately and prints the exact fix command to run.
+
+Phone testing note:
+
+- `127.0.0.1` only works on the same machine
+- for a physical phone, use `local:lan:*` so the phone connects to your PC's LAN IP instead
+
+Equivalent direct PowerShell entry:
+
+```powershell
+pwsh -File .\scripts\local-dev.ps1 start -FreshManager
+pwsh -File .\scripts\local-dev.ps1 status
+pwsh -File .\scripts\local-dev.ps1 stop
+```
+
+Generic env wrapper:
+
+```powershell
+pwsh -File .\scripts\local-env.ps1 show
+pwsh -File .\scripts\local-env.ps1 cli-exec -CommandLine 'npm run dev'
+pwsh -File .\scripts\local-env.ps1 app-exec -CommandLine 'npm run start'
+```
+
+Defaults:
+
+- Manager: `http://127.0.0.1:8899`
+- Proxy: `http://127.0.0.1:3000`
+- Admin password: `erkai-admin-pass`
+- Proxy password: `erkai-proxy-pass`
+- Runtime logs and PID files: `%TEMP%\erkai-local-dev`
+
+The script will:
+
+- start `manager` and `proxy` with loopback-safe `http/ws` URLs
+- wait for `/health` on both services
+- log in to the manager and register the local proxy automatically
+- verify `connectedProxies >= 1` and `managerReachable = true`
+
+To point the CLI at the local stack:
+
+```powershell
+$env:LUNEL_MANAGER_URL='http://127.0.0.1:8899'
+$env:LUNEL_PROXY_URL='http://127.0.0.1:3000'
+cd .\cli
+npm run dev
+```
+
+To point the Expo app at the local stack:
+
+```powershell
+$env:EXPO_PUBLIC_LUNEL_MANAGER_URL='http://127.0.0.1:8899'
+$env:EXPO_PUBLIC_LUNEL_PROXY_URL='http://127.0.0.1:3000'
+cd .\app
+npm run start
+```
+
+<br />
+
 ## PTY
 
 Rust binary for pseudo-terminal management, used by the CLI.

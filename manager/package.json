@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "check": "bun x tsc -p tsconfig.json --noEmit",
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts"
   },

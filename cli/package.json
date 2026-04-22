@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "build": "tsc && npm run prepare-bin",
+    "check": "tsc --noEmit",
     "dev": "tsc && node dist/index.js",
     "prepare-bin": "node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
     "prepublishOnly": "npm run build"

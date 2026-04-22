@@ -3,6 +3,7 @@
 import { WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import shell from "shelljs";
+import { inspectCliCommand, type CliCommandInspection, type CliCommandName } from "./ai/command-resolution.js";
 import { createAiManager } from "./ai/index.js";
 import type { AiManager, AiBackend } from "./ai/index.js";
 import type { Message, Response } from "./transport/protocol.js";
@@ -14,13 +15,15 @@ import * as fs from "fs/promises";
 import * as fssync from "fs";
 import * as path from "path";
 import * as os from "os";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { spawn, spawnSync, ChildProcess, execSync } from "child_process";
 import { createServer, createConnection, Socket } from "net";
 import { createInterface } from "readline";
 
-const DEFAULT_PROXY_URL = normalizeGatewayUrl(process.env.LUNEL_PROXY_URL || "https://gateway.lunel.dev");
-const MANAGER_URL = normalizeGatewayUrl(process.env.LUNEL_MANAGER_URL || "https://manager.lunel.dev");
+const DEFAULT_SELF_HOSTED_PROXY_URL = "https://gateway.xwserver.top";
+const DEFAULT_SELF_HOSTED_MANAGER_URL = "https://manager.xwserver.top";
+const DEFAULT_PROXY_URL = normalizeGatewayUrl(process.env.LUNEL_PROXY_URL || DEFAULT_SELF_HOSTED_PROXY_URL);
+const MANAGER_URL = normalizeManagerUrl(process.env.LUNEL_MANAGER_URL || DEFAULT_SELF_HOSTED_MANAGER_URL);
 const CLI_ARGS = process.argv.slice(2);
 function hasAnyFlag(args: string[], ...flags: string[]): boolean {
   return flags.some((flag) => args.includes(flag));
@@ -36,22 +39,32 @@ const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
 const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
+const PTY_DOWNLOAD_TIMEOUT_MS = 30_000;
+interface PtyReleaseTarget {
+  fileName: string;
+  url: string;
+  sha256: string;
+}
 const AI_RUNTIME_INSTALL_CANDIDATES: Record<AiBackend, string[]> = {
   opencode: ["opencode-ai", "@opencode-ai/cli", "opencode"],
   codex: ["@openai/codex", "codex"],
+  claude: ["@anthropic-ai/claude-code", "claude"],
 };
-const PTY_RELEASES: Record<string, { fileName: string; url: string }> = {
+const PTY_RELEASES: Record<string, PtyReleaseTarget> = {
   "linux:x64": {
     fileName: "lunel-pty-linux-x8664-0",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-linux-x8664-0`,
+    sha256: "422c260e31cf6324e0347aaf06747b8a4ef50a94f587292b293281f28f7113b1",
   },
   "darwin:arm64": {
     fileName: "lunel-pty-macos-arm64-0",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-macos-arm64-0`,
+    sha256: "8d2fc8cfafc5e3e3b3aecc8045222659d11d9d48d7aeeee6ba4e419930dab5fc",
   },
   "win32:x64": {
     fileName: "lunel-pty-windows-x8664-1.exe",
     url: `${PTY_RELEASE_BASE_URL}/lunel-pty-windows-x8664-1.exe`,
+    sha256: "c80c522081a339e148e9c9309ea289d7b7ba992462d66aa010a6e7719ba7dfa2",
   },
 };
 
@@ -97,16 +110,51 @@ interface ManagedProcess {
   args: string[];
   cwd: string;
   startTime: number;
-  output: string[];
   channel: string;
+  exited: boolean;
+  exitCode: number | null;
+  exitSignal: NodeJS.Signals | null;
+  endedAt: number | null;
 }
 const processes = new Map<number, ManagedProcess>();
 const processOutputBuffers = new Map<string, string>();
+const MAX_PROCESS_OUTPUT_BUFFER_CHARS = 128 * 1024;
+const PROCESS_OUTPUT_TRUNCATED_PREFIX = "[output truncated]\n";
+const MAX_EXITED_PROCESS_ENTRIES = 25;
+
+function appendProcessOutput(channel: string, text: string): void {
+  const existing = processOutputBuffers.get(channel) || "";
+  const withoutPrefix = existing.startsWith(PROCESS_OUTPUT_TRUNCATED_PREFIX)
+    ? existing.slice(PROCESS_OUTPUT_TRUNCATED_PREFIX.length)
+    : existing;
+  const combined = `${withoutPrefix}${text}`;
+  if (combined.length > MAX_PROCESS_OUTPUT_BUFFER_CHARS) {
+    processOutputBuffers.set(
+      channel,
+      `${PROCESS_OUTPUT_TRUNCATED_PREFIX}${combined.slice(-MAX_PROCESS_OUTPUT_BUFFER_CHARS)}`
+    );
+    return;
+  }
+  processOutputBuffers.set(channel, combined);
+}
+
+function pruneExitedProcesses(): void {
+  const exited = Array.from(processes.values())
+    .filter((proc) => proc.exited && typeof proc.endedAt === "number")
+    .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
+
+  if (exited.length <= MAX_EXITED_PROCESS_ENTRIES) return;
+
+  for (const proc of exited.slice(0, exited.length - MAX_EXITED_PROCESS_ENTRIES)) {
+    processes.delete(proc.pid);
+    processOutputBuffers.delete(proc.channel);
+  }
+}
 
 // CPU usage tracking
 let lastCpuInfo: { idle: number; total: number }[] | null = null;
 
-// AI manager — runs OpenCode and Codex simultaneously, routes by backend
+// AI manager — runs available AI runtimes simultaneously, routes by backend
 let aiManager: AiManager | null = null;
 let aiManagerInitPromise: Promise<void> | null = null;
 // Proxy tunnel management
@@ -329,6 +377,7 @@ interface CliConfig {
   version: 1;
   deviceId: string;
   sessions?: CliSavedSession[];
+  aiRuntimes?: Partial<Record<CliCommandName, { command: string }>>;
 }
 
 interface CliSavedSession {
@@ -336,6 +385,35 @@ interface CliSavedSession {
   sessionCode: string | null;
   sessionPassword: string;
   savedAt: number;
+}
+
+let currentCliDeviceId: string | null = null;
+
+function normalizeAiRuntimeConfig(
+  value: unknown,
+): Partial<Record<CliCommandName, { command: string }>> {
+  const result: Partial<Record<CliCommandName, { command: string }>> = {};
+  if (!value || typeof value !== "object") {
+    return result;
+  }
+
+  for (const command of ["claude", "codex"] as const) {
+    const entry = (value as Record<string, unknown>)[command];
+    if (typeof entry === "string" && entry.trim()) {
+      result[command] = { command: entry.trim() };
+      continue;
+    }
+    if (
+      entry
+      && typeof entry === "object"
+      && typeof (entry as { command?: unknown }).command === "string"
+      && (entry as { command: string }).command.trim()
+    ) {
+      result[command] = { command: (entry as { command: string }).command.trim() };
+    }
+  }
+
+  return result;
 }
 
 // ============================================================================
@@ -395,6 +473,7 @@ async function readCliConfig(): Promise<CliConfig> {
     return {
       version: 1,
       deviceId: typeof parsed.deviceId === "string" && parsed.deviceId ? parsed.deviceId : generatePersistentSecret(32),
+      aiRuntimes: normalizeAiRuntimeConfig(parsed.aiRuntimes),
       sessions: Array.isArray(parsed.sessions)
         ? parsed.sessions.filter((entry): entry is CliSavedSession => (
           !!entry
@@ -413,6 +492,7 @@ async function readCliConfig(): Promise<CliConfig> {
     return {
       version: 1,
       deviceId: generatePersistentSecret(32),
+      aiRuntimes: {},
       sessions: [],
     };
   }
@@ -1444,7 +1524,7 @@ function getLunelConfigDir(): string {
   return path.join(xdg, "lunel");
 }
 
-function getPtyReleaseTarget(): { fileName: string; url: string } | null {
+function getPtyReleaseTarget(): PtyReleaseTarget | null {
   const release = PTY_RELEASES[`${os.platform()}:${os.arch()}`];
   if (!release) return null;
   return release;
@@ -1454,36 +1534,102 @@ function getPtyBinaryPath(fileName: string): string {
   return path.join(getLunelConfigDir(), "pty-releases", fileName);
 }
 
-async function downloadPtyBinary(url: string, destination: string): Promise<void> {
-  const tempPath = `${destination}.download`;
-  console.log("[pty] Downloading PTY [downloading...]");
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download PTY binary (${response.status})`);
+async function removeFileIfExists(filePath: string): Promise<void> {
+  try {
+    await fs.rm(filePath, { force: true });
+  } catch {
+    // ignore cleanup failures
   }
-  if (!response.body) {
-    throw new Error("PTY download response had no body");
-  }
+}
 
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      chunks.push(value);
-      totalBytes += value.byteLength;
+async function getPtyBinaryState(filePath: string): Promise<{ exists: boolean; sha256: string | null }> {
+  let handle: fs.FileHandle | null = null;
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size === 0) {
+      return { exists: true, sha256: null };
+    }
+
+    handle = await fs.open(filePath, "r");
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(64 * 1024);
+
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+
+    return { exists: true, sha256: hash.digest("hex") };
+  } catch {
+    return { exists: false, sha256: null };
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => undefined);
     }
   }
+}
 
-  const binary = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-  await fs.writeFile(tempPath, binary);
-  if (os.platform() !== "win32") {
-    await fs.chmod(tempPath, 0o755);
+async function downloadPtyBinary(release: PtyReleaseTarget, destination: string): Promise<void> {
+  const tempPath = `${destination}.download`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PTY_DOWNLOAD_TIMEOUT_MS);
+  let handle: fs.FileHandle | null = null;
+  let totalBytes = 0;
+  const hash = createHash("sha256");
+
+  await removeFileIfExists(tempPath);
+  console.log("[pty] Downloading PTY [downloading...]");
+  try {
+    const response = await fetch(release.url, {
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to download PTY binary (${response.status})`);
+    }
+    if (!response.body) {
+      throw new Error("PTY download response had no body");
+    }
+
+    handle = await fs.open(tempPath, "w");
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      const chunk = Buffer.from(value);
+      totalBytes += chunk.byteLength;
+      hash.update(chunk);
+      await handle.writeFile(chunk);
+    }
+
+    await handle.sync();
+    await handle.close();
+    handle = null;
+
+    const sha256 = hash.digest("hex");
+    if (sha256 !== release.sha256) {
+      throw new Error(`PTY checksum mismatch for ${release.fileName}`);
+    }
+
+    if (os.platform() !== "win32") {
+      await fs.chmod(tempPath, 0o755);
+    }
+    await fs.rename(tempPath, destination);
+    console.log(`[pty] Downloaded PTY (${Math.max(1, Math.round(totalBytes / 1024))} KB)`);
+  } catch (error) {
+    if (handle) {
+      await handle.close().catch(() => undefined);
+    }
+    await removeFileIfExists(tempPath);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`PTY download timed out after ${PTY_DOWNLOAD_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  await fs.rename(tempPath, destination);
-  console.log(`[pty] Downloaded PTY (${Math.max(1, Math.round(totalBytes / 1024))} KB)`);
 }
 
 async function ensurePtyBinaryReady(): Promise<string | null> {
@@ -1496,14 +1642,23 @@ async function ensurePtyBinaryReady(): Promise<string | null> {
     const binPath = getPtyBinaryPath(release.fileName);
     await fs.mkdir(path.dirname(binPath), { recursive: true });
 
-    try {
-      await fs.access(binPath);
-      return binPath;
-    } catch {
-      console.log(`[pty] PTY missing. Installing ${release.fileName}...`);
-      await downloadPtyBinary(release.url, binPath);
+    const existingBinary = await getPtyBinaryState(binPath);
+    if (existingBinary.exists && existingBinary.sha256 === release.sha256) {
+      if (os.platform() !== "win32") {
+        await fs.chmod(binPath, 0o755);
+      }
       return binPath;
     }
+
+    if (existingBinary.exists) {
+      console.warn(`[pty] Existing PTY binary is invalid for ${release.fileName}. Reinstalling...`);
+      await removeFileIfExists(binPath);
+    } else {
+      console.log(`[pty] PTY missing. Installing ${release.fileName}...`);
+    }
+
+    await downloadPtyBinary(release, binPath);
+    return binPath;
   })();
 
   try {
@@ -1690,6 +1845,7 @@ function handleSystemCapabilities(): Record<string, unknown> {
     version: VERSION,
     namespaces: ["fs", "git", "terminal", "processes", "ports", "monitor", "http", "ai", "proxy", "editor"],
     platform: os.platform(),
+    pcId: currentCliDeviceId || `${os.hostname()}::${ROOT_DIR}`,
     rootDir: ROOT_DIR,
     hostname: os.hostname(),
   };
@@ -1711,6 +1867,8 @@ function handleProcessesList(): Record<string, unknown> {
     status: string;
     channel: string;
     cwd: string;
+    exitCode: number | null;
+    endedAt: number | null;
   }> = [];
 
   for (const [pid, proc] of processes) {
@@ -1718,11 +1876,20 @@ function handleProcessesList(): Record<string, unknown> {
       pid,
       command: `${proc.command} ${proc.args.join(" ")}`.trim(),
       startTime: proc.startTime,
-      status: proc.proc.killed ? "stopped" : "running",
+      status: proc.exited ? "stopped" : "running",
       channel: proc.channel,
       cwd: proc.cwd,
+      exitCode: proc.exitCode,
+      endedAt: proc.endedAt,
     });
   }
+
+  result.sort((a, b) => {
+    if (a.status !== b.status) return a.status === "running" ? -1 : 1;
+    const aTime = a.endedAt ?? a.startTime;
+    const bTime = b.endedAt ?? b.startTime;
+    return bTime - aTime;
+  });
 
   return { processes: result };
 }
@@ -1779,8 +1946,11 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
     args,
     cwd: workDir,
     startTime: Date.now(),
-    output: [],
     channel,
+    exited: false,
+    exitCode: null,
+    exitSignal: null,
+    endedAt: null,
   };
 
   processes.set(pid, managedProc);
@@ -1789,8 +1959,7 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
   // Stream output
   const sendOutput = (stream: "stdout" | "stderr") => (data: Buffer) => {
     const text = data.toString();
-    managedProc.output.push(text);
-    processOutputBuffers.set(channel, (processOutputBuffers.get(channel) || "") + text);
+    appendProcessOutput(channel, text);
 
     const msg: Message = {
       v: 1,
@@ -1806,7 +1975,7 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
   proc.stderr?.on("data", sendOutput("stderr"));
   proc.on("error", (err) => {
     const message = err.message || `Process "${command}" failed`;
-    processOutputBuffers.set(channel, (processOutputBuffers.get(channel) || "") + `${message}\n`);
+    appendProcessOutput(channel, `${message}\n`);
     emitAppEvent({
       v: 1,
       id: `evt-${Date.now()}`,
@@ -1817,6 +1986,11 @@ async function handleProcessesSpawn(payload: Record<string, unknown>): Promise<R
   });
 
   proc.on("close", (code, signal) => {
+    managedProc.exited = true;
+    managedProc.exitCode = code;
+    managedProc.exitSignal = signal;
+    managedProc.endedAt = Date.now();
+    pruneExitedProcesses();
     const msg: Message = {
       v: 1,
       id: `evt-${Date.now()}`,
@@ -1836,9 +2010,9 @@ function handleProcessesKill(payload: Record<string, unknown>): Record<string, u
 
   const proc = processes.get(pid);
   if (!proc) throw Object.assign(new Error("Process not found"), { code: "ENOPROC" });
+  if (proc.exited) return {};
 
   proc.proc.kill();
-  processes.delete(pid);
 
   return {};
 }
@@ -2491,10 +2665,7 @@ async function handleProxyConnect(payload: Record<string, unknown>): Promise<Rec
   debugLog("[proxy] local tcp connected", { tunnelId, port });
 
   // 2. Open proxy WebSocket to gateway
-  const wsBase = activeGatewayUrl.replace(/^https:/, "wss:");
-  if (!wsBase.startsWith("wss://")) {
-    throw Object.assign(new Error("Gateway URL must use https://"), { code: "EPROTO" });
-  }
+  const wsBase = toWebSocketBaseUrl(activeGatewayUrl);
   const authQuery = currentSessionPassword
     ? `password=${encodeURIComponent(currentSessionPassword)}`
     : `code=${encodeURIComponent(currentSessionCode as string)}`;
@@ -2972,10 +3143,16 @@ async function processMessage(message: Message): Promise<Response> {
 
       case "ai": {
         if (!aiManager) throw Object.assign(new Error("AI manager not initialized"), { code: "EUNAVAILABLE" });
-        const backend = ((payload.backend as string) === "codex" ? "codex" : "opencode") as AiBackend;
+        const requestedBackend = payload.backend as string | undefined;
+        const backend = (requestedBackend === "codex" || requestedBackend === "claude"
+          ? requestedBackend
+          : "opencode") as AiBackend;
         switch (action) {
           case "backends":
-            result = { backends: aiManager.availableBackends() };
+            result = {
+              backends: aiManager.availableBackends(),
+              diagnostics: aiManager.backendDiagnostics(),
+            };
             break;
           case "prompt":
             result = await aiManager.prompt(
@@ -3101,6 +3278,15 @@ interface ManagerQrResponse {
   expiresInMs: number;
 }
 
+interface ManagedSessionResponse {
+  code: string;
+  password: string;
+  sessionId: string;
+  primary: string;
+  backup?: string | null;
+  expiresAt: number;
+}
+
 interface AssembleResult {
   code: string;
   password: string;
@@ -3118,13 +3304,74 @@ interface ReattachClaimResponse {
 
 let currentReattachGeneration: number | null = null;
 
+function shouldPreferDirectServerEntry(): boolean {
+  if (process.env.LUNEL_FORCE_QR_SESSION === "1") {
+    return false;
+  }
+  return MANAGER_URL === DEFAULT_SELF_HOSTED_MANAGER_URL;
+}
+
+function isPrivateDevelopmentHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1") {
+    return true;
+  }
+
+  const octets = normalized.split(".");
+  if (octets.length !== 4 || octets.some((part) => !/^\d+$/.test(part))) {
+    return false;
+  }
+
+  const numbers = octets.map((part) => Number(part));
+  if (numbers.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+
+  return (
+    numbers[0] === 10 ||
+    (numbers[0] === 192 && numbers[1] === 168) ||
+    (numbers[0] === 172 && numbers[1] >= 16 && numbers[1] <= 31)
+  );
+}
+
+function isAllowedGatewayProtocol(parsed: URL): boolean {
+  return parsed.protocol === "https:" || (parsed.protocol === "http:" && isPrivateDevelopmentHostname(parsed.hostname));
+}
+
+function normalizeManagerUrl(input: string): string {
+  const raw = input.trim();
+  if (!raw) {
+    throw new Error("Manager URL is required");
+  }
+
+  const withScheme = /^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    throw new Error(`Invalid manager URL: ${input}`);
+  }
+  if (!isAllowedGatewayProtocol(parsed)) {
+    throw new Error("Manager URL must use https://, except localhost or private LAN IPs may use http://");
+  }
+  const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
+  return `${parsed.protocol}//${parsed.host}${path}`;
+}
+
+function toWebSocketBaseUrl(input: string): string {
+  const parsed = new URL(input);
+  if (!isAllowedGatewayProtocol(parsed)) {
+    throw new Error("Gateway URL must use https://, except localhost or private LAN IPs may use http://");
+  }
+  const protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+  const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
+  return `${protocol}//${parsed.host}${path}`;
+}
+
 function normalizeGatewayUrl(input: string): string {
   const raw = input.trim();
   if (!raw) {
     throw new Error("Gateway URL is required");
-  }
-  if (raw.toLowerCase().startsWith("http://") || raw.toLowerCase().startsWith("ws://")) {
-    throw new Error("Insecure gateway protocol is not allowed; use https://");
   }
 
   const withScheme = /^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`;
@@ -3134,11 +3381,20 @@ function normalizeGatewayUrl(input: string): string {
   } catch {
     throw new Error(`Invalid gateway URL: ${input}`);
   }
-  if (parsed.protocol !== "https:") {
-    throw new Error("Gateway URL must use https://");
+  if (!isAllowedGatewayProtocol(parsed)) {
+    throw new Error("Gateway URL must use https://, except localhost or private LAN IPs may use http://");
   }
   const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
   return `${parsed.protocol}//${parsed.host}${path}`;
+}
+
+function buildConnectPayload(code: string): string {
+  const params = new URLSearchParams({
+    code,
+    manager: MANAGER_URL,
+    gateway: DEFAULT_PROXY_URL,
+  });
+  return `lunel://connect?${params.toString()}`;
 }
 
 async function createQrCode(): Promise<ManagerQrResponse> {
@@ -3149,8 +3405,55 @@ async function createQrCode(): Promise<ManagerQrResponse> {
   return (await response.json()) as ManagerQrResponse;
 }
 
+async function createManagedSession(): Promise<ManagedSessionResponse> {
+  const response = await fetch(new URL("/v1/session", MANAGER_URL), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    let message = `Failed to create managed session from manager: ${response.status}`;
+    try {
+      const payload = await response.json() as { error?: string; reason?: string };
+      if (payload.error) {
+        message = payload.error;
+      } else if (payload.reason) {
+        message = payload.reason;
+      }
+    } catch {
+      // ignore parse failures and use the fallback message
+    }
+    throw new Error(message);
+  }
+  const payload = await response.json() as Partial<ManagedSessionResponse>;
+  if (
+    typeof payload.code !== "string" ||
+    !payload.code ||
+    typeof payload.password !== "string" ||
+    !payload.password ||
+    typeof payload.sessionId !== "string" ||
+    !payload.sessionId ||
+    typeof payload.primary !== "string" ||
+    !payload.primary ||
+    typeof payload.expiresAt !== "number" ||
+    !Number.isFinite(payload.expiresAt)
+  ) {
+    throw new Error("Manager returned invalid managed session payload");
+  }
+  return {
+    code: payload.code,
+    password: payload.password,
+    sessionId: payload.sessionId,
+    primary: normalizeGatewayUrl(payload.primary),
+    backup: typeof payload.backup === "string" && payload.backup
+      ? normalizeGatewayUrl(payload.backup)
+      : null,
+    expiresAt: payload.expiresAt,
+  };
+}
+
 async function assembleWithCode(code: string): Promise<AssembleResult> {
-  const wsUrl = `${MANAGER_URL.replace(/^https:/, "wss:")}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
+  const wsUrl = `${toWebSocketBaseUrl(MANAGER_URL)}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
   return await new Promise<AssembleResult>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;
@@ -3283,14 +3586,27 @@ async function revokePassword(password: string, reason = "revoked by cli --new")
 }
 
 function displayQR(code: string): void {
+  const payload = buildConnectPayload(code);
   console.log("\n");
-  qrcode.generate(code, { small: true }, (qr) => {
+  qrcode.generate(payload, { small: true }, (qr) => {
     console.log(qr);
     console.log(`\n  Session code: ${code}\n`);
+    console.log(`  Manager: ${MANAGER_URL}`);
+    console.log(`  Gateway: ${DEFAULT_PROXY_URL}\n`);
     console.log(`  Root directory: ${ROOT_DIR}\n`);
     console.log("  Scan the QR code with the Lunel app to connect.");
     console.log("  Press Ctrl+C to exit.\n");
   });
+}
+
+function displayDirectSessionReady(code: string): void {
+  console.log("\n");
+  console.log(`  Server session ready: ${code}\n`);
+  console.log(`  Manager: ${MANAGER_URL}`);
+  console.log(`  Gateway: ${DEFAULT_PROXY_URL}\n`);
+  console.log(`  Root directory: ${ROOT_DIR}\n`);
+  console.log("  Home should connect automatically once the app points at this server.");
+  console.log("  Open Manual Connect only if auto-connect cannot recover the session.\n");
 }
 
 function supportsAnsiStyles(): boolean {
@@ -3369,9 +3685,65 @@ function installLatestNpmPackage(pkg: string): boolean {
   return !result.error && result.status === 0;
 }
 
+async function persistDetectedAiRuntimeConfig(): Promise<void> {
+  if (process.platform !== "win32") return;
+
+  const config = await getCliConfig();
+  const nextAiRuntimes = {
+    ...(config.aiRuntimes ?? {}),
+  } as Partial<Record<CliCommandName, { command: string }>>;
+  let changed = false;
+
+  for (const command of ["claude", "codex"] as const) {
+    if (nextAiRuntimes[command]?.command?.trim()) continue;
+
+    const inspection = inspectCliCommand(command);
+    if (!inspection.available) continue;
+    if (inspection.source === "config" || inspection.source === "env") continue;
+    if (!path.isAbsolute(inspection.executable)) continue;
+
+    nextAiRuntimes[command] = { command: inspection.executable };
+    changed = true;
+    console.log(`[ai] Pinned ${inspection.displayName} runtime: ${inspection.executable}`);
+  }
+
+  if (!changed) return;
+
+  await writeCliConfig({
+    ...config,
+    aiRuntimes: nextAiRuntimes,
+  });
+}
+
+function isInspectableAiRuntimeBackend(backend: AiBackend): backend is Extract<AiBackend, "codex" | "claude"> {
+  return backend === "codex" || backend === "claude";
+}
+
 async function ensureAiCliRuntimes(): Promise<void> {
-  const missingBackends = (Object.keys(AI_RUNTIME_INSTALL_CANDIDATES) as AiBackend[])
-    .filter((backend) => !isCommandAvailable(backend));
+  const missingBackends: AiBackend[] = [];
+  const configuredFailures: CliCommandInspection[] = [];
+
+  for (const backend of Object.keys(AI_RUNTIME_INSTALL_CANDIDATES) as AiBackend[]) {
+    if (isInspectableAiRuntimeBackend(backend)) {
+      const inspection = inspectCliCommand(backend);
+      if (inspection.available) continue;
+      if (inspection.status === "configured_path_missing" || inspection.status === "not_executable") {
+        configuredFailures.push(inspection);
+        continue;
+      }
+      missingBackends.push(backend);
+      continue;
+    }
+
+    if (!isCommandAvailable(backend)) {
+      missingBackends.push(backend);
+    }
+  }
+
+  for (const inspection of configuredFailures) {
+    console.warn(`[ai] ${inspection.message}`);
+  }
+
   if (missingBackends.length === 0) return;
 
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -3387,13 +3759,26 @@ async function ensureAiCliRuntimes(): Promise<void> {
   }
 
   for (const backend of missingBackends) {
-    if (isCommandAvailable(backend)) continue;
+    if (isInspectableAiRuntimeBackend(backend)) {
+      const inspection = inspectCliCommand(backend);
+      if (inspection.available) continue;
+      if (inspection.status !== "missing_binary") {
+        console.warn(`[ai] ${inspection.message}`);
+        continue;
+      }
+    } else if (isCommandAvailable(backend)) {
+      continue;
+    }
+
     const candidates = AI_RUNTIME_INSTALL_CANDIDATES[backend];
     let installed = false;
     for (const pkg of candidates) {
       console.log(`[ai] Installing ${backend} via npm package ${pkg}@latest...`);
       if (!installLatestNpmPackage(pkg)) continue;
-      if (isCommandAvailable(backend)) {
+      const runtimeAvailable = isInspectableAiRuntimeBackend(backend)
+        ? inspectCliCommand(backend).available
+        : isCommandAvailable(backend);
+      if (runtimeAvailable) {
         installed = true;
         console.log(`[ai] ${backend} installed successfully.`);
         break;
@@ -3403,6 +3788,8 @@ async function ensureAiCliRuntimes(): Promise<void> {
       console.warn(`[ai] Failed to install ${backend}. You can install it manually and restart the CLI.`);
     }
   }
+
+  await persistDetectedAiRuntimeConfig();
 }
 
 function gracefulShutdown(): void {
@@ -3585,6 +3972,7 @@ async function main(): Promise<void> {
   let usedSavedSession = false;
   try {
     const cliConfig = await getCliConfig();
+    currentCliDeviceId = cliConfig.deviceId;
     const savedSession = getSavedSessionForRoot(cliConfig, ROOT_DIR);
     debugLog("Checking PTY runtime...");
     const ptyBinaryPath = await ensurePtyBinaryReady();
@@ -3594,6 +3982,7 @@ async function main(): Promise<void> {
       debugLog(`PTY runtime unsupported on ${os.platform()}/${os.arch()}. Skipping prefetch.\n`);
     }
 
+    await persistDetectedAiRuntimeConfig();
     await ensureAiCliRuntimes();
 
     // Start AI backends in the background so missing or slow AI runtimes never
@@ -3602,7 +3991,6 @@ async function main(): Promise<void> {
 
     let sessionCodeToUse: string | null = null;
     let sessionPasswordToUse: string;
-
     if (!FORCE_NEW_CODE && savedSession) {
       console.log(`Using saved session for ${ROOT_DIR}`);
       displaySavedSessionNotice();
@@ -3614,18 +4002,30 @@ async function main(): Promise<void> {
         await revokePassword(savedSession.sessionPassword);
         await clearSavedSessionForRoot();
       }
-      const qr = await createQrCode();
-      currentSessionCode = qr.code;
-      displayQR(qr.code);
-      const assembled = await assembleWithCode(qr.code);
-      sessionCodeToUse = assembled.code;
-      sessionPasswordToUse = assembled.password;
+      if (shouldPreferDirectServerEntry()) {
+        const session = await createManagedSession();
+        currentSessionCode = session.code;
+        displayDirectSessionReady(session.code);
+        sessionCodeToUse = session.code;
+        sessionPasswordToUse = session.password;
+      } else {
+        const qr = await createQrCode();
+        currentSessionCode = qr.code;
+        displayQR(qr.code);
+        const assembled = await assembleWithCode(qr.code);
+        sessionCodeToUse = assembled.code;
+        sessionPasswordToUse = assembled.password;
+      }
       await saveSessionForRoot(sessionCodeToUse, sessionPasswordToUse);
     }
 
     currentSessionCode = sessionCodeToUse;
     currentSessionPassword = sessionPasswordToUse;
     if (usedSavedSession) {
+      const reattach = await claimReattach(sessionPasswordToUse);
+      currentPrimaryGateway = reattach.proxyUrl;
+      currentReattachGeneration = reattach.generation;
+    } else if (shouldPreferDirectServerEntry()) {
       const reattach = await claimReattach(sessionPasswordToUse);
       currentPrimaryGateway = reattach.proxyUrl;
       currentReattachGeneration = reattach.generation;
