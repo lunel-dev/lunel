@@ -28,7 +28,7 @@ type InfoSheetProps = {
 };
 
 export default function InfoSheet({ visible, onClose, title, description, children }: InfoSheetProps) {
-  const { fonts, colors } = useTheme();
+  const { fonts, colors, spacing, radius } = useTheme();
   const [modalVisible, setModalVisible] = useState(false);
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const backdropOpacity = useSharedValue(0);
@@ -80,7 +80,22 @@ export default function InfoSheet({ visible, onClose, title, description, childr
             <ReAnimated.View style={[sheetStyles.overlay, backdropStyle]}>
               <TouchableWithoutFeedback>
                 <GestureDetector gesture={pan}>
-                  <ReAnimated.View style={[sheetStyles.sheet, { backgroundColor: colors.bg.base }, animatedStyle]}>
+                  <ReAnimated.View
+                    style={[
+                      sheetStyles.sheet,
+                      {
+                        backgroundColor: colors.bg.base,
+                        marginHorizontal: 12,
+                        borderTopLeftRadius: radius["2xl"],
+                        borderTopRightRadius: radius["2xl"],
+                        paddingHorizontal: spacing[4],
+                        paddingTop: 8,
+                        paddingBottom: 14,
+                        maxHeight: "72%",
+                      },
+                      animatedStyle,
+                    ]}
+                  >
                     {/* Handle */}
                     <View style={sheetStyles.handle} />
 
@@ -97,7 +112,7 @@ export default function InfoSheet({ visible, onClose, title, description, childr
                         }}
                         style={sheetStyles.closeButton}
                       >
-                        <X size={20} color="#FFFFFF" strokeWidth={2} style={{ opacity: 0.8 }} />
+                        <X size={17} color="#FFFFFF" strokeWidth={2.2} style={{ opacity: 0.8 }} />
                       </TouchableOpacity>
                     </View>
 
@@ -121,12 +136,7 @@ const sheetStyles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.55)",
   },
   sheet: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingTop: 6,
-    paddingBottom: 0,
-    maxHeight: "80%",
+    overflow: "hidden",
   },
   handle: {
     width: 36,
@@ -153,8 +163,10 @@ const sheetStyles = StyleSheet.create({
     marginTop: 3,
   },
   closeButton: {
-    width: 34,
-    height: 34,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.08)",
     alignItems: "center",
     justifyContent: "center",
   },

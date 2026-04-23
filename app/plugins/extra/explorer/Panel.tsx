@@ -23,9 +23,9 @@ import { SvgUri } from 'react-native-svg';
 import {
   CloudOff,
   X,
+  ArrowLeft,
   Search,
   Settings2,
-  ArrowLeft,
   ChevronRight,
   FileText,
   Folder,
@@ -40,7 +40,6 @@ import {
   Circle,
   CircleDot,
   Copy,
-  Check,
 } from 'lucide-react-native';
 import Loading from '@/components/Loading';
 import Header, { useHeaderHeight } from "@/components/Header";
@@ -57,6 +56,7 @@ import { resolveMaterialIconUri } from './materialIconTheme';
 
 type SortOption = 'name' | 'size' | 'modified';
 type FilterOption = 'all' | 'files' | 'folders';
+type ExplorerListItem = FileEntry & { __navParent?: boolean };
 
 // Helper functions (moved outside component to avoid re-creation)
 const formatFileSize = (bytes?: number) => {
@@ -81,9 +81,9 @@ const formatTime = (mtime?: number) => {
 
 // Memoized file item component
 interface FileItemProps {
-  item: FileEntry;
+  item: ExplorerListItem;
   isFirst: boolean;
-  onPress: (item: FileEntry) => void;
+  onPress: (item: ExplorerListItem) => void;
   colors: any;
   fonts: any;
   spacing: any;
@@ -96,7 +96,8 @@ interface FileActionSheetProps {
   itemPath: string;
   itemIsBinary: boolean | null;
   onClose: () => void;
-  onCopyFullPath: () => void;
+  onCopyRelativePath: () => void;
+  onCopyPath: () => void;
   onOpenInEditor: () => void;
   onOpenWithSystem: () => void;
   onRename: () => void;
@@ -111,15 +112,19 @@ const EntryIcon = memo(function EntryIcon({
   item,
   colors,
 }: {
-  item: FileEntry;
+  item: ExplorerListItem;
   colors: any;
 }) {
-  const iconUri = resolveMaterialIconUri(item);
   const [iconLoadFailed, setIconLoadFailed] = useState(false);
+  const iconUri = item.__navParent ? null : resolveMaterialIconUri(item);
 
   useEffect(() => {
     setIconLoadFailed(false);
   }, [iconUri]);
+
+  if (item.__navParent) {
+    return <ArrowLeft size={18} color="#ffffff" />;
+  }
 
   if (!iconUri || iconLoadFailed) {
     return item.type === 'directory'
@@ -146,14 +151,14 @@ const FileItem = memo(function FileItem({ item, isFirst, onPress, colors, fonts,
         flexDirection: 'row',
         alignItems: 'flex-start',
         paddingHorizontal: spacing[3],
-        paddingVertical: spacing[2],
+        paddingVertical: spacing[1],
         gap: spacing[3],
       }}
     >
       <View style={{
         width: 36,
         height: 36,
-        borderRadius: radius.md,
+        borderRadius: 6,
         backgroundColor: item.type === 'directory' ? colors.accent.default + '20' : colors.bg.raised,
         alignItems: 'center',
         justifyContent: 'center',
@@ -174,11 +179,13 @@ const FileItem = memo(function FileItem({ item, isFirst, onPress, colors, fonts,
           color: colors.fg.muted,
           marginTop: 2,
         }}>
-          {item.type === 'directory' ? 'Directory' : formatFileSize(item.size)}
+          {item.__navParent ? 'Back' : item.type === 'directory' ? 'Directory' : formatFileSize(item.size)}
           {item.mtime && ` · ${formatTime(item.mtime)}`}
         </Text>
       </View>
-      <ChevronRight size={18} color={colors.fg.subtle} />
+      {item.type === 'directory' && !item.__navParent ? (
+        <ChevronRight size={18} color={colors.fg.subtle} />
+      ) : null}
     </TouchableOpacity>
   );
 });
@@ -189,7 +196,8 @@ const FileActionSheet = memo(function FileActionSheet({
   itemPath,
   itemIsBinary,
   onClose,
-  onCopyFullPath,
+  onCopyRelativePath,
+  onCopyPath,
   onOpenInEditor,
   onOpenWithSystem,
   onRename,
@@ -371,12 +379,32 @@ const FileActionSheet = memo(function FileActionSheet({
                 >
                   <TouchableOpacity
                     style={[styles.sheetRow, { marginBottom: 0 }]}
-                    onPress={onCopyFullPath}
+                    onPress={onCopyRelativePath}
                     activeOpacity={0.7}
                   >
                     <Copy size={18} color={colors.fg.default} />
                     <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
-                      Copy file full path
+                      Copy relative path
+                    </Text>
+                    <ChevronRight size={18} color={colors.fg.subtle} />
+                  </TouchableOpacity>
+
+                  <View
+                    style={{
+                      height: StyleSheet.hairlineWidth,
+                      backgroundColor: colors.border.secondary,
+                      marginLeft: 50,
+                    }}
+                  />
+
+                  <TouchableOpacity
+                    style={[styles.sheetRow, { marginBottom: 0 }]}
+                    onPress={onCopyPath}
+                    activeOpacity={0.7}
+                  >
+                    <Copy size={18} color={colors.fg.default} />
+                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                      Copy path
                     </Text>
                     <ChevronRight size={18} color={colors.fg.subtle} />
                   </TouchableOpacity>
@@ -446,7 +474,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [pathCopied, setPathCopied] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>('name');
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
@@ -489,6 +516,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const [uploadStage, setUploadStage] = useState<'idle' | 'preparing' | 'writing'>('idle');
   const uploadPickerInFlightRef = useRef(false);
   const uploadCancelRequestedRef = useRef(false);
+  const listRef = useRef<FlashList<ExplorerListItem> | null>(null);
   const MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024;
 
   const openWithSystem = async (item: FileEntry) => {
@@ -572,6 +600,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     }
   }, [isActive, isConnected]);
 
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    });
+  }, [currentPath]);
+
   // Get filtered and sorted items
   const currentItems = useMemo(() => {
     let result = [...items];
@@ -615,19 +649,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     return result;
   }, [items, searchQuery, sortBy, filterBy, showHiddenFiles]);
 
-  // Path segments for breadcrumb
-  const pathSegments = useMemo(() => {
-    if (currentPath === '.' || currentPath === '') return [{ name: 'Root', path: '.' }];
-    const parts = currentPath.split('/').filter(Boolean);
-    return [
-      { name: 'Root', path: '.' },
-      ...parts.map((part, i) => ({
-        name: part,
-        path: parts.slice(0, i + 1).join('/'),
-      })),
-    ];
-  }, [currentPath]);
-
   const navigateUp = useCallback(() => {
     if (currentPath === '.' || currentPath === '') return;
     const segments = currentPath.split('/').filter(Boolean);
@@ -653,7 +674,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     return () => sub.remove();
   }, [isActive, currentPath, navigateUp]);
 
-  const openItem = (item: FileEntry) => {
+  const openItem = (item: ExplorerListItem) => {
+    if (item.__navParent) {
+      navigateUp();
+      return;
+    }
+
     if (item.type === 'directory') {
       const newPath = currentPath === '.' ? item.name : `${currentPath}/${item.name}`;
       setCurrentPath(newPath);
@@ -896,6 +922,11 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   };
 
   const hasActiveFilters = sortBy !== 'name' || filterBy !== 'all';
+  const isRootPath = currentPath === '.' || currentPath === '';
+  const displayItems = useMemo<ExplorerListItem[]>(() => {
+    if (isRootPath) return currentItems;
+    return [{ name: '..', type: 'directory', __navParent: true }, ...currentItems];
+  }, [isRootPath, currentItems]);
   const selectedItemPath = selectedItem
     ? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`)
     : '';
@@ -959,6 +990,10 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   handleUploadFile();
                 } else if (nativeEvent.event === 'toggle-hidden-files') {
                   setShowHiddenFiles((prev) => !prev);
+                } else if (nativeEvent.event === 'copy-relative-path') {
+                  Clipboard.setStringAsync(currentPath);
+                } else if (nativeEvent.event === 'copy-path') {
+                  Clipboard.setStringAsync(getAbsolutePath(currentPath));
                 } else if (nativeEvent.event === 'refresh') {
                   loadDirectory(currentPath);
                 }
@@ -967,6 +1002,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 { id: 'new-file', title: 'New File' },
                 { id: 'new-folder', title: 'New Folder' },
                 { id: 'upload-file', title: 'Upload File' },
+                { id: 'copy-relative-path', title: 'Copy Relative Path' },
+                { id: 'copy-path', title: 'Copy Path' },
                 {
                   id: 'toggle-hidden-files',
                   title: 'Show Hidden Files',
@@ -1033,8 +1070,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
               <Loading />
             </View>
           )}
-          {!loading && !error && currentItems.length === 0 && (
-            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', zIndex: 1, marginBottom: 80 }}>
+          {!loading && !error && currentItems.length === 0 && isRootPath && (
+            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', zIndex: 1 }}>
               <FolderOpen size={48} color={colors.fg.subtle} />
               <Text style={{
                 fontSize: 14,
@@ -1075,7 +1112,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             </View>
           )}
           <FlashList
-            data={loading || error ? [] : currentItems}
+            ref={listRef}
+            data={loading || error ? [] : displayItems}
             estimatedItemSize={44}
             ListEmptyComponent={null}
             ItemSeparatorComponent={null}
@@ -1091,91 +1129,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 radius={radius}
               />
             )}
-            keyExtractor={(item) => item.name}
+            keyExtractor={(item) => (item.__navParent ? '__parent__' : item.name)}
           />
-      </View>
-
-      {/* Path Bar */}
-      <View style={{
-        borderTopWidth: StyleSheet.hairlineWidth,
-        borderTopColor: colors.border.secondary,
-        backgroundColor: colors.bg.base,
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: spacing[2],
-        height: 45,
-        gap: spacing[2],
-      }}>
-        <TouchableOpacity
-          onPress={navigateUp}
-          disabled={currentPath === '.' || currentPath === ''}
-          activeOpacity={0.7}
-          style={{
-            width: 28,
-            height: 28,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 7,
-            backgroundColor: colors.bg.raised,
-            opacity: currentPath === '.' || currentPath === '' ? 0.3 : 1,
-          }}
-        >
-          <ArrowLeft size={15} color={colors.fg.muted} />
-        </TouchableOpacity>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={{ flex: 1 }}
-          contentContainerStyle={{ alignItems: 'center', gap: 0 }}
-        >
-          {pathSegments.map((seg, index) => {
-            const isLast = index === pathSegments.length - 1;
-            return (
-              <React.Fragment key={seg.path}>
-                {index > 0 && (
-                  <ChevronRight size={11} color={colors.fg.subtle} />
-                )}
-                <TouchableOpacity
-                  onPress={() => !isLast && setCurrentPath(seg.path)}
-                  activeOpacity={isLast ? 1 : 0.5}
-                  style={{
-                    paddingHorizontal: 7,
-                    paddingVertical: 4,
-                  }}
-                >
-                  <Text style={{
-                    fontSize: 13,
-                    fontFamily: isLast ? fonts.sans.medium : fonts.sans.regular,
-                    color: isLast ? colors.fg.default : colors.fg.muted,
-                  }}>
-                    {seg.name}
-                  </Text>
-                </TouchableOpacity>
-              </React.Fragment>
-            );
-          })}
-        </ScrollView>
-        <TouchableOpacity
-          onPress={async () => {
-            await Clipboard.setStringAsync(getAbsolutePath(currentPath));
-            setPathCopied(true);
-            setTimeout(() => setPathCopied(false), 1200);
-          }}
-          activeOpacity={0.7}
-          style={{
-            width: 28,
-            height: 28,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 7,
-            backgroundColor: colors.bg.raised,
-          }}
-        >
-          {pathCopied
-            ? <Check size={15} color={colors.fg.muted} />
-            : <Copy size={15} color={colors.fg.muted} />
-          }
-        </TouchableOpacity>
       </View>
 
       <FileActionSheet
@@ -1184,7 +1139,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
         itemPath={selectedItemPath}
         itemIsBinary={selectedItemIsBinary}
         onClose={closeModal}
-        onCopyFullPath={async () => {
+        onCopyRelativePath={async () => {
+          if (!selectedItemPath) return;
+          await Clipboard.setStringAsync(selectedItemPath);
+          closeModal();
+        }}
+        onCopyPath={async () => {
           if (!selectedItemPath) return;
           await Clipboard.setStringAsync(getAbsolutePath(selectedItemPath));
           closeModal();
