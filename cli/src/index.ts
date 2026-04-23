@@ -6,6 +6,8 @@ import shell from "shelljs";
 import { inspectCliCommand, type CliCommandInspection, type CliCommandName } from "./ai/command-resolution.js";
 import { assertAiBackend, createAiManager } from "./ai/index.js";
 import type { AiManager, AiBackend } from "./ai/index.js";
+import { discardGitWorktreeChanges, type GitCommandResult } from "./git-control.js";
+import { createPathSafetyResolver } from "./path-safety.js";
 import type { Message, Response } from "./transport/protocol.js";
 import { V2SessionTransport } from "./transport/v2.js";
 import Ignore from "ignore";
@@ -95,6 +97,7 @@ const CLI_CONFIG_PATH = (() => {
   const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(xdgConfig, "lunel", "config.json");
 })();
+const { assertSafePath } = createPathSafetyResolver(ROOT_DIR);
 
 // Terminal sessions (managed by Rust PTY binary)
 const terminals = new Set<string>();
@@ -422,71 +425,6 @@ function normalizeAiRuntimeConfig(
   }
 
   return result;
-}
-
-// ============================================================================
-// Path Safety
-// ============================================================================
-
-const ROOT_DIR_COMPARISON = process.platform === "win32" ? ROOT_DIR.toLowerCase() : ROOT_DIR;
-const ROOT_DIR_PREFIX_COMPARISON = `${ROOT_DIR_COMPARISON}${path.sep}`;
-
-function normalizePathForComparison(targetPath: string): string {
-  const normalized = path.resolve(targetPath);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-}
-
-function isPathWithinRoot(targetPath: string): boolean {
-  const comparisonPath = normalizePathForComparison(targetPath);
-  return comparisonPath === ROOT_DIR_COMPARISON || comparisonPath.startsWith(ROOT_DIR_PREFIX_COMPARISON);
-}
-
-function resolveSafePath(requestedPath: string): string | null {
-  const lexical = path.resolve(ROOT_DIR, requestedPath);
-  if (!isPathWithinRoot(lexical)) {
-    return null;
-  }
-
-  // Walk upward until we find an existing ancestor, then rebuild the final path
-  // from that canonical ancestor. This closes the gap where a missing leaf under
-  // an in-root symlinked directory could otherwise escape ROOT_DIR at runtime.
-  let current = lexical;
-  const missingSegments: string[] = [];
-
-  while (true) {
-    try {
-      const canonical = fssync.realpathSync(current);
-      if (!isPathWithinRoot(canonical)) {
-        return null;
-      }
-      return missingSegments.length === 0
-        ? canonical
-        : path.join(canonical, ...missingSegments.reverse());
-    } catch (error) {
-      const nodeError = error as NodeJS.ErrnoException;
-      if (nodeError?.code && nodeError.code !== "ENOENT" && nodeError.code !== "ENOTDIR") {
-        return null;
-      }
-
-      const parent = path.dirname(current);
-      if (parent === current || !isPathWithinRoot(parent)) {
-        return null;
-      }
-
-      missingSegments.push(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
-function assertSafePath(requestedPath: string): string {
-  const safePath = resolveSafePath(requestedPath);
-  if (!safePath) {
-    const error = new Error("Access denied: path outside root directory");
-    (error as NodeJS.ErrnoException).code = "EACCES";
-    throw error;
-  }
-  return safePath;
 }
 
 function generatePersistentSecret(length: number): string {
@@ -903,7 +841,7 @@ async function handleFsCreate(payload: Record<string, unknown>): Promise<Record<
 // Git Handlers
 // ============================================================================
 
-async function runGit(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+async function runGit(args: string[]): Promise<GitCommandResult> {
   return new Promise((resolve) => {
     const proc = spawn("git", args, { cwd: ROOT_DIR });
     let stdout = "";
@@ -920,30 +858,6 @@ async function runGit(args: string[]): Promise<{ stdout: string; stderr: string;
       resolve({ stdout: "", stderr: err.message, code: 1 });
     });
   });
-}
-
-function normalizeGitPaths(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return [...new Set(value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0))];
-}
-
-async function restoreGitWorktree(paths: string[]): Promise<void> {
-  // Restore from the index so staged changes remain intact while only
-  // discarding unstaged worktree edits.
-  let result = await runGit(["restore", "--worktree", "--", ...paths]);
-  if (result.code !== 0) {
-    // Fallback for older Git versions without `git restore`.
-    result = await runGit(["checkout", "--", ...paths]);
-    if (result.code !== 0) {
-      throw Object.assign(new Error(result.stderr || "git restore failed"), { code: "EGIT" });
-    }
-  }
 }
 
 async function handleGitStatus(): Promise<Record<string, unknown>> {
@@ -1242,19 +1156,7 @@ async function handleGitPush(payload: Record<string, unknown>): Promise<Record<s
 }
 
 async function handleGitDiscard(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const paths = normalizeGitPaths(payload.paths);
-  const all = payload.all === true;
-
-  if (!all && paths.length === 0) {
-    throw Object.assign(new Error("paths or all is required"), { code: "EINVAL" });
-  }
-
-  if (all) {
-    await restoreGitWorktree(["."]);
-  } else {
-    await restoreGitWorktree(paths);
-  }
-
+  await discardGitWorktreeChanges(runGit, payload);
   return {};
 }
 

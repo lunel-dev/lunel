@@ -39,7 +39,9 @@
     "local:app:shell": "pwsh -NoProfile -File ./scripts/local-env.ps1 app-shell",
     "local:lan:app:start": "pwsh -NoProfile -File ./scripts/local-env.ps1 app-exec -HostAddress auto -CommandLine 'npm run start'",
     "local:lan:app:window": "pwsh -NoProfile -File ./scripts/local-env.ps1 app-run-window -HostAddress auto",
+    "check:app": "npx --prefix app tsc --noEmit -p app/tsconfig.json",
     "check:cli": "npm --prefix cli run check",
+    "check:all": "npm run check:cli && npm --prefix cli run test:smoke && npm run check:manager && npm run check:proxy && npm run check:app",
     "check:manager": "npm --prefix manager run check",
     "check:proxy": "npm --prefix proxy run check",
     "check:servers": "npm --prefix manager run check && npm --prefix proxy run check"
