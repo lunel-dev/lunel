@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef, memo } from 'react';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import InfoSheet from '@/components/InfoSheet';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, runOnJS } from 'react-native-reanimated';
 import {
   ScrollView,
@@ -90,30 +90,15 @@ interface FileItemProps {
   radius: any;
 }
 
-interface FileActionSheetProps {
-  visible: boolean;
-  item: FileEntry | null;
-  itemPath: string;
-  itemIsBinary: boolean | null;
-  onClose: () => void;
-  onCopyRelativePath: () => void;
-  onCopyPath: () => void;
-  onOpenInEditor: () => void;
-  onOpenWithSystem: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-  colors: any;
-  fonts: any;
-  spacing: any;
-  radius: any;
-}
 
 const EntryIcon = memo(function EntryIcon({
   item,
   colors,
+  size = 18,
 }: {
   item: ExplorerListItem;
   colors: any;
+  size?: number;
 }) {
   const [iconLoadFailed, setIconLoadFailed] = useState(false);
   const iconUri = item.__navParent ? null : resolveMaterialIconUri(item);
@@ -123,19 +108,19 @@ const EntryIcon = memo(function EntryIcon({
   }, [iconUri]);
 
   if (item.__navParent) {
-    return <ArrowLeft size={18} color="#ffffff" />;
+    return <ArrowLeft size={size} color="#ffffff" />;
   }
 
   if (!iconUri || iconLoadFailed) {
     return item.type === 'directory'
-      ? <Folder size={18} color={colors.accent.default} />
-      : <File size={18} color={colors.fg.muted} />;
+      ? <Folder size={size} color={colors.accent.default} />
+      : <File size={size} color={colors.fg.muted} />;
   }
 
   return (
     <SvgUri
-      width={20}
-      height={20}
+      width={size + 2}
+      height={size + 2}
       uri={iconUri}
       onError={() => setIconLoadFailed(true)}
     />
@@ -190,273 +175,6 @@ const FileItem = memo(function FileItem({ item, isFirst, onPress, colors, fonts,
   );
 });
 
-const FileActionSheet = memo(function FileActionSheet({
-  visible,
-  item,
-  itemPath,
-  itemIsBinary,
-  onClose,
-  onCopyRelativePath,
-  onCopyPath,
-  onOpenInEditor,
-  onOpenWithSystem,
-  onRename,
-  onDelete,
-  colors,
-  fonts,
-  spacing,
-  radius,
-}: FileActionSheetProps) {
-  const [modalVisible, setModalVisible] = useState(false);
-  const backdropOpacity = useSharedValue(0);
-  const sheetTranslateY = useSharedValue(1000);
-
-  const hideModal = useCallback(() => setModalVisible(false), []);
-
-  useEffect(() => {
-    if (visible) {
-      setModalVisible(true);
-      backdropOpacity.value = 0;
-      sheetTranslateY.value = 1000;
-      backdropOpacity.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.cubic) });
-      sheetTranslateY.value = withTiming(0, { duration: 260, easing: Easing.out(Easing.cubic) });
-    } else {
-      backdropOpacity.value = withTiming(0, { duration: 200, easing: Easing.out(Easing.cubic) });
-      sheetTranslateY.value = withTiming(1000, { duration: 240, easing: Easing.out(Easing.cubic) }, (finished) => {
-        if (finished) runOnJS(hideModal)();
-      });
-    }
-  }, [visible, backdropOpacity, sheetTranslateY, hideModal]);
-
-  const backdropAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: backdropOpacity.value,
-  }));
-  const sheetAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: sheetTranslateY.value }],
-  }));
-
-  if (!modalVisible || !item) return null;
-
-  return (
-    <Modal transparent animationType="none" visible onRequestClose={onClose}>
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <View style={{ flex: 1 }}>
-          <Animated.View
-            style={[styles.sheetBackdrop, backdropAnimatedStyle]}
-            pointerEvents="box-none"
-          >
-            <Pressable style={{ flex: 1 }} onPress={onClose} />
-          </Animated.View>
-          <Animated.View
-            style={[
-              styles.sheetContainer,
-              {
-                backgroundColor: colors.bg.raised,
-                borderTopLeftRadius: radius['2xl'],
-                borderTopRightRadius: radius['2xl'],
-                minHeight: 320,
-                maxHeight: '72%',
-              },
-              sheetAnimatedStyle,
-            ]}
-          >
-            <View style={styles.sheetHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[3], flex: 1 }}>
-                <View style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: radius.xl,
-                  backgroundColor: colors.accent.default + '20',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}>
-                  <File size={22} color={colors.accent.default} />
-                </View>
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text
-                    style={{ fontSize: 16, fontFamily: fonts.sans.semibold, color: colors.fg.default }}
-                    numberOfLines={1}
-                  >
-                    {item.name}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 12, fontFamily: fonts.mono.regular, color: colors.fg.subtle }}
-                    numberOfLines={1}
-                  >
-                    {itemPath}
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                onPress={onClose}
-                activeOpacity={0.7}
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 16,
-                  backgroundColor: colors.bg.base,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <X size={18} color={colors.fg.default} strokeWidth={2} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={{ flex: 1 }}
-              contentContainerStyle={{ paddingHorizontal: spacing[4], paddingBottom: spacing[5], gap: spacing[4] }}
-              keyboardDismissMode="on-drag"
-            >
-              <View style={{ flexDirection: 'row', gap: spacing[4] }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.subtle, marginBottom: 4 }}>
-                    Size
-                  </Text>
-                  <Text style={{ fontSize: 15, fontFamily: fonts.sans.regular, color: colors.fg.default }}>
-                    {formatFileSize(item.size)}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 12, fontFamily: fonts.sans.medium, color: colors.fg.subtle, marginBottom: 4 }}>
-                    Modified
-                  </Text>
-                  <Text style={{ fontSize: 15, fontFamily: fonts.sans.regular, color: colors.fg.default }}>
-                    {formatTime(item.mtime)}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={{ gap: spacing[2], marginTop: spacing[1] }}>
-                {itemIsBinary !== true ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.sheetRow,
-                      {
-                        borderRadius: radius.xl,
-                        backgroundColor: colors.accent.default,
-                        marginBottom: 0,
-                      },
-                    ]}
-                    onPress={onOpenInEditor}
-                    activeOpacity={0.7}
-                  >
-                    <FileText size={20} color={'#ffffff'} />
-                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
-                      Open in editor
-                    </Text>
-                    <ChevronRight size={18} color={'#ffffff'} />
-                  </TouchableOpacity>
-                ) : null}
-
-                {itemIsBinary === true ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.sheetRow,
-                      {
-                        borderRadius: radius.xl,
-                        backgroundColor: colors.accent.default,
-                        marginBottom: 0,
-                      },
-                    ]}
-                    onPress={onOpenWithSystem}
-                    activeOpacity={0.7}
-                  >
-                    <ExternalLink size={20} color={'#ffffff'} />
-                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
-                      Open
-                    </Text>
-                    <ChevronRight size={18} color={'#ffffff'} />
-                  </TouchableOpacity>
-                ) : null}
-
-                <View
-                  style={{
-                    borderRadius: radius.xl,
-                    overflow: 'hidden',
-                    backgroundColor: colors.bg.base,
-                  }}
-                >
-                  <TouchableOpacity
-                    style={[styles.sheetRow, { marginBottom: 0 }]}
-                    onPress={onCopyRelativePath}
-                    activeOpacity={0.7}
-                  >
-                    <Copy size={18} color={colors.fg.default} />
-                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
-                      Copy relative path
-                    </Text>
-                    <ChevronRight size={18} color={colors.fg.subtle} />
-                  </TouchableOpacity>
-
-                  <View
-                    style={{
-                      height: StyleSheet.hairlineWidth,
-                      backgroundColor: colors.border.secondary,
-                      marginLeft: 50,
-                    }}
-                  />
-
-                  <TouchableOpacity
-                    style={[styles.sheetRow, { marginBottom: 0 }]}
-                    onPress={onCopyPath}
-                    activeOpacity={0.7}
-                  >
-                    <Copy size={18} color={colors.fg.default} />
-                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
-                      Copy path
-                    </Text>
-                    <ChevronRight size={18} color={colors.fg.subtle} />
-                  </TouchableOpacity>
-
-                  <View
-                    style={{
-                      height: StyleSheet.hairlineWidth,
-                      backgroundColor: colors.border.secondary,
-                      marginLeft: 50,
-                    }}
-                  />
-
-                  <TouchableOpacity
-                    style={[styles.sheetRow, { marginBottom: 0 }]}
-                    onPress={onRename}
-                    activeOpacity={0.7}
-                  >
-                    <Pencil size={18} color={colors.fg.default} />
-                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
-                      Rename
-                    </Text>
-                    <ChevronRight size={18} color={colors.fg.subtle} />
-                  </TouchableOpacity>
-
-                  <View
-                    style={{
-                      height: StyleSheet.hairlineWidth,
-                      backgroundColor: colors.border.secondary,
-                      marginLeft: 50,
-                    }}
-                  />
-
-                  <TouchableOpacity
-                    style={[styles.sheetRow, { marginBottom: 0 }]}
-                    onPress={onDelete}
-                    activeOpacity={0.7}
-                  >
-                    <Trash size={18} color={'#ef4444'} />
-                    <Text style={{ flex: 1, fontSize: 15, fontFamily: fonts.sans.medium, color: '#ef4444' }}>
-                      Delete
-                    </Text>
-                    <ChevronRight size={18} color={'#ef4444'} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </ScrollView>
-          </Animated.View>
-        </View>
-      </GestureHandlerRootView>
-    </Modal>
-  );
-});
 
 function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const { colors, fonts, spacing, radius } = useTheme();
@@ -504,13 +222,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
 
   const filtersBackdropStyle = useAnimatedStyle(() => ({ opacity: filtersBackdropOpacity.value }));
   const filtersSheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: filtersSheetTranslateY.value }] }));
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createType, setCreateType] = useState<'file' | 'directory'>('file');
-  const [newName, setNewName] = useState('');
-  const [showRenameModal, setShowRenameModal] = useState(false);
-  const [renameName, setRenameName] = useState('');
-  const [renameFromPath, setRenameFromPath] = useState('');
-  const [renameItemType, setRenameItemType] = useState<'file' | 'directory'>('file');
   const [uploading, setUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [uploadStage, setUploadStage] = useState<'idle' | 'preparing' | 'writing'>('idle');
@@ -721,19 +432,31 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     };
   }, [selectedItem, currentPath, fs]);
 
-  const handleCreate = async () => {
-    if (!newName.trim()) return;
-
-    const path = currentPath === '.' ? newName : `${currentPath}/${newName}`;
-    try {
-      await fs.create(path, createType);
-      setShowCreateModal(false);
-      setNewName('');
-      loadDirectory(currentPath);
-    } catch (err) {
-      const apiError = err as ApiError;
-      Alert.alert('Error', apiError.message || 'Failed to create');
-    }
+  const promptCreate = (type: 'file' | 'directory') => {
+    Alert.prompt(
+      `New ${type === 'file' ? 'File' : 'Folder'}`,
+      undefined,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Create',
+          onPress: async (value) => {
+            const name = (value || '').trim();
+            if (!name) return;
+            const path = currentPath === '.' ? name : `${currentPath}/${name}`;
+            try {
+              await fs.create(path, type);
+              loadDirectory(currentPath);
+            } catch (err) {
+              const apiError = err as ApiError;
+              Alert.alert('Error', apiError.message || 'Failed to create');
+            }
+          },
+        },
+      ],
+      'plain-text',
+      '',
+    );
   };
 
   const handleDelete = async (item: FileEntry) => {
@@ -765,47 +488,41 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const openRenameModal = () => {
     if (!selectedItem) return;
     const fromPath = currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`;
-    setRenameName(selectedItem.name);
-    setRenameFromPath(fromPath);
-    setRenameItemType(selectedItem.type);
-    setSelectedItem(null);
-    setSelectedItemIsBinary(null);
-    setShowRenameModal(true);
-  };
+    const currentName = selectedItem.name;
+    closeModal();
 
-  const handleRename = async () => {
-    const nextName = renameName.trim();
-    if (!nextName || !renameFromPath) return;
-
-    const oldName = renameFromPath.includes('/') ? renameFromPath.split('/').pop()! : renameFromPath;
-    const dirPart = renameFromPath.includes('/')
-      ? renameFromPath.substring(0, renameFromPath.lastIndexOf('/'))
-      : '.';
-    const to = dirPart === '.' ? nextName : `${dirPart}/${nextName}`;
-
-    if (!nextName) {
-      Alert.alert('Invalid name', 'Name cannot be empty');
-      return;
-    }
-    if (nextName.includes('/') || nextName.includes('\\')) {
-      Alert.alert('Invalid name', 'Name cannot contain path separators');
-      return;
-    }
-    if (nextName === oldName) {
-      setShowRenameModal(false);
-      return;
-    }
-
-    try {
-      await fs.move(renameFromPath, to);
-      await gPI.editor.notifyFileRenamed(renameFromPath, to);
-
-      setShowRenameModal(false);
-      loadDirectory(currentPath);
-    } catch (err) {
-      const apiError = err as ApiError;
-      Alert.alert('Error', apiError.message || 'Failed to rename');
-    }
+    Alert.prompt(
+      `Rename ${selectedItem.type === 'directory' ? 'Folder' : 'File'}`,
+      undefined,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Rename',
+          onPress: async (value) => {
+            const nextName = (value || '').trim();
+            if (!nextName || nextName === currentName) return;
+            if (nextName.includes('/') || nextName.includes('\\')) {
+              Alert.alert('Invalid name', 'Name cannot contain path separators');
+              return;
+            }
+            const dirPart = fromPath.includes('/')
+              ? fromPath.substring(0, fromPath.lastIndexOf('/'))
+              : '.';
+            const to = dirPart === '.' ? nextName : `${dirPart}/${nextName}`;
+            try {
+              await fs.move(fromPath, to);
+              await gPI.editor.notifyFileRenamed(fromPath, to);
+              loadDirectory(currentPath);
+            } catch (err) {
+              const apiError = err as ApiError;
+              Alert.alert('Error', apiError.message || 'Failed to rename');
+            }
+          },
+        },
+      ],
+      'plain-text',
+      currentName,
+    );
   };
 
   const handleUploadFile = async () => {
@@ -983,9 +700,9 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
               preferredMenuAnchorPosition="bottom"
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === 'new-file') {
-                  setCreateType('file'); setNewName(''); setShowCreateModal(true);
+                  promptCreate('file');
                 } else if (nativeEvent.event === 'new-folder') {
-                  setCreateType('directory'); setNewName(''); setShowCreateModal(true);
+                  promptCreate('directory');
                 } else if (nativeEvent.event === 'upload-file') {
                   handleUploadFile();
                 } else if (nativeEvent.event === 'toggle-hidden-files') {
@@ -1133,118 +850,132 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           />
       </View>
 
-      <FileActionSheet
+      <InfoSheet
         visible={selectedItem !== null}
-        item={selectedItem}
-        itemPath={selectedItemPath}
-        itemIsBinary={selectedItemIsBinary}
         onClose={closeModal}
-        onCopyRelativePath={async () => {
-          if (!selectedItemPath) return;
-          await Clipboard.setStringAsync(selectedItemPath);
-          closeModal();
-        }}
-        onCopyPath={async () => {
-          if (!selectedItemPath) return;
-          await Clipboard.setStringAsync(getAbsolutePath(selectedItemPath));
-          closeModal();
-        }}
-        onOpenInEditor={() => {
-          if (!selectedItem) return;
-          openInEditor(selectedItem);
-        }}
-        onOpenWithSystem={() => {
-          if (!selectedItem) return;
-          openWithSystem(selectedItem);
-        }}
-        onRename={openRenameModal}
-        onDelete={() => {
-          if (!selectedItem) return;
-          handleDelete(selectedItem);
-        }}
-        colors={colors}
-        fonts={fonts}
-        spacing={spacing}
-        radius={radius}
-      />
-
-      {/* Create Modal */}
-      <Modal
-        visible={showCreateModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowCreateModal(false)}
+        title={selectedItem?.name ?? ''}
+        description={selectedItemPath}
+        icon={selectedItem ? <EntryIcon item={selectedItem} colors={colors} size={26} /> : undefined}
       >
-        <TouchableOpacity
-          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}
-          activeOpacity={1}
-          onPress={() => setShowCreateModal(false)}
+        <ScrollView
+          contentContainerStyle={{ gap: spacing[4], paddingBottom: spacing[2] }}
+          keyboardDismissMode="on-drag"
         >
-          <View style={{
-            backgroundColor: colors.bg.raised,
-            borderRadius: radius.lg,
-            width: '85%',
-            maxWidth: 320,
-            padding: spacing[4],
-          }}>
-            <Text style={{
-              fontSize: 17,
-              fontFamily: fonts.sans.semibold,
-              color: colors.fg.default,
-              marginBottom: spacing[4],
-            }}>
-              New {createType === 'file' ? 'File' : 'Folder'}
-            </Text>
-            <TextInput
-              style={{
-                paddingHorizontal: spacing[4],
-                paddingVertical: spacing[3],
-                borderRadius: radius.md,
-                fontSize: 14,
-                fontFamily: fonts.sans.regular,
-                color: colors.fg.default,
-                backgroundColor: colors.bg.base,
-                marginBottom: spacing[4],
-              }}
-              placeholder={createType === 'file' ? 'filename.txt' : 'folder-name'}
-              placeholderTextColor={colors.fg.muted}
-              value={newName}
-              onChangeText={setNewName}
-              autoFocus
-            />
-            <View style={{ flexDirection: 'row', gap: spacing[2] }}>
+          <View style={{ flexDirection: 'row', gap: spacing[4] }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.medium, color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>
+                Size
+              </Text>
+              <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: '#ffffff' }}>
+                {selectedItem ? formatFileSize(selectedItem.size) : '-'}
+              </Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.medium, color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>
+                Modified
+              </Text>
+              <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: '#ffffff' }}>
+                {selectedItem ? formatTime(selectedItem.mtime) : '-'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={{ gap: spacing[2] }}>
+            {selectedItemIsBinary !== true ? (
               <TouchableOpacity
-                onPress={() => setShowCreateModal(false)}
-                style={{
-                  flex: 1,
-                  alignItems: 'center',
-                  paddingVertical: spacing[3],
-                  borderRadius: radius.md,
-                  backgroundColor: colors.bg.raised,
-                }}
+                style={[styles.sheetRow, { borderRadius: radius.xl, backgroundColor: colors.accent.default, marginBottom: 0 }]}
+                onPress={() => { if (selectedItem) openInEditor(selectedItem); }}
+                activeOpacity={0.7}
               >
-                <Text style={{ fontSize: 14, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
-                  Cancel
+                <FileText size={20} color={'#ffffff'} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
+                  Open in editor
                 </Text>
+                <ChevronRight size={18} color={'#ffffff'} />
               </TouchableOpacity>
+            ) : null}
+
+            {selectedItemIsBinary === true ? (
               <TouchableOpacity
-                onPress={handleCreate}
-                style={{
-                  flex: 1,
-                  alignItems: 'center',
-                  paddingVertical: spacing[3],
-                  borderRadius: radius.md,
-                  backgroundColor: colors.accent.default,
-                }}
+                style={[styles.sheetRow, { borderRadius: radius.xl, backgroundColor: colors.accent.default, marginBottom: 0 }]}
+                onPress={() => { if (selectedItem) openWithSystem(selectedItem); }}
+                activeOpacity={0.7}
               >
-                <Text style={{ fontSize: 14, fontFamily: fonts.sans.medium, color: '#ffffff' }}>
-                  Create
+                <ExternalLink size={20} color={'#ffffff'} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
+                  Open
                 </Text>
+                <ChevronRight size={18} color={'#ffffff'} />
+              </TouchableOpacity>
+            ) : null}
+
+            <View style={{ borderRadius: radius.xl, overflow: 'hidden', backgroundColor: colors.bg.raised }}>
+              <TouchableOpacity
+                style={[styles.sheetRow, { marginBottom: 0 }]}
+                onPress={async () => {
+                  if (!selectedItemPath) return;
+                  await Clipboard.setStringAsync(selectedItemPath);
+                  closeModal();
+                }}
+                activeOpacity={0.7}
+              >
+                <Copy size={18} color={colors.fg.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                  Copy relative path
+                </Text>
+                <ChevronRight size={18} color={colors.fg.subtle} />
+              </TouchableOpacity>
+
+              <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary, marginLeft: 50 }} />
+
+              <TouchableOpacity
+                style={[styles.sheetRow, { marginBottom: 0 }]}
+                onPress={async () => {
+                  if (!selectedItemPath) return;
+                  await Clipboard.setStringAsync(getAbsolutePath(selectedItemPath));
+                  closeModal();
+                }}
+                activeOpacity={0.7}
+              >
+                <Copy size={18} color={colors.fg.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                  Copy path
+                </Text>
+                <ChevronRight size={18} color={colors.fg.subtle} />
+              </TouchableOpacity>
+
+              <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary, marginLeft: 50 }} />
+
+              <TouchableOpacity
+                style={[styles.sheetRow, { marginBottom: 0 }]}
+                onPress={openRenameModal}
+                activeOpacity={0.7}
+              >
+                <Pencil size={18} color={colors.fg.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                  Rename
+                </Text>
+                <ChevronRight size={18} color={colors.fg.subtle} />
+              </TouchableOpacity>
+
+              <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary, marginLeft: 50 }} />
+
+              <TouchableOpacity
+                style={[styles.sheetRow, { marginBottom: 0 }]}
+                onPress={() => { if (selectedItem) handleDelete(selectedItem); }}
+                activeOpacity={0.7}
+              >
+                <Trash size={18} color={'#ef4444'} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: '#ef4444' }}>
+                  Delete
+                </Text>
+                <ChevronRight size={18} color={'#ef4444'} />
               </TouchableOpacity>
             </View>
           </View>
-        </TouchableOpacity>
-      </Modal>
+        </ScrollView>
+      </InfoSheet>
+
 
       <Modal
         visible={uploading}
@@ -1322,91 +1053,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
         </View>
       </Modal>
 
-      {/* Rename Modal */}
-      <Modal
-        visible={showRenameModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowRenameModal(false)}
-      >
-        <TouchableOpacity
-          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing[5] }}
-          activeOpacity={1}
-          onPress={() => setShowRenameModal(false)}
-        >
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={(e) => e.stopPropagation()}
-            style={{
-              backgroundColor: colors.bg.raised,
-              borderRadius: radius['2xl'],
-              width: '100%',
-              maxWidth: 340,
-              padding: spacing[5],
-            }}
-          >
-            <Text style={{
-              fontSize: 17,
-              fontFamily: fonts.sans.semibold,
-              color: colors.fg.default,
-              marginBottom: spacing[4],
-            }}>
-              Rename {renameItemType === 'directory' ? 'Folder' : 'File'}
-            </Text>
-            <TextInput
-              style={{
-                paddingHorizontal: spacing[4],
-                paddingVertical: spacing[3],
-                borderRadius: radius.lg,
-                fontSize: 14,
-                fontFamily: fonts.sans.regular,
-                color: colors.fg.default,
-                backgroundColor: colors.bg.base,
-                marginBottom: spacing[4],
-                borderWidth: 1,
-                borderColor: colors.bg.raised,
-              }}
-              placeholderTextColor={colors.fg.muted}
-              value={renameName}
-              onChangeText={setRenameName}
-              autoFocus
-              autoCapitalize="none"
-              autoCorrect={false}
-              onSubmitEditing={handleRename}
-            />
-            <View style={{ flexDirection: 'row', gap: spacing[2] }}>
-              <TouchableOpacity
-                onPress={() => setShowRenameModal(false)}
-                style={{
-                  flex: 1,
-                  alignItems: 'center',
-                  paddingVertical: spacing[3],
-                  borderRadius: radius.lg,
-                  backgroundColor: colors.bg.raised,
-                }}
-              >
-                <Text style={{ fontSize: 14, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={handleRename}
-                style={{
-                  flex: 1,
-                  alignItems: 'center',
-                  paddingVertical: spacing[3],
-                  borderRadius: radius.lg,
-                  backgroundColor: colors.accent.default,
-                }}
-              >
-                <Text style={{ fontSize: 14, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
-                  Rename
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
 
       {/* Filters Modal */}
       <Modal
@@ -1560,29 +1206,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
 }
 
 const styles = StyleSheet.create({
-  sheetBackdrop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  sheetContainer: {
-    position: 'absolute',
-    left: 12,
-    right: 12,
-    bottom: 0,
-  },
-  sheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 14,
-    gap: 12,
-  },
   sheetRow: {
     flexDirection: 'row',
     alignItems: 'center',

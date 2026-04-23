@@ -24,10 +24,11 @@ type InfoSheetProps = {
   onClose: () => void;
   title: string;
   description: string;
+  icon?: React.ReactNode;
   children: React.ReactNode;
 };
 
-export default function InfoSheet({ visible, onClose, title, description, children }: InfoSheetProps) {
+export default function InfoSheet({ visible, onClose, title, description, icon, children }: InfoSheetProps) {
   const { fonts, colors, spacing, radius } = useTheme();
   const [modalVisible, setModalVisible] = useState(false);
   const translateY = useSharedValue(SCREEN_HEIGHT);
@@ -90,7 +91,7 @@ export default function InfoSheet({ visible, onClose, title, description, childr
                         borderTopRightRadius: radius["2xl"],
                         paddingHorizontal: spacing[4],
                         paddingTop: 8,
-                        paddingBottom: 14,
+                        paddingBottom: 32,
                         maxHeight: "72%",
                       },
                       animatedStyle,
@@ -101,9 +102,22 @@ export default function InfoSheet({ visible, onClose, title, description, childr
 
                     {/* Header */}
                     <View style={sheetStyles.header}>
+                      {icon ? (
+                        <View style={{
+                          width: 42,
+                          height: 42,
+                          borderRadius: 8,
+                          backgroundColor: 'rgba(255,255,255,0.08)',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          marginRight: spacing[3],
+                        }}>
+                          {icon}
+                        </View>
+                      ) : null}
                       <View style={{ flex: 1 }}>
-                        <Text style={[sheetStyles.title, { fontFamily: fonts.sans.semibold }]}>{title}</Text>
-                        <Text style={[sheetStyles.subtitle, { fontFamily: fonts.sans.regular }]}>{description}</Text>
+                        <Text style={[sheetStyles.title, { fontFamily: fonts.sans.semibold }]} numberOfLines={1}>{title}</Text>
+                        <Text style={[sheetStyles.subtitle, { fontFamily: fonts.mono.regular }]} numberOfLines={1}>{description}</Text>
                       </View>
                       <TouchableOpacity
                         onPress={() => {
