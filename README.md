@@ -82,7 +82,7 @@ npm run remote:ensure
 What it does:
 
 - keeps a single managed remote CLI for this repo root
-- reuses `artifacts\tmp-appdata` so saved mobile sessions survive restarts
+- reuses a repo-scoped app data directory under `%ProgramData%\erkai\remote-cli\...` so saved mobile sessions survive restarts without polluting the git worktree
 - kills stale orphaned `node dist/index.js` processes before relaunch
 - writes runtime state and logs under `%TEMP%\erkai-remote-cli`
 
@@ -151,7 +151,8 @@ npm run local:lan:firewall:install
 
 `local:lan:*` auto-detects the primary LAN IPv4 address and injects that address instead of `127.0.0.1`.
 Use this mode only with the repo app / Expo build. A prebuilt official app that is hard-coded to `gateway.lunel.dev` will not switch to your local machine automatically.
-If Windows Defender blocks phone access, run `npm run local:lan:firewall:install` once to allow `3000`, `8081`, `8899`, and Expo dev ports on the `Private` profile.
+If `8899` or `3000` is already occupied, `local-dev.ps1` automatically walks forward to the next free port (`+1`, then `+2`, etc.), writes the resolved URLs to `%TEMP%\erkai-local-dev\stack-state.json`, and `local:status` / `local:env` will show the real ports in use.
+If Windows Defender blocks phone access, start the LAN stack first and then run `npm run local:lan:firewall:install` once so the firewall rules follow the resolved manager/proxy ports plus the Expo dev ports.
 
 Windows Explorer double-click launchers:
 
@@ -225,13 +226,14 @@ Defaults:
 
 - Manager: `http://127.0.0.1:8899`
 - Proxy: `http://127.0.0.1:3000`
-- Admin password: `erkai-admin-pass`
-- Proxy password: `erkai-proxy-pass`
+- Admin password: generated on first run and stored under `%TEMP%\erkai-local-dev\stack-secrets.json` unless you pass `-ManagerAdminPassword` or set `LUNEL_LOCAL_MANAGER_ADMIN_PASSWORD`
+- Proxy password: generated on first run and stored under `%TEMP%\erkai-local-dev\stack-secrets.json` unless you pass `-ProxyPassword` or set `LUNEL_LOCAL_PROXY_PASSWORD`
 - Runtime logs and PID files: `%TEMP%\erkai-local-dev`
 
 The script will:
 
 - start `manager` and `proxy` with loopback-safe `http/ws` URLs
+- if a requested manager/proxy port is busy, shift to the next free port and persist that choice to the runtime state
 - wait for `/health` on both services
 - log in to the manager and register the local proxy automatically
 - verify `connectedProxies >= 1` and `managerReachable = true`

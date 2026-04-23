@@ -7,8 +7,8 @@ param(
   [string]$HostAddress = '127.0.0.1',
   [int]$ManagerPort = 8899,
   [int]$ProxyPort = 3000,
-  [string]$ManagerAdminPassword = 'erkai-admin-pass',
-  [string]$ProxyPassword = 'erkai-proxy-pass',
+  [string]$ManagerAdminPassword = '',
+  [string]$ProxyPassword = '',
   [string]$ManagerDbPath = (Join-Path $env:TEMP 'erkai-manager.db')
 )
 
@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Path $PSScriptRoot -Parent
 $RuntimeRoot = Join-Path $env:TEMP 'erkai-local-dev'
 $RuntimeStatePath = Join-Path $RuntimeRoot 'stack-state.json'
+$RuntimeSecretsPath = Join-Path $RuntimeRoot 'stack-secrets.json'
 $RequestedManagerPort = $ManagerPort
 $RequestedProxyPort = $ProxyPort
 $ResolvedManagerPort = $RequestedManagerPort
@@ -119,6 +120,105 @@ function Remove-RuntimeState {
   Remove-Item -LiteralPath $RuntimeStatePath -Force -ErrorAction SilentlyContinue
 }
 
+function Get-SecretState {
+  if (-not (Test-Path -LiteralPath $RuntimeSecretsPath)) {
+    return $null
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $RuntimeSecretsPath -Raw -ErrorAction Stop
+    if (-not $raw) {
+      return $null
+    }
+    return ($raw | ConvertFrom-Json -ErrorAction Stop)
+  } catch {
+    return $null
+  }
+}
+
+function Save-SecretState {
+  Ensure-RuntimeRoot
+
+  $payload = [ordered]@{
+    managerAdminPassword = $script:ManagerAdminPassword
+    proxyPassword = $script:ProxyPassword
+    updatedAt = (Get-Date).ToString('o')
+  }
+
+  $payload | ConvertTo-Json | Set-Content -LiteralPath $RuntimeSecretsPath
+}
+
+function Get-EnvironmentValue {
+  param([string[]]$Names)
+
+  foreach ($name in $Names) {
+    if (-not $name) {
+      continue
+    }
+
+    foreach ($scope in @('Process', 'User', 'Machine')) {
+      $value = [System.Environment]::GetEnvironmentVariable($name, $scope)
+      if ($value -and $value.Trim()) {
+        return $value.Trim()
+      }
+    }
+  }
+
+  return $null
+}
+
+function New-LocalSecret {
+  $bytes = New-Object byte[] 24
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
+
+  return ([System.BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
+}
+
+function Resolve-StackSecrets {
+  $secretState = Get-SecretState
+
+  $resolvedManagerAdminPassword = if ($ManagerAdminPassword -and $ManagerAdminPassword.Trim()) {
+    $ManagerAdminPassword.Trim()
+  } else {
+    Get-EnvironmentValue -Names @('LUNEL_LOCAL_MANAGER_ADMIN_PASSWORD', 'ERKAI_MANAGER_ADMIN_PASSWORD', 'MANAGER_ADMIN_PASSWORD')
+  }
+  if (-not $resolvedManagerAdminPassword -and $secretState -and $secretState.managerAdminPassword) {
+    $resolvedManagerAdminPassword = [string]$secretState.managerAdminPassword
+  }
+
+  $resolvedProxyPassword = if ($ProxyPassword -and $ProxyPassword.Trim()) {
+    $ProxyPassword.Trim()
+  } else {
+    Get-EnvironmentValue -Names @('LUNEL_LOCAL_PROXY_PASSWORD', 'ERKAI_PROXY_PASSWORD', 'PROXY_PASSWORD')
+  }
+  if (-not $resolvedProxyPassword -and $secretState -and $secretState.proxyPassword) {
+    $resolvedProxyPassword = [string]$secretState.proxyPassword
+  }
+
+  $generated = [System.Collections.Generic.List[string]]::new()
+  if (-not $resolvedManagerAdminPassword) {
+    $resolvedManagerAdminPassword = New-LocalSecret
+    $null = $generated.Add('manager admin password')
+  }
+  if (-not $resolvedProxyPassword) {
+    $resolvedProxyPassword = New-LocalSecret
+    $null = $generated.Add('proxy password')
+  }
+
+  $script:ManagerAdminPassword = $resolvedManagerAdminPassword
+  $script:ProxyPassword = $resolvedProxyPassword
+  Save-SecretState
+
+  foreach ($item in $generated) {
+    Write-Step "generated local $item and stored it in $RuntimeSecretsPath"
+  }
+}
+
 function Sync-ResolvedEndpointsFromState {
   $state = Get-RuntimeState
   if ($null -eq $state) {
@@ -202,16 +302,34 @@ function Get-ComponentConfig {
 
 function Resolve-BunPath {
   $candidates = [System.Collections.Generic.List[string]]::new()
+  $configuredBunPath = Get-EnvironmentValue -Names @('BUN_PATH')
+  if ($configuredBunPath) {
+    $candidates.Add($configuredBunPath)
+  }
+
   try {
     $bunCommand = Get-Command bun -ErrorAction Stop
     if ($bunCommand.Source) {
       $candidates.Add($bunCommand.Source)
     }
   } catch {
-    # Fall back to the known WinGet install path on this host.
+    # Fall back to common installation paths when bun is not on PATH.
   }
 
-  $candidates.Add('C:\Users\bflry\AppData\Local\Microsoft\WinGet\Packages\Oven-sh.Bun_Microsoft.Winget.Source_8wekyb3d8bbwe\bun-windows-x64\bun.exe')
+  if ($env:LOCALAPPDATA) {
+    $packagesRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $packagesRoot) {
+      Get-ChildItem -LiteralPath $packagesRoot -Directory -Filter 'Oven-sh.Bun*' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        ForEach-Object {
+          $candidates.Add((Join-Path $_.FullName 'bun-windows-x64\bun.exe'))
+        }
+    }
+  }
+  if ($env:ProgramFiles) {
+    $candidates.Add((Join-Path $env:ProgramFiles 'Bun\bun.exe'))
+  }
+  $candidates.Add('C:\Program Files\Bun\bun.exe')
 
   foreach ($candidate in ($candidates | Select-Object -Unique)) {
     if ($candidate -and (Test-Path -LiteralPath $candidate)) {
@@ -407,6 +525,59 @@ function Resolve-LaunchPort {
   throw "$ComponentName cannot start because ports $RequestedPort-$($RequestedPort + $SearchWindow - 1) are unavailable. First conflict: $conflictText"
 }
 
+function Find-RunningComponentMatch {
+  param(
+    [string]$ComponentName,
+    [int]$PreferredPort,
+    [int]$SearchWindow = 20
+  )
+
+  for ($candidate = $PreferredPort; $candidate -lt ($PreferredPort + $SearchWindow); $candidate++) {
+    $config = if ($ComponentName -eq 'manager') {
+      Get-ComponentConfig -Name 'manager' -ManagerPortOverride $candidate -ProxyPortOverride $ResolvedProxyPort
+    } elseif ($ComponentName -eq 'proxy') {
+      Get-ComponentConfig -Name 'proxy' -ManagerPortOverride $ResolvedManagerPort -ProxyPortOverride $candidate
+    } else {
+      throw "Unknown component: $ComponentName"
+    }
+
+    $processId = Resolve-ComponentProcessId -Config $config
+    if ($processId -gt 0) {
+      return [pscustomobject]@{
+        Port = $candidate
+        ProcessId = $processId
+        Config = $config
+      }
+    }
+  }
+
+  return $null
+}
+
+function Sync-ResolvedEndpointsFromRunningComponents {
+  $updated = $false
+
+  $managerMatch = Find-RunningComponentMatch -ComponentName 'manager' -PreferredPort $ResolvedManagerPort
+  if ($null -eq $managerMatch -and $RequestedManagerPort -ne $ResolvedManagerPort) {
+    $managerMatch = Find-RunningComponentMatch -ComponentName 'manager' -PreferredPort $RequestedManagerPort
+  }
+  if ($managerMatch -and $managerMatch.Port -ne $ResolvedManagerPort) {
+    Set-ResolvedEndpoints -ManagerPortValue $managerMatch.Port -ProxyPortValue $ResolvedProxyPort
+    $updated = $true
+  }
+
+  $proxyMatch = Find-RunningComponentMatch -ComponentName 'proxy' -PreferredPort $ResolvedProxyPort
+  if ($null -eq $proxyMatch -and $RequestedProxyPort -ne $ResolvedProxyPort) {
+    $proxyMatch = Find-RunningComponentMatch -ComponentName 'proxy' -PreferredPort $RequestedProxyPort
+  }
+  if ($proxyMatch -and $proxyMatch.Port -ne $ResolvedProxyPort) {
+    Set-ResolvedEndpoints -ManagerPortValue $ResolvedManagerPort -ProxyPortValue $proxyMatch.Port
+    $updated = $true
+  }
+
+  return $updated
+}
+
 function Start-Component {
   param(
     [hashtable]$Config,
@@ -576,6 +747,7 @@ function Get-ComponentStatus {
 
 function Show-Status {
   $null = Sync-ResolvedEndpointsFromState
+  $null = Sync-ResolvedEndpointsFromRunningComponents
   Write-Step "host=$ResolvedHostAddress managerUrl=$ManagerUrl proxyUrl=$ProxyUrl"
   $items = @(
     Get-ComponentStatus -Config (Get-ComponentConfig -Name 'manager')
@@ -645,10 +817,22 @@ function Show-LanAccessibilityHints {
   $categories = Get-ActiveNetworkCategories
   Write-Step "LAN network categories: $($categories -join ',')"
 
-  foreach ($displayName in @('Lunel LAN Manager 8899', 'Lunel LAN Proxy 3000')) {
+  $firewallRules = @(
+    @{
+      DisplayName = "Lunel LAN Manager $ResolvedManagerPort"
+      Port = $ResolvedManagerPort
+    }
+    @{
+      DisplayName = "Lunel LAN Proxy $ResolvedProxyPort"
+      Port = $ResolvedProxyPort
+    }
+  )
+
+  foreach ($ruleDefinition in $firewallRules) {
+    $displayName = $ruleDefinition.DisplayName
     $rule = Get-NetFirewallRule -DisplayName $displayName -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $rule) {
-      Write-Step "warning: firewall rule missing for $displayName. Run 'npm run local:lan:firewall:install' in an elevated PowerShell session."
+      Write-Step "warning: firewall rule missing for $displayName. Run 'npm run local:lan:firewall:install' in an elevated PowerShell session after the stack is up."
       continue
     }
 
@@ -668,6 +852,7 @@ function Show-LanAccessibilityHints {
 }
 
 function Start-LocalStack {
+  Resolve-StackSecrets
   $bunPath = Resolve-BunPath
   if ($FreshManager) {
     Stop-LocalStack
@@ -730,6 +915,7 @@ function Start-LocalStack {
 
 function Stop-LocalStack {
   $null = Sync-ResolvedEndpointsFromState
+  $null = Sync-ResolvedEndpointsFromRunningComponents
   Stop-Component -Config (Get-ComponentConfig -Name 'proxy')
   Stop-Component -Config (Get-ComponentConfig -Name 'manager')
   Remove-RuntimeState

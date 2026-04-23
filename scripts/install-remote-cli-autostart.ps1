@@ -23,8 +23,43 @@ $LegacyShortcutPath = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Progr
 $LegacyLauncherPath = Join-Path $env:USERPROFILE 'bin\start-erkai-remote-cli.ps1'
 $SystemLauncherPath = 'C:\ProgramData\erkai\start-erkai-remote-cli-system.ps1'
 
+function Get-StablePathToken {
+  param([string]$Value)
+
+  $normalized = if ($Value) {
+    [System.IO.Path]::GetFullPath($Value).ToLowerInvariant()
+  } else {
+    ''
+  }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalized))
+  } finally {
+    $sha.Dispose()
+  }
+
+  return ([System.BitConverter]::ToString($hash)).Replace('-', '').Substring(0, 12).ToLowerInvariant()
+}
+
+function Get-DefaultAppDataRoot {
+  $baseRoot = [System.Environment]::GetFolderPath('CommonApplicationData')
+  if (-not $baseRoot) {
+    $baseRoot = $env:ProgramData
+  }
+  if (-not $baseRoot) {
+    $baseRoot = Join-Path $env:TEMP 'erkai-common-data'
+  }
+
+  $repoName = Split-Path -Path $RepoRoot -Leaf
+  if (-not $repoName) {
+    $repoName = 'repo'
+  }
+  $repoToken = Get-StablePathToken -Value $RepoRoot
+  return Join-Path $baseRoot ("erkai\remote-cli\{0}-{1}" -f $repoName, $repoToken)
+}
+
 if (-not $AppDataRoot -or -not $AppDataRoot.Trim()) {
-  $AppDataRoot = Join-Path $RepoRoot 'artifacts\tmp-appdata'
+  $AppDataRoot = Get-DefaultAppDataRoot
 }
 
 function Write-Step {
