@@ -152,6 +152,7 @@ npm run local:lan:firewall:install
 `local:lan:*` auto-detects the primary LAN IPv4 address and injects that address instead of `127.0.0.1`.
 Use this mode only with the repo app / Expo build. A prebuilt official app that is hard-coded to `gateway.lunel.dev` will not switch to your local machine automatically.
 If `8899` or `3000` is already occupied, `local-dev.ps1` automatically walks forward to the next free port (`+1`, then `+2`, etc.), writes the resolved URLs to `%TEMP%\erkai-local-dev\stack-state.json`, and `local:status` / `local:env` will show the real ports in use.
+The local launcher now binds `manager` and `proxy` to the resolved host address only, so loopback mode stays on `127.0.0.1` and LAN mode stays on the detected private IP instead of listening on every interface.
 If Windows Defender blocks phone access, start the LAN stack first and then run `npm run local:lan:firewall:install` once so the firewall rules follow the resolved manager/proxy ports plus the Expo dev ports.
 
 Windows Explorer double-click launchers:
@@ -228,15 +229,23 @@ Defaults:
 - Proxy: `http://127.0.0.1:3000`
 - Admin password: generated on first run and stored under `%TEMP%\erkai-local-dev\stack-secrets.json` unless you pass `-ManagerAdminPassword` or set `LUNEL_LOCAL_MANAGER_ADMIN_PASSWORD`
 - Proxy password: generated on first run and stored under `%TEMP%\erkai-local-dev\stack-secrets.json` unless you pass `-ProxyPassword` or set `LUNEL_LOCAL_PROXY_PASSWORD`
+- Admin JWT signing secret: generated independently by `manager` and persisted next to `MANAGER_DB_PATH` unless you set `MANAGER_ADMIN_TOKEN_SECRET` or `MANAGER_ADMIN_TOKEN_SECRET_PATH`
 - Runtime logs and PID files: `%TEMP%\erkai-local-dev`
 
 The script will:
 
 - start `manager` and `proxy` with loopback-safe `http/ws` URLs
+- bind each service only to the requested host address instead of all interfaces
 - if a requested manager/proxy port is busy, shift to the next free port and persist that choice to the runtime state
 - wait for `/health` on both services
 - log in to the manager and register the local proxy automatically
 - verify `connectedProxies >= 1` and `managerReachable = true`
+
+Optional deployment hardening:
+
+- `MANAGER_BIND_HOST` / `PROXY_BIND_HOST`: pin the listener to a specific interface
+- `MANAGER_CORS_ALLOW_ORIGIN` / `PROXY_CORS_ALLOW_ORIGIN`: replace the default `*` CORS origin with a fixed browser origin
+- `MANAGER_ADMIN_TOKEN_SECRET` or `MANAGER_ADMIN_TOKEN_SECRET_PATH`: keep admin JWT signing separate from the login password
 
 To point the CLI at the local stack:
 

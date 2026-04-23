@@ -1,7 +1,8 @@
 import type { ServerWebSocket } from "bun";
 import { Database } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
-import { existsSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { dirname, resolve } from "path";
 
 const CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 const CODE_LENGTH = 10;
@@ -293,7 +294,7 @@ interface AuditLogRow {
 }
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (process.env.MANAGER_CORS_ALLOW_ORIGIN || process.env.CORS_ALLOW_ORIGIN || "*").trim() || "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password",
 };
@@ -323,6 +324,35 @@ function generatePersistentSecret(length = 256): string {
     out += alphabet[bytes[i] % alphabet.length];
   }
   return out;
+}
+
+function getTrimmedEnvValue(input: string | undefined | null): string {
+  return typeof input === "string" ? input.trim() : "";
+}
+
+function resolvePersistentSecret(opts: {
+  envValue?: string | null;
+  filePath: string;
+  label: string;
+}): string {
+  const explicit = getTrimmedEnvValue(opts.envValue);
+  if (explicit) {
+    return explicit;
+  }
+
+  const resolvedPath = resolve(opts.filePath);
+  if (existsSync(resolvedPath)) {
+    const persisted = getTrimmedEnvValue(readFileSync(resolvedPath, "utf8"));
+    if (persisted) {
+      return persisted;
+    }
+  }
+
+  const generated = generatePersistentSecret();
+  mkdirSync(dirname(resolvedPath), { recursive: true });
+  writeFileSync(resolvedPath, `${generated}\n`, "utf8");
+  console.log(`[manager] generated ${opts.label} at ${resolvedPath}`);
+  return generated;
 }
 
 function isPeerFullyConnected(session: Session, role: Role): boolean {
@@ -659,7 +689,6 @@ function startManager(): void {
     console.error("MANAGER_ADMIN_PASSWORD is required");
     process.exit(1);
   }
-  const managerAdminTokenSecret = managerAdminPassword;
   const allowLegacyAdminPassword = process.env.MANAGER_ALLOW_LEGACY_ADMIN_PASSWORD === "1";
   const auditRetentionDays = Math.max(1, Number(process.env.MANAGER_AUDIT_RETENTION_DAYS || 30));
   const resumeTokenTtlMs = Math.max(
@@ -673,7 +702,21 @@ function startManager(): void {
   const sandmanAuthToken = (process.env.SANDMAN_AUTH_TOKEN || "").trim();
   const sandmanPublicUrl = normalizeGatewayUrl(process.env.SANDMAN_URL || "") || "";
   const dbPath = process.env.MANAGER_DB_PATH || "manager.db";
+  const managerBindHost = getTrimmedEnvValue(process.env.MANAGER_BIND_HOST || process.env.HOST);
+  const managerPort = Number(process.env.PORT || 8899);
+  const managerAdminTokenSecretPath =
+    getTrimmedEnvValue(process.env.MANAGER_ADMIN_TOKEN_SECRET_PATH) ||
+    `${dbPath}.admin-token-secret`;
+  const managerAdminTokenSecret = resolvePersistentSecret({
+    envValue: process.env.MANAGER_ADMIN_TOKEN_SECRET,
+    filePath: managerAdminTokenSecretPath,
+    label: "admin token secret",
+  });
   const resetManagerState = process.argv.includes("--new");
+
+  if (managerAdminTokenSecret === managerAdminPassword) {
+    console.warn("[manager] warning: MANAGER_ADMIN_TOKEN_SECRET matches MANAGER_ADMIN_PASSWORD; use different values.");
+  }
 
   if (resetManagerState) {
     for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
@@ -3041,7 +3084,8 @@ function startManager(): void {
   setInterval(() => cleanupExpiredV2State(), 30 * 1000);
 
   Bun.serve<ManagerSocketData>({
-    port: Number(process.env.PORT || 8899),
+    hostname: managerBindHost || undefined,
+    port: managerPort,
     fetch(req, server) {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -4927,9 +4971,9 @@ function startManager(): void {
   });
 
   const configuredCount = configured.length;
-  console.log(`[manager] started — port=${process.env.PORT || 8899}`);
+  console.log(`[manager] started — host=${managerBindHost || "0.0.0.0"} port=${managerPort} cors=${corsHeaders["Access-Control-Allow-Origin"]}`);
   if (configuredCount > 0) console.log(`[manager] ${configuredCount} proxy(ies) loaded from PROXIES env`);
-  console.log(`[manager] admin UI at http://localhost:${process.env.PORT || 8899}`);
+  console.log(`[manager] admin UI at http://localhost:${managerPort}`);
 }
 
 startManager();

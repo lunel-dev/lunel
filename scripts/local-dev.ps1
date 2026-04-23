@@ -271,6 +271,7 @@ function Get-ComponentConfig {
         Environment = @{
           MANAGER_ADMIN_PASSWORD = $ManagerAdminPassword
           MANAGER_DB_PATH = $ManagerDbPath
+          MANAGER_BIND_HOST = $ResolvedHostAddress
           PORT = [string]$effectiveManagerPort
         }
       }
@@ -290,6 +291,7 @@ function Get-ComponentConfig {
           MANAGER_URL = $effectiveManagerUrl
           PUBLIC_URL = $effectiveProxyUrl
           PROXY_PASSWORD = $ProxyPassword
+          PROXY_BIND_HOST = $ResolvedHostAddress
           PORT = [string]$effectiveProxyPort
         }
       }

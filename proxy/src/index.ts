@@ -194,7 +194,7 @@ interface AuditLogRow {
 }
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (process.env.PROXY_CORS_ALLOW_ORIGIN || process.env.CORS_ALLOW_ORIGIN || "*").trim() || "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password",
 };
@@ -206,6 +206,10 @@ function generateSecureCode(): string {
     result += CHARSET[bytes[i] % CHARSET.length];
   }
   return result;
+}
+
+function getTrimmedEnvValue(input: string | undefined | null): string {
+  return typeof input === "string" ? input.trim() : "";
 }
 
 function isPeerConnected(session: Session, role: Role): boolean {
@@ -388,6 +392,8 @@ function startGateway(): void {
     process.env.GATEWAY_URL ||
     ""
   );
+  const proxyBindHost = getTrimmedEnvValue(process.env.PROXY_BIND_HOST || process.env.HOST);
+  const proxyPort = Number(process.env.PORT || 3000);
   if (!publicUrl) {
     console.error("[proxy] PUBLIC_URL is required — the public HTTPS URL of this proxy (e.g. https://one.yourdomain.com)");
     process.exit(1);
@@ -1031,7 +1037,8 @@ function startGateway(): void {
   setInterval(() => void checkManagerHealth(), MANAGER_HEALTH_CHECK_INTERVAL_MS);
 
   const server = Bun.serve<WebSocketData>({
-    port: process.env.PORT || 3000,
+    hostname: proxyBindHost || undefined,
+    port: proxyPort,
 
     async fetch(req, server) {
       const url = new URL(req.url);
@@ -1585,7 +1592,9 @@ function startGateway(): void {
     },
   });
 
-  console.log(`[proxy] started — port=${server.port} | public=${publicUrl ?? "not set"} | manager=${managerUrl ?? "none"}`);
+  console.log(
+    `[proxy] started — host=${proxyBindHost || "0.0.0.0"} port=${server.port} public=${publicUrl ?? "not set"} manager=${managerUrl ?? "none"} cors=${corsHeaders["Access-Control-Allow-Origin"]}`
+  );
 
   // Cold starts should recover the manager control link without requiring an external /v1/connect kick.
   queueMicrotask(() => {
