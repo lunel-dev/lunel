@@ -213,7 +213,7 @@ function PastSessionsSheet({
   onDelete: (session: PairedSession) => void;
   onClose: () => void;
 }) {
-  const { typography } = useTheme();
+  const { typography, colors } = useTheme();
 
   return (
     <InfoSheet
@@ -224,8 +224,8 @@ function PastSessionsSheet({
     >
       {sessions.length === 0 ? (
         <View style={pastSessionsSheetStyles.emptyContainer}>
-          <MaterialCommunityIcons name="clock-alert-outline" size={36} color="rgba(255,255,255,0.3)" style={{ marginBottom: 12 }} />
-          <Text style={[pastSessionsSheetStyles.emptyText, { fontFamily: fonts.sans.regular }]}>
+          <MaterialCommunityIcons name="clock-alert-outline" size={36} color={colors.fg.subtle} style={{ marginBottom: 12 }} />
+          <Text style={[pastSessionsSheetStyles.emptyText, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
             No past sessions
           </Text>
         </View>
@@ -241,17 +241,17 @@ function PastSessionsSheet({
               style={pastSessionsSheetStyles.sessionRow}
             >
               <View style={{ flex: 1 }}>
-                <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionHostname, { fontFamily: fonts.sans.regular, fontSize: typography.body }]}>
+                <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionHostname, { color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: typography.body }]}>
                   {session.hostname}
                 </Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 }}>
-                  <FontAwesome name="folder" size={11} color="rgba(255,255,255,0.35)" />
-                  <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionRoot, { fontFamily: fonts.sans.regular, flex: 1, fontSize: typography.caption }]}>
+                  <FontAwesome name="folder" size={11} color={colors.fg.subtle} />
+                  <Text numberOfLines={1} style={[pastSessionsSheetStyles.sessionRoot, { color: colors.fg.muted, fontFamily: fonts.sans.regular, flex: 1, fontSize: typography.caption }]}>
                     {session.root.startsWith("/") ? session.root.slice(1) : session.root}
                   </Text>
                 </View>
               </View>
-              <ChevronRight size={18} color="rgba(255,255,255,0.4)" strokeWidth={2} />
+              <ChevronRight size={18} color={colors.fg.subtle} strokeWidth={2} />
             </TouchableOpacity>
           ))}
         </ScrollView>

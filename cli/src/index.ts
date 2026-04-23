@@ -428,30 +428,55 @@ function normalizeAiRuntimeConfig(
 // Path Safety
 // ============================================================================
 
+const ROOT_DIR_COMPARISON = process.platform === "win32" ? ROOT_DIR.toLowerCase() : ROOT_DIR;
+const ROOT_DIR_PREFIX_COMPARISON = `${ROOT_DIR_COMPARISON}${path.sep}`;
+
+function normalizePathForComparison(targetPath: string): string {
+  const normalized = path.resolve(targetPath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isPathWithinRoot(targetPath: string): boolean {
+  const comparisonPath = normalizePathForComparison(targetPath);
+  return comparisonPath === ROOT_DIR_COMPARISON || comparisonPath.startsWith(ROOT_DIR_PREFIX_COMPARISON);
+}
+
 function resolveSafePath(requestedPath: string): string | null {
-  // path.resolve handles ".." components, but on case-insensitive or symlinked
-  // filesystems a simple startsWith check can still be bypassed. We use
-  // realpathSync to canonicalise the path (resolves symlinks, normalises case on
-  // Windows) before comparing against ROOT_DIR, which is itself canonicalised at
-  // startup. If the path does not exist yet we fall back to the lexical resolve so
-  // that callers creating new files can still pass the check.
   const lexical = path.resolve(ROOT_DIR, requestedPath);
-  let canonical: string;
-  try {
-    canonical = fssync.realpathSync(lexical);
-  } catch {
-    // Path doesn't exist yet — verify lexically. Still safe because path.resolve
-    // already eliminated all ".." traversals in the resolved string.
-    canonical = lexical;
-  }
-  // Ensure ROOT_DIR itself is canonical for a reliable prefix comparison.
-  const canonicalRoot = (() => {
-    try { return fssync.realpathSync(ROOT_DIR); } catch { return ROOT_DIR; }
-  })();
-  if (!canonical.startsWith(canonicalRoot + path.sep) && canonical !== canonicalRoot) {
+  if (!isPathWithinRoot(lexical)) {
     return null;
   }
-  return canonical;
+
+  // Walk upward until we find an existing ancestor, then rebuild the final path
+  // from that canonical ancestor. This closes the gap where a missing leaf under
+  // an in-root symlinked directory could otherwise escape ROOT_DIR at runtime.
+  let current = lexical;
+  const missingSegments: string[] = [];
+
+  while (true) {
+    try {
+      const canonical = fssync.realpathSync(current);
+      if (!isPathWithinRoot(canonical)) {
+        return null;
+      }
+      return missingSegments.length === 0
+        ? canonical
+        : path.join(canonical, ...missingSegments.reverse());
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError?.code && nodeError.code !== "ENOENT" && nodeError.code !== "ENOTDIR") {
+        return null;
+      }
+
+      const parent = path.dirname(current);
+      if (parent === current || !isPathWithinRoot(parent)) {
+        return null;
+      }
+
+      missingSegments.push(path.basename(current));
+      current = parent;
+    }
+  }
 }
 
 function assertSafePath(requestedPath: string): string {
@@ -897,6 +922,30 @@ async function runGit(args: string[]): Promise<{ stdout: string; stderr: string;
   });
 }
 
+function normalizeGitPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0))];
+}
+
+async function restoreGitWorktree(paths: string[]): Promise<void> {
+  // Restore from the index so staged changes remain intact while only
+  // discarding unstaged worktree edits.
+  let result = await runGit(["restore", "--worktree", "--", ...paths]);
+  if (result.code !== 0) {
+    // Fallback for older Git versions without `git restore`.
+    result = await runGit(["checkout", "--", ...paths]);
+    if (result.code !== 0) {
+      throw Object.assign(new Error(result.stderr || "git restore failed"), { code: "EGIT" });
+    }
+  }
+}
+
 async function handleGitStatus(): Promise<Record<string, unknown>> {
   // Get branch
   const branchResult = await runGit(["branch", "--show-current"]);
@@ -1193,26 +1242,17 @@ async function handleGitPush(payload: Record<string, unknown>): Promise<Record<s
 }
 
 async function handleGitDiscard(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const paths = payload.paths as string[] | undefined;
+  const paths = normalizeGitPaths(payload.paths);
   const all = payload.all === true;
 
-  if (!paths && !all) {
+  if (!all && paths.length === 0) {
     throw Object.assign(new Error("paths or all is required"), { code: "EINVAL" });
   }
 
   if (all) {
-    // Discard all changes
-    const result = await runGit(["checkout", "--", "."]);
-    if (result.code !== 0) {
-      throw Object.assign(new Error(result.stderr || "git checkout failed"), { code: "EGIT" });
-    }
-    // Also clean untracked files
-    await runGit(["clean", "-fd"]);
-  } else if (paths && paths.length > 0) {
-    const result = await runGit(["checkout", "--", ...paths]);
-    if (result.code !== 0) {
-      throw Object.assign(new Error(result.stderr || "git checkout failed"), { code: "EGIT" });
-    }
+    await restoreGitWorktree(["."]);
+  } else {
+    await restoreGitWorktree(paths);
   }
 
   return {};

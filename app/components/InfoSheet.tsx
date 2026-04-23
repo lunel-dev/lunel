@@ -82,22 +82,22 @@ export default function InfoSheet({ visible, onClose, title, description, childr
                 <GestureDetector gesture={pan}>
                   <ReAnimated.View style={[sheetStyles.sheet, { backgroundColor: colors.bg.base }, animatedStyle]}>
                     {/* Handle */}
-                    <View style={sheetStyles.handle} />
+                    <View style={[sheetStyles.handle, { backgroundColor: colors.border.main }]} />
 
                     {/* Header */}
                     <View style={sheetStyles.header}>
                       <View style={{ flex: 1 }}>
-                        <Text style={[sheetStyles.title, { fontFamily: fonts.sans.semibold }]}>{title}</Text>
-                        <Text style={[sheetStyles.subtitle, { fontFamily: fonts.sans.regular }]}>{description}</Text>
+                        <Text style={[sheetStyles.title, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]}>{title}</Text>
+                        <Text style={[sheetStyles.subtitle, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>{description}</Text>
                       </View>
                       <TouchableOpacity
                         onPress={() => {
                           void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           onClose();
                         }}
-                        style={sheetStyles.closeButton}
+                        style={[sheetStyles.closeButton, { backgroundColor: colors.bg.raised, borderColor: colors.border.secondary }]}
                       >
-                        <X size={20} color="#FFFFFF" strokeWidth={2} style={{ opacity: 0.8 }} />
+                        <X size={20} color={colors.fg.default} strokeWidth={2} />
                       </TouchableOpacity>
                     </View>
 
@@ -155,6 +155,8 @@ const sheetStyles = StyleSheet.create({
   closeButton: {
     width: 34,
     height: 34,
+    borderRadius: 999,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
