@@ -53,7 +53,7 @@ import {
   View,
 } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView, ScrollView, TouchableOpacity } from "react-native-gesture-handler";
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import Animated, {
   Easing,
   ZoomIn,
@@ -2258,7 +2258,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const recordingRef = useRef<Audio.Recording | null>(null);
   const latestVoiceLevelRef = useRef(VOICE_WAVE_IDLE_LEVEL);
   const voiceWaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const messagesListRef = useRef<FlashList<any>>(null);
+  const messagesListRef = useRef<FlashListRef<any> | null>(null);
   const isNearBottomRef = useRef(true);
   const autoFollowRef = useRef(true);
   const userDraggingMessagesRef = useRef(false);
@@ -3032,19 +3032,20 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   const deleteTab = useCallback((tabId: string) => {
     const tab = tabs.find((t) => t.id === tabId);
+    const sessionId = tab?.sessionId;
 
     // Optimistic update — remove immediately
     setSessionTabs((prev) => prev.filter((t) => t.id !== tabId));
     setDraftTabs((prev) => prev.filter((t) => t.id !== tabId));
-    if (tab?.sessionId) {
+    if (sessionId) {
       setMessagesMap((prev) => {
         const next = { ...prev };
-        delete next[tab.sessionId];
+        delete next[sessionId];
         return next;
       });
       setErrorMessages((prev) => {
         const next = { ...prev };
-        delete next[tab.sessionId];
+        delete next[sessionId];
         return next;
       });
     }
@@ -3058,10 +3059,10 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     }
 
     // Fire-and-forget delete — rollback on failure
-    if (tab?.sessionId) {
+    if (tab && sessionId) {
       void (async () => {
         try {
-          const deleted = await ai.deleteSession(tab.sessionId, tab.backend);
+          const deleted = await ai.deleteSession(sessionId, tab.backend);
           if (!deleted) {
             setSessionTabs((prev) => [...prev, tab]);
             Alert.alert("Unable to Delete", "The session could not be deleted.");
@@ -4082,7 +4083,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
           <View style={styles.headerMenuWrapper}>
             <MenuView
               shouldOpenOnLongPress={false}
-              preferredMenuAnchorPosition="bottom"
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === "toggle-detailed-view") {
                   handleDetailedViewAction();
@@ -4178,7 +4178,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                 data={listData}
                 keyExtractor={(item) => item.type === "message" ? item.data.id : item.id}
                 renderItem={renderListItem}
-                estimatedItemSize={140}
                 style={{ flex: 1 }}
                 indicatorStyle="default"
                 onLayout={(e) => {

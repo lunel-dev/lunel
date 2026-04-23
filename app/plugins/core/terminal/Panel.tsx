@@ -1425,11 +1425,12 @@ export default function TerminalPanel({
         setActiveTerminalVersion((version) => version + 1);
       }
 
-      if (state.title) {
+      const nextTitle = state.title;
+      if (typeof nextTitle === "string" && nextTitle.length > 0) {
         setTabs((prev) =>
           prev.map((tab) =>
-            tab.terminalId === terminalId && tab.title !== state.title
-              ? { ...tab, title: state.title }
+            tab.terminalId === terminalId && tab.title !== nextTitle
+              ? { ...tab, title: nextTitle }
               : tab,
           ),
         );

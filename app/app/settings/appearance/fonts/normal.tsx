@@ -15,7 +15,7 @@ import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "rea
 interface FontOptionProps {
   name: string;
   sampleText: string;
-  fontFamily: string;
+  fontFamily?: string;
   isSelected: boolean;
   isDefault: boolean;
   onSelect: () => void;

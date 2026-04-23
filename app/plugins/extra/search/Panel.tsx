@@ -448,7 +448,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: typography.body,
     paddingVertical: 0,
-    outlineStyle: 'none',
   },
   iconButton: {
     width: 28,

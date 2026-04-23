@@ -2299,15 +2299,23 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                   source={{ uri: tab.url }}
                   style={{ flex: 1 }}
                   forceDarkOn={isDark}
-                  injectedJavaScriptBeforeContentLoaded={`
-                    (function() {
-                      var meta = document.createElement('meta');
-                      meta.name = 'color-scheme';
-                      meta.content = '${isDark ? 'dark' : 'light'}';
-                      document.head.appendChild(meta);
-                    })();
-                    true;
-                  `}
+                  injectedJavaScriptBeforeContentLoaded={[
+                    `
+                      (function() {
+                        var meta = document.createElement('meta');
+                        meta.name = 'color-scheme';
+                        meta.content = '${isDark ? 'dark' : 'light'}';
+                        document.head.appendChild(meta);
+                      })();
+                      true;
+                    `,
+                    trustedTypesSetupScript.trim(),
+                    devsoleConsoleBootstrapScript.trim(),
+                    devsoleNetworkBootstrapScript.trim(),
+                    devsoleElementsBootstrapScript.trim(),
+                    devsoleResourcesBootstrapScript.trim(),
+                    devsoleInfoBootstrapScript.trim(),
+                  ].join("\n")}
                   textZoom={90}
                   cacheEnabled={false}
                   cacheMode="LOAD_NO_CACHE"
@@ -2474,14 +2482,6 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                       // Ignore parsing errors
                     }
                   }}
-                  injectedJavaScriptBeforeContentLoaded={[
-                    trustedTypesSetupScript.trim(),
-                    devsoleConsoleBootstrapScript.trim(),
-                    devsoleNetworkBootstrapScript.trim(),
-                    devsoleElementsBootstrapScript.trim(),
-                    devsoleResourcesBootstrapScript.trim(),
-                    devsoleInfoBootstrapScript.trim(),
-                  ].join("\n")}
                   javaScriptEnabled={true}
                   domStorageEnabled={true}
                   allowsInlineMediaPlayback={true}

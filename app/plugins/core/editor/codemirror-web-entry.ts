@@ -37,10 +37,12 @@ import {
   findPrevious,
   getSearchQuery,
   openSearchPanel,
+  RegExpCursor,
   replaceAll,
   replaceNext,
   search,
   searchKeymap,
+  SearchCursor,
   SearchQuery,
   setSearchQuery,
 } from "@codemirror/search";
@@ -520,7 +522,11 @@ window.__lunelCreateCodeMirrorEditor = function createCodeMirrorEditor(options: 
       return { current: 0, total: 0 };
     }
 
-    const matches = Array.from(query.getCursor(view.state));
+    const cursor = query.getCursor(view.state) as SearchCursor | RegExpCursor;
+    const matches: Array<{ from: number; to: number }> = [];
+    for (cursor.next(); !cursor.done; cursor.next()) {
+      matches.push({ from: cursor.value.from, to: cursor.value.to });
+    }
     if (matches.length === 0) {
       return { current: 0, total: 0 };
     }

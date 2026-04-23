@@ -192,7 +192,7 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
         { text: "Cancel", style: "cancel" },
         {
           text: "Rename",
-          onPress: (value) => {
+          onPress: (value?: string) => {
             const trimmed = (value || "").trim();
             if (!trimmed) return;
             reg.onSessionRename?.(id, trimmed);

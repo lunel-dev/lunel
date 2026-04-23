@@ -341,7 +341,7 @@ const LunelConnect = () => {
                       "Type the code shown in your terminal",
                       [
                         { text: "Cancel", style: "cancel" },
-                        { text: "Connect", onPress: (code) => { if (code?.trim()) handleConnectWithCode(code.trim()); } },
+                        { text: "Connect", onPress: (code?: string) => { if (code?.trim()) handleConnectWithCode(code.trim()); } },
                       ],
                       "plain-text",
                       "",

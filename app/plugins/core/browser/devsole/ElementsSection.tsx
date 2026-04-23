@@ -1,4 +1,4 @@
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import * as Clipboard from "expo-clipboard";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Check, ChevronDown, ChevronRight, Copy, MousePointerClick, Plus, RefreshCw, SquarePen, X } from "lucide-react-native";
@@ -863,7 +863,7 @@ export default function ElementsSection({
   onSaveAttribute: (path: string, attributes: DevsoleElementsAttribute[]) => void;
 }) {
   const { colors, fonts, radius } = useTheme();
-  const listRef = useRef<FlashList<TreeNode> | null>(null);
+  const listRef = useRef<FlashListRef<TreeNode> | null>(null);
   const lastAppliedFocusTokenRef = useRef(0);
   const pendingRevealPathRef = useRef<string | null>(null);
   const snapshotsByPathRef = useRef<Record<string, DevsoleElementsSnapshot>>({});
@@ -1137,7 +1137,6 @@ export default function ElementsSection({
               onToggleExpand={() => handleToggleExpand(item)}
             />
           )}
-          estimatedItemSize={44}
           contentContainerStyle={{ paddingBottom: 8 }}
           ItemSeparatorComponent={() => (
             <View

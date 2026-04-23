@@ -7,6 +7,7 @@ import { config } from "dotenv";
 config({ path: ".env.hotupdater" });
 
 export default defineConfig({
+  updateStrategy: "appVersion",
   build: expo(),
   storage: s3Storage({
     bucketName: process.env.BUCKET_NAME!,

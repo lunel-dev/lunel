@@ -180,7 +180,7 @@ function PortsPanel({ instanceId, isActive }: PluginPanelProps) {
           showsVerticalScrollIndicator={false}
         >
           {sortedPorts.length === 0 ? (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: spacing[16] }}>
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: spacing[8] * 2 }}>
               <Wifi size={36} color={colors.fg.subtle} strokeWidth={1.5} />
               <Text style={{
                 fontSize: 14,
