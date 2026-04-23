@@ -1,4 +1,8 @@
 .DS_Store
+.playwright-mcp/
+artifacts/
+%TESTBAT%
+manager/node_modules/
 pty/target/
 gateway/manager.db
 gateway/manager.db-shm

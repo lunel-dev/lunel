@@ -341,7 +341,7 @@ const LunelConnect = () => {
                       "Type the code shown in your terminal",
                       [
                         { text: "Cancel", style: "cancel" },
-                        { text: "Connect", onPress: (code) => { if (code?.trim()) handleConnectWithCode(code.trim()); } },
+                        { text: "Connect", onPress: (code?: string) => { if (code?.trim()) handleConnectWithCode(code.trim()); } },
                       ],
                       "plain-text",
                       "",
@@ -526,12 +526,12 @@ const LunelConnect = () => {
         description="Type the code shown in your terminal"
       >
         <View style={{ gap: 12, paddingBottom: insets.bottom + 24 }}>
-          <View style={[styles.inputWrapper, { backgroundColor: "rgba(255,255,255,0.08)", borderRadius: 14 }]}>
-            <QrCode size={18} color={WHITE} strokeWidth={2} />
+          <View style={[styles.inputWrapper, { backgroundColor: colors.bg.raised, borderColor: colors.border.secondary, borderRadius: 14, borderWidth: 1 }]}>
+            <QrCode size={18} color={colors.fg.muted} strokeWidth={2} />
             <TextInput
-              style={[styles.input, { fontFamily: fonts.sans.regular, color: WHITE }]}
+              style={[styles.input, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}
               placeholder="e.g. abc-123-xyz"
-              placeholderTextColor="rgba(255,255,255,0.35)"
+              placeholderTextColor={colors.fg.subtle}
               value={manualCode}
               onChangeText={(text) => { setManualCode(text); setError(null); }}
               autoCapitalize="none"
@@ -546,7 +546,9 @@ const LunelConnect = () => {
             disabled={!manualCode.trim() || isConnecting}
             activeOpacity={0.8}
             style={{
-              backgroundColor: manualCode.trim() ? WHITE : "rgba(255,255,255,0.12)",
+              backgroundColor: manualCode.trim() ? colors.fg.default : colors.bg.raised,
+              borderColor: manualCode.trim() ? colors.fg.default : colors.border.secondary,
+              borderWidth: 1,
               borderRadius: 14,
               paddingVertical: 14,
               alignItems: "center",
@@ -554,10 +556,10 @@ const LunelConnect = () => {
           >
             {isConnecting ? (
               <Animated.View style={{ transform: [{ rotate: loaderSpin }] }}>
-                <LoaderCircle size={18} color={manualCode.trim() ? BLACK : "rgba(255,255,255,0.4)"} strokeWidth={2} />
+                <LoaderCircle size={18} color={manualCode.trim() ? colors.bg.base : colors.fg.subtle} strokeWidth={2} />
               </Animated.View>
             ) : (
-              <Text style={{ color: manualCode.trim() ? BLACK : "rgba(255,255,255,0.4)", fontSize: 15, fontFamily: fonts.sans.semibold }}>Connect</Text>
+              <Text style={{ color: manualCode.trim() ? colors.bg.base : colors.fg.subtle, fontSize: 15, fontFamily: fonts.sans.semibold }}>Connect</Text>
             )}
           </TouchableOpacity>
         </View>

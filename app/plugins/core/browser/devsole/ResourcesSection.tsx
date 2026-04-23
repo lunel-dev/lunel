@@ -507,7 +507,6 @@ export default function ResourcesSection({
           <FlashList
             key={`${listKey}-cookies`}
             data={filteredCookies}
-            estimatedItemSize={62}
             keyExtractor={(item) => item.id}
             contentContainerStyle={{ paddingBottom: 16 }}
             renderItem={({ item }) => (
@@ -586,7 +585,6 @@ export default function ResourcesSection({
           <FlashList
             key={`${listKey}-${mode}`}
             data={filteredStorageItems}
-            estimatedItemSize={66}
             keyExtractor={(item) => item.id}
             contentContainerStyle={{ paddingBottom: 16 }}
             renderItem={({ item }) => (

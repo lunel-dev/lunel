@@ -11,7 +11,23 @@ import { useConnection } from "@/contexts/ConnectionContext";
 import { useEditorConfig } from "@/contexts/EditorContext";
 import { useAI } from "@/hooks/useAI";
 import { useApi, FileEntry } from "@/hooks/useApi";
-import type { AIEvent, AISession, AIMessage, AIPart, AIAgent, AIProvider, AIPermission, AIQuestion, AIFileAttachment, ModelRef, PermissionResponse, AiBackend, CodexPromptOptions } from "./types";
+import { DEFAULT_AI_BACKEND_CAPABILITIES } from "./types";
+import type {
+  AIEvent,
+  AISession,
+  AIMessage,
+  AIPart,
+  AIAgent,
+  AIBackendCapabilities,
+  AIProvider,
+  AIPermission,
+  AIQuestion,
+  AIFileAttachment,
+  ModelRef,
+  PermissionResponse,
+  AiBackend,
+  CodexPromptOptions,
+} from "./types";
 import Markdown from "./Markdown";
 import ToolCall from "./ToolCall";
 import FileChange from "./FileChange";
@@ -37,7 +53,7 @@ import {
   View,
 } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView, ScrollView, TouchableOpacity } from "react-native-gesture-handler";
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import Animated, {
   Easing,
   ZoomIn,
@@ -167,6 +183,10 @@ function AISkeleton({ colors, paddingTop = 0 }: { colors: any; paddingTop?: numb
 
 function formatBackendSessionTitle(backend: AiBackend, title?: string) {
   return backend === "codex" ? "Codex" : "OpenCode";
+}
+
+function cloneBackendCapabilities(): AIBackendCapabilities {
+  return { ...DEFAULT_AI_BACKEND_CAPABILITIES };
 }
 
 function isBackendUnavailableError(message: string): boolean {
@@ -2162,6 +2182,10 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     opencode: [],
     codex: [],
   });
+  const [capabilitiesByBackend, setCapabilitiesByBackend] = useState<Record<AiBackend, AIBackendCapabilities>>({
+    opencode: cloneBackendCapabilities(),
+    codex: cloneBackendCapabilities(),
+  });
 
   // UI state
   const [inputText, setInputText] = useState("");
@@ -2234,7 +2258,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const recordingRef = useRef<Audio.Recording | null>(null);
   const latestVoiceLevelRef = useRef(VOICE_WAVE_IDLE_LEVEL);
   const voiceWaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const messagesListRef = useRef<FlashList<any>>(null);
+  const messagesListRef = useRef<FlashListRef<any> | null>(null);
   const isNearBottomRef = useRef(true);
   const autoFollowRef = useRef(true);
   const userDraggingMessagesRef = useRef(false);
@@ -2293,6 +2317,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const selectedAgent = selectedAgentByBackend[activeBackend] || "";
   const selectedModel = selectedModelByBackend[activeBackend] || "";
   const providers = providersByBackend[activeBackend] || [];
+  const activeCapabilities = capabilitiesByBackend[activeBackend] || DEFAULT_AI_BACKEND_CAPABILITIES;
   const needsApiKey = needsApiKeyByBackend[activeBackend] || false;
   const isActiveSessionLoading = !!activeSessionId && loadingSessionId === activeSessionId && !messagesMap[activeSessionId];
   const composerBottomOffset = composerHeight + (activeBackend === "codex" && showMoreOptions ? 40 : 0);
@@ -2667,6 +2692,11 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
             const result = await ai.getProviders(backend);
             const providersList = result.providers;
             const defaults = result.defaults || {};
+            const capabilities = {
+              ...DEFAULT_AI_BACKEND_CAPABILITIES,
+              ...(result.capabilities || {}),
+            };
+            setCapabilitiesByBackend((prev) => ({ ...prev, [backend]: capabilities }));
             if (Array.isArray(providersList)) {
               setProvidersByBackend((prev) => ({ ...prev, [backend]: providersList as AIProvider[] }));
               const models: { id: string; name: string }[] = [];
@@ -2699,11 +2729,12 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               }));
               setNeedsApiKeyByBackend((prev) => ({
                 ...prev,
-                [backend]: !hasConfiguredKey && models.length === 0,
+                [backend]: capabilities.setAuth && !hasConfiguredKey && models.length === 0,
               }));
             }
           } catch {
             setProvidersByBackend((prev) => ({ ...prev, [backend]: [] }));
+            setCapabilitiesByBackend((prev) => ({ ...prev, [backend]: cloneBackendCapabilities() }));
             setModelOptionsByBackend((prev) => ({ ...prev, [backend]: [] }));
             setSelectedModelByBackend((prev) => ({ ...prev, [backend]: "" }));
             setNeedsApiKeyByBackend((prev) => ({ ...prev, [backend]: false }));
@@ -3001,19 +3032,20 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   const deleteTab = useCallback((tabId: string) => {
     const tab = tabs.find((t) => t.id === tabId);
+    const sessionId = tab?.sessionId;
 
     // Optimistic update — remove immediately
     setSessionTabs((prev) => prev.filter((t) => t.id !== tabId));
     setDraftTabs((prev) => prev.filter((t) => t.id !== tabId));
-    if (tab?.sessionId) {
+    if (sessionId) {
       setMessagesMap((prev) => {
         const next = { ...prev };
-        delete next[tab.sessionId];
+        delete next[sessionId];
         return next;
       });
       setErrorMessages((prev) => {
         const next = { ...prev };
-        delete next[tab.sessionId];
+        delete next[sessionId];
         return next;
       });
     }
@@ -3027,10 +3059,10 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     }
 
     // Fire-and-forget delete — rollback on failure
-    if (tab?.sessionId) {
+    if (tab && sessionId) {
       void (async () => {
         try {
-          const deleted = await ai.deleteSession(tab.sessionId, tab.backend);
+          const deleted = await ai.deleteSession(sessionId, tab.backend);
           if (!deleted) {
             setSessionTabs((prev) => [...prev, tab]);
             Alert.alert("Unable to Delete", "The session could not be deleted.");
@@ -3143,8 +3175,14 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
   const handlePermissionReply = async (response: PermissionResponse) => {
     if (!pendingPermission || !activeSessionId) return;
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const backend = activeTab?.backend ?? "opencode";
+    if (!capabilitiesByBackend[backend]?.permissionReply) {
+      setPendingPermission(null);
+      Alert.alert("Unavailable", `${formatBackendSessionTitle(backend)} permission replies are not supported in Lunel yet.`);
+      return;
+    }
     try {
-      await ai.replyPermission(activeSessionId, pendingPermission.id, response, activeTab?.backend ?? "opencode");
+      await ai.replyPermission(activeSessionId, pendingPermission.id, response, backend);
     } catch (err) {
       console.error("Permission reply error:", err);
     }
@@ -3154,8 +3192,14 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
   const handleQuestionReply = async (answers: string[][]) => {
     if (!pendingQuestion || !activeSessionId) return;
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const backend = activeTab?.backend ?? "opencode";
+    if (!capabilitiesByBackend[backend]?.questionReply) {
+      setPendingQuestion(null);
+      Alert.alert("Unavailable", `${formatBackendSessionTitle(backend)} question replies are not supported in Lunel yet.`);
+      return;
+    }
     try {
-      await ai.replyQuestion(activeSessionId, pendingQuestion.id, answers, activeTab?.backend ?? "opencode");
+      await ai.replyQuestion(activeSessionId, pendingQuestion.id, answers, backend);
     } catch (err) {
       console.error("Question reply error:", err);
     }
@@ -3165,8 +3209,14 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
   const handleQuestionReject = async () => {
     if (!pendingQuestion || !activeSessionId) return;
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const backend = activeTab?.backend ?? "opencode";
+    if (!capabilitiesByBackend[backend]?.questionReject) {
+      setPendingQuestion(null);
+      Alert.alert("Unavailable", `${formatBackendSessionTitle(backend)} question rejection is not supported in Lunel yet.`);
+      return;
+    }
     try {
-      await ai.rejectQuestion(activeSessionId, pendingQuestion.id, activeTab?.backend ?? "opencode");
+      await ai.rejectQuestion(activeSessionId, pendingQuestion.id, backend);
     } catch (err) {
       console.error("Question reject error:", err);
     }
@@ -3368,7 +3418,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     // Resolve backend + transient draft context
     const activeTab = tabs.find((t) => t.id === activeTabId);
     const messageBackend: "opencode" | "codex" = activeTab?.backend ?? pendingBackend ?? "opencode";
-    const selectedAgentForBackend = selectedAgent || undefined;
+    const messageCapabilities = capabilitiesByBackend[messageBackend] || DEFAULT_AI_BACKEND_CAPABILITIES;
+    const selectedAgentForBackend = messageBackend === "opencode" ? selectedAgent : undefined;
     let sessId = activeSessionId;
     let localDraftTabId: string | null = activeTab && !activeTab.sessionId ? activeTab.id : null;
     if (!sessId && !localDraftTabId) {
@@ -3435,8 +3486,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       try {
         switch (cmd) {
           case "undo": {
-            if (messageBackend === "codex") {
-              throw new Error("Codex undo is not supported in Lunel yet");
+            if (!messageCapabilities.revert) {
+              throw new Error(`${formatBackendSessionTitle(messageBackend)} undo is not supported in Lunel yet`);
             }
             const msgs = messagesMap[ensured] || [];
             const lastUserMsg = [...msgs].reverse().find((m) => m.role === "user");
@@ -3444,8 +3495,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             break;
           }
           case "redo":
-            if (messageBackend === "codex") {
-              throw new Error("Codex redo is not supported in Lunel yet");
+            if (!messageCapabilities.unrevert) {
+              throw new Error(`${formatBackendSessionTitle(messageBackend)} redo is not supported in Lunel yet`);
             }
             await ai.unrevert(ensured, messageBackend);
             break;
@@ -3459,8 +3510,8 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             });
             break;
           case "init":
-            if (messageBackend === "codex") {
-              throw new Error("Codex init is not supported in Lunel yet");
+            if (!messageCapabilities.command) {
+              throw new Error(`${formatBackendSessionTitle(messageBackend)} init is not supported in Lunel yet`);
             }
             await ai.runCommand(ensured, "init", messageBackend);
             break;
@@ -3815,6 +3866,10 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   // API key handler
   const handleSetApiKey = async (providerId: string, key: string) => {
+    if (!activeCapabilities.setAuth) {
+      Alert.alert("Unavailable", `${formatBackendSessionTitle(activeBackend)} API key setup must be completed on your PC.`);
+      return;
+    }
     try {
       await ai.setAuth(providerId, key, activeBackend);
       setNeedsApiKeyByBackend((prev) => ({ ...prev, [activeBackend]: false }));
@@ -4028,7 +4083,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
           <View style={styles.headerMenuWrapper}>
             <MenuView
               shouldOpenOnLongPress={false}
-              preferredMenuAnchorPosition="bottom"
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === "toggle-detailed-view") {
                   handleDetailedViewAction();
@@ -4124,7 +4178,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                 data={listData}
                 keyExtractor={(item) => item.type === "message" ? item.data.id : item.id}
                 renderItem={renderListItem}
-                estimatedItemSize={140}
                 style={{ flex: 1 }}
                 indicatorStyle="default"
                 onLayout={(e) => {

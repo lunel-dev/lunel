@@ -725,10 +725,12 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
                     Changes · {gitStatus.unstaged.length + gitStatus.untracked.length}
                   </Text>
                   <View style={{ flexDirection: 'row', gap: spacing[3] }}>
-                    <TouchableOpacity onPress={() => handleDiscard()} disabled={discardAllLoading} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: colors.git.deleted + '18' }}>
-                      {discardAllLoading ? <SpinnerIcon size={14} color={colors.git.deleted} /> : <Undo size={14} color={colors.git.deleted} strokeWidth={2} />}
-                      <Text style={{ fontSize: 13, fontFamily: fonts.sans.medium, color: colors.git.deleted }}>Discard all</Text>
-                    </TouchableOpacity>
+                    {gitStatus.unstaged.length > 0 && (
+                      <TouchableOpacity onPress={() => handleDiscard()} disabled={discardAllLoading} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: colors.git.deleted + '18' }}>
+                        {discardAllLoading ? <SpinnerIcon size={14} color={colors.git.deleted} /> : <Undo size={14} color={colors.git.deleted} strokeWidth={2} />}
+                        <Text style={{ fontSize: 13, fontFamily: fonts.sans.medium, color: colors.git.deleted }}>Discard unstaged</Text>
+                      </TouchableOpacity>
+                    )}
                     <TouchableOpacity onPress={handleStageAll} disabled={stageAllLoading} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: colors.git.added + '18' }}>
                       {stageAllLoading ? <SpinnerIcon size={14} color={colors.git.added} /> : <Plus size={14} color={colors.git.added} strokeWidth={2} />}
                       <Text style={{ fontSize: 13, fontFamily: fonts.sans.medium, color: colors.git.added }}>Stage all</Text>

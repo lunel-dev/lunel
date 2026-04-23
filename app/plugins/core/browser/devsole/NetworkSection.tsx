@@ -505,7 +505,6 @@ export default function NetworkSection({
                 onReadAllResponse={() => setFullResponseEntry(item)}
               />
             )}
-            estimatedItemSize={78}
             contentContainerStyle={{ paddingBottom: 8 }}
             ItemSeparatorComponent={() => (
               <View style={{ height: 0.5, backgroundColor: colors.border.secondary, marginHorizontal: 14 }} />

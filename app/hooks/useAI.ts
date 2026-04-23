@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useConnection, Message } from '../contexts/ConnectionContext';
-import type { AiBackend, AIEvent, AISession, AIMessage, AIAgent, AIProvider, ModelRef, PermissionResponse, AIFileAttachment, CodexPromptOptions } from '../plugins/core/ai/types';
+import { DEFAULT_AI_BACKEND_CAPABILITIES } from '../plugins/core/ai/types';
+import type {
+  AiBackend,
+  AIBackendCapabilities,
+  AIEvent,
+  AISession,
+  AIMessage,
+  AIAgent,
+  AIProvider,
+  ModelRef,
+  PermissionResponse,
+  AIFileAttachment,
+  CodexPromptOptions,
+} from '../plugins/core/ai/types';
 
 export interface AIEvents {
   onEvent?: (event: AIEvent) => void;
@@ -100,12 +113,18 @@ export function useAI(events?: AIEvents) {
     return response.payload.agents as AIAgent[];
   }, [sendControl]);
 
-  const getProviders = useCallback(async (backend: AiBackend = 'opencode'): Promise<{ providers: AIProvider[]; defaults: Record<string, string> }> => {
+  const getProviders = useCallback(async (
+    backend: AiBackend = 'opencode',
+  ): Promise<{ providers: AIProvider[]; defaults: Record<string, string>; capabilities: AIBackendCapabilities }> => {
     const response = await sendControl('ai', 'providers', { backend });
     if (!response.ok) throw new Error(response.error?.message || 'Failed to get providers');
     return {
       providers: response.payload.providers as AIProvider[],
       defaults: (response.payload.default as Record<string, string>) || {},
+      capabilities: {
+        ...DEFAULT_AI_BACKEND_CAPABILITIES,
+        ...((response.payload.capabilities as Partial<AIBackendCapabilities> | undefined) || {}),
+      },
     };
   }, [sendControl]);
 

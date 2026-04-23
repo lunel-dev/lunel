@@ -458,7 +458,7 @@ function ProcessesPanel({ instanceId, isActive }: PluginPanelProps) {
               onSubmitEditing={spawnProcess}
             />
           </View>
-          <View style={{ flexDirection: 'row', gap: spacing[2], justifyContent: isIPad ? 'flex-end' : 'stretch' }}>
+          <View style={{ flexDirection: 'row', gap: spacing[2], justifyContent: isIPad ? 'flex-end' : undefined }}>
             <TouchableOpacity
               onPress={() => { setShowSpawnForm(false); setSpawnCommand(''); setSpawnArgs(''); setSpawnPath(''); }}
               style={{

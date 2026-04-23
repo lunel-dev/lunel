@@ -20,6 +20,9 @@ const MANAGER_READONLY_CACHE_MAX_MS = 5 * 60 * 1000; // 5 minutes
 const MANAGER_HEALTH_CHECK_INTERVAL_MS = 30_000;
 const MANAGER_HEALTH_FAILURES_BEFORE_READONLY = 2;
 const PENDING_MANAGER_EVENTS_MAX = 500;
+const MANAGER_CONTROL_RECONNECT_BASE_MS = 1_500;
+const MANAGER_CONTROL_RECONNECT_MAX_MS = 30_000;
+const MANAGER_CONTROL_RECONNECT_JITTER_MS = 500;
 const PROXY_TUNNEL_QUEUE_MAX_BYTES = 2 * 1024 * 1024; // 2MB per direction
 const PROXY_TUNNEL_QUEUE_MAX_FRAMES = 512;
 const PROXY_TUNNEL_GC_MS = 15_000;
@@ -81,6 +84,27 @@ interface BackupRegistration {
   role: "primary" | "secondary";
   backupGateway: string | null;
   peerGateway: string | null;
+}
+
+function rewriteLiveSessionPassword(session: Session, nextPassword: string): void {
+  const cliSocket = session.sockets.cli;
+  if (cliSocket?.data?.type === "session-v2") {
+    cliSocket.data.password = nextPassword;
+  }
+
+  const appSocket = session.sockets.app;
+  if (appSocket?.data?.type === "session-v2") {
+    appSocket.data.password = nextPassword;
+  }
+
+  for (const tunnel of session.tunnels.values()) {
+    if (tunnel.cli?.data?.type === "proxy") {
+      tunnel.cli.data.sessionPassword = nextPassword;
+    }
+    if (tunnel.app?.data?.type === "proxy") {
+      tunnel.app.data.sessionPassword = nextPassword;
+    }
+  }
 }
 
 interface ManagerProxyMetrics {
@@ -170,7 +194,7 @@ interface AuditLogRow {
 }
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (process.env.PROXY_CORS_ALLOW_ORIGIN || process.env.CORS_ALLOW_ORIGIN || "*").trim() || "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password",
 };
@@ -182,6 +206,10 @@ function generateSecureCode(): string {
     result += CHARSET[bytes[i] % CHARSET.length];
   }
   return result;
+}
+
+function getTrimmedEnvValue(input: string | undefined | null): string {
+  return typeof input === "string" ? input.trim() : "";
 }
 
 function isPeerConnected(session: Session, role: Role): boolean {
@@ -205,13 +233,60 @@ function sendSystemMessage(
   }
 }
 
+function getSocketGeneration(
+  ws: ServerWebSocket<SessionV2WebSocketData> | null | undefined
+): number | null {
+  if (!ws || ws.data?.type !== "session-v2") {
+    return null;
+  }
+  const generation = ws.data.generation;
+  return typeof generation === "number" && generation > 0 ? generation : null;
+}
+
+function isPrivateDevelopmentHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1") {
+    return true;
+  }
+
+  const octets = normalized.split(".");
+  if (octets.length !== 4 || octets.some((part) => !/^\d+$/.test(part))) {
+    return false;
+  }
+
+  const numbers = octets.map((part) => Number(part));
+  if (numbers.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+
+  return (
+    numbers[0] === 10 ||
+    (numbers[0] === 192 && numbers[1] === 168) ||
+    (numbers[0] === 172 && numbers[1] >= 16 && numbers[1] <= 31)
+  );
+}
+
+function isAllowedGatewayProtocol(parsed: URL): boolean {
+  return parsed.protocol === "https:" || (parsed.protocol === "http:" && isPrivateDevelopmentHostname(parsed.hostname));
+}
+
+function toWebSocketBaseUrl(input: string): string {
+  const parsed = new URL(input);
+  if (!isAllowedGatewayProtocol(parsed)) {
+    throw new Error("Gateway URL must use https://, except localhost or private LAN IPs may use http://");
+  }
+  const protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+  const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
+  return `${protocol}//${parsed.host}${path}`;
+}
+
 function normalizeGatewayUrl(input: string | null): string | null {
   if (!input) return null;
   try {
     const raw = input.trim();
     const withScheme = raw.includes("://") ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
-    if (parsed.protocol !== "https:") {
+    if (!isAllowedGatewayProtocol(parsed)) {
       return null;
     }
     const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
@@ -317,6 +392,8 @@ function startGateway(): void {
     process.env.GATEWAY_URL ||
     ""
   );
+  const proxyBindHost = getTrimmedEnvValue(process.env.PROXY_BIND_HOST || process.env.HOST);
+  const proxyPort = Number(process.env.PORT || 3000);
   if (!publicUrl) {
     console.error("[proxy] PUBLIC_URL is required — the public HTTPS URL of this proxy (e.g. https://one.yourdomain.com)");
     process.exit(1);
@@ -714,6 +791,7 @@ function startGateway(): void {
 
   let managerControlWs: WebSocket | null = null;
   let managerControlReconnectTimer: Timer | null = null;
+  let managerControlReconnectAttempts = 0;
   let managerReadOnly = false;
   let managerHealthFailures = 0;
   // Events queued while manager WS is down; flushed on reconnect
@@ -770,25 +848,53 @@ function startGateway(): void {
     });
   };
 
-  const scheduleManagerReconnect = (): void => {
+  const clearManagerReconnectTimer = (): void => {
+    if (!managerControlReconnectTimer) return;
+    clearTimeout(managerControlReconnectTimer);
+    managerControlReconnectTimer = null;
+  };
+
+  const getManagerReconnectDelay = (attempt: number): number => {
+    const backoff = Math.min(
+      MANAGER_CONTROL_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1),
+      MANAGER_CONTROL_RECONNECT_MAX_MS
+    );
+    const jitter = Math.floor(Math.random() * MANAGER_CONTROL_RECONNECT_JITTER_MS);
+    return backoff + jitter;
+  };
+
+  const scheduleManagerReconnect = (reason: string): void => {
     if (managerControlReconnectTimer) return;
+    managerControlReconnectAttempts += 1;
+    const delay = getManagerReconnectDelay(managerControlReconnectAttempts);
+    console.warn(`${reason} — will reconnect in ${delay}ms (attempt ${managerControlReconnectAttempts})`);
     managerControlReconnectTimer = setTimeout(() => {
       managerControlReconnectTimer = null;
       connectManagerControl();
-    }, 1500);
+    }, delay);
   };
 
   const connectManagerControl = (): void => {
+    clearManagerReconnectTimer();
+    if (managerControlWs && (
+      managerControlWs.readyState === WebSocket.OPEN ||
+      managerControlWs.readyState === WebSocket.CONNECTING
+    )) {
+      return;
+    }
     if (!managerUrl || !proxyPassword || !publicUrl) {
       console.error("[manager-control] cannot connect — missing MANAGER_URL, PROXY_PASSWORD, or PUBLIC_URL");
       return;
     }
-    const wsUrl = `${managerUrl.replace(/^https:/, "wss:")}/v1/gateway/ws`;
+    const wsUrl = `${toWebSocketBaseUrl(managerUrl)}/v1/gateway/ws`;
     console.log(`[manager-control] connecting to ${wsUrl} as ${publicUrl}...`);
     const ws = new WebSocket(wsUrl);
     managerControlWs = ws;
 
     ws.onopen = () => {
+      if (managerControlWs !== ws) return;
+      managerControlReconnectAttempts = 0;
+      clearManagerReconnectTimer();
       console.log(`[manager-control] connected to ${managerUrl}`);
       emitManagerEvent({
         type: "gateway_auth",
@@ -807,14 +913,15 @@ function startGateway(): void {
     };
 
     ws.onclose = (evt) => {
-      if (managerControlWs === ws) managerControlWs = null;
+      const isCurrentSocket = managerControlWs === ws;
+      if (isCurrentSocket) managerControlWs = null;
       const reason = evt.reason ? ` — reason: ${evt.reason}` : "";
       const code = evt.code !== 1000 ? ` (code ${evt.code})` : "";
+      if (!isCurrentSocket) return;
       if (evt.code === 1008) {
         console.error(`[manager-control] auth rejected by manager${reason} — check PROXY_PASSWORD matches what was entered in the UI`);
       } else {
-        console.warn(`[manager-control] disconnected${code}${reason} — will reconnect in 1.5s`);
-        scheduleManagerReconnect();
+        scheduleManagerReconnect(`[manager-control] disconnected${code}${reason}`);
       }
     };
 
@@ -930,7 +1037,8 @@ function startGateway(): void {
   setInterval(() => void checkManagerHealth(), MANAGER_HEALTH_CHECK_INTERVAL_MS);
 
   const server = Bun.serve<WebSocketData>({
-    port: process.env.PORT || 3000,
+    hostname: proxyBindHost || undefined,
+    port: proxyPort,
 
     async fetch(req, server) {
       const url = new URL(req.url);
@@ -1068,6 +1176,7 @@ function startGateway(): void {
             if (sourceSession) {
               sessionsByPassword.delete(fromPassword);
               sourceSession.password = toPassword;
+              rewriteLiveSessionPassword(sourceSession, toPassword);
               sessionsByPassword.set(toPassword, sourceSession);
             }
 
@@ -1128,8 +1237,32 @@ function startGateway(): void {
           return Response.json({ error: "invalid or expired session" }, { status: 404, headers: corsHeaders });
         }
 
-        if (session.sockets[role] !== null) {
-          return Response.json({ error: `${role} already connected` }, { status: 409, headers: corsHeaders });
+        const existingRoleSocket = session.sockets[role];
+        if (existingRoleSocket !== null) {
+          const existingGeneration = getSocketGeneration(existingRoleSocket);
+          const canReplaceExistingSocket =
+            typeof generation === "number" &&
+            generation > 0 &&
+            (existingGeneration === null || generation >= existingGeneration);
+
+          if (!canReplaceExistingSocket) {
+            return Response.json({ error: `${role} already connected` }, { status: 409, headers: corsHeaders });
+          }
+
+          console.warn(`[ws] replacing existing ${role} socket`, redactSensitive({
+            role,
+            generation,
+            existingGeneration,
+          }));
+          session.sockets[role] = null;
+          sendSystemMessage(existingRoleSocket, "close_connection", {
+            reason: `${role} replaced by newer reconnect attempt`,
+          });
+          try {
+            existingRoleSocket.close(1012, "replaced by newer reconnect attempt");
+          } catch {
+            // best effort only; the replacement socket still needs to proceed
+          }
         }
 
         const upgraded = server.upgrade(req, {
@@ -1317,6 +1450,10 @@ function startGateway(): void {
             ws.close(1008, "session not found");
             return;
           }
+          if (session.sockets[data.role] !== ws) {
+            ws.close(1008, "superseded socket");
+            return;
+          }
 
           if (typeof message === "string") {
             try {
@@ -1405,6 +1542,7 @@ function startGateway(): void {
         if (data.type === "session-v2") {
           const session = sessionsByPassword.get(data.password);
           if (!session) return;
+          if (session.sockets[data.role] !== ws) return;
 
           session.sockets[data.role] = null;
           emitManagerConnectionEvent(session, "socket_disconnected", {
@@ -1454,7 +1592,14 @@ function startGateway(): void {
     },
   });
 
-  console.log(`[proxy] started — port=${server.port} | public=${publicUrl ?? "not set"} | manager=${managerUrl ?? "none"}`);
+  console.log(
+    `[proxy] started — host=${proxyBindHost || "0.0.0.0"} port=${server.port} public=${publicUrl ?? "not set"} manager=${managerUrl ?? "none"} cors=${corsHeaders["Access-Control-Allow-Origin"]}`
+  );
+
+  // Cold starts should recover the manager control link without requiring an external /v1/connect kick.
+  queueMicrotask(() => {
+    connectManagerControl();
+  });
 }
 
 startGateway();

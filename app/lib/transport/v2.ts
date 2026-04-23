@@ -401,6 +401,9 @@ export class V2SessionTransport {
       if (!this.sessionKeys) {
         throw new Error('missing session keys before server_ready');
       }
+      if (!this.remotePublicKey) {
+        throw new Error('missing server public key before server_ready');
+      }
       const expectedAuth = this.computeHandshakeAuth(
         'server_ready',
         'cli',
@@ -465,7 +468,7 @@ export class V2SessionTransport {
     const authKey = sodium.crypto_generichash(
       sodium.crypto_auth_KEYBYTES,
       encodeUtf8(this.options.sessionSecret),
-      undefined,
+      null,
     ) as Uint8Array;
     const parts = [
       phase,

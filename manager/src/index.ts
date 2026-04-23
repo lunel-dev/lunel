@@ -1,7 +1,8 @@
 import type { ServerWebSocket } from "bun";
 import { Database } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
-import { existsSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { dirname, resolve } from "path";
 
 const CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 const CODE_LENGTH = 10;
@@ -25,9 +26,10 @@ const PROXY_TUNNEL_QUEUE_MAX_FRAMES = 512;
 const PROXY_TUNNEL_GC_MS = 15_000;
 const V2_PASSWORD_LENGTH = 256;
 const V2_CODE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
+const ASSEMBLE_UPGRADE_PENDING_TTL_MS = 15_000;
 
 type Role = "cli" | "app";
-type Channel = "control" | "data";
+type Channel = "session" | "control" | "data";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -50,9 +52,15 @@ interface AssembleWebSocketData {
   type: "assemble";
   code: string;
   role: Role;
+  traceId?: string;
+  sourceIp?: string;
+  userAgent?: string;
+  requestedAt?: number;
 }
 
 type WebSocketData = SessionWebSocketData | ProxyWebSocketData | AssembleWebSocketData;
+type ManagerSocketData = WebSocketData | ManagerControlSocketData;
+type ManagerServerSocket = ServerWebSocket<ManagerSocketData>;
 
 interface ProxyTunnel {
   cli: ServerWebSocket<ProxyWebSocketData> | null;
@@ -152,6 +160,7 @@ interface GatewayControlEvent {
     | "connection_event"
     | "manager_command";
   token?: string;
+  password?: string;
   gatewayId?: string;
   gateway?: string;
   ts?: number;
@@ -197,11 +206,14 @@ interface ManagerControlSocketData {
 
 interface AssembleSession {
   code: string;
+  traceId: string;
   createdAt: number;
   expiresAt: number;
   password: string | null;
-  appWs: ServerWebSocket<AssembleWebSocketData> | null;
-  cliWs: ServerWebSocket<AssembleWebSocketData> | null;
+  appWs: ManagerServerSocket | null;
+  cliWs: ManagerServerSocket | null;
+  appPendingAt: number | null;
+  cliPendingAt: number | null;
   appAcked: boolean;
   cliAcked: boolean;
 }
@@ -282,7 +294,7 @@ interface AuditLogRow {
 }
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (process.env.MANAGER_CORS_ALLOW_ORIGIN || process.env.CORS_ALLOW_ORIGIN || "*").trim() || "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Password",
 };
@@ -314,6 +326,35 @@ function generatePersistentSecret(length = 256): string {
   return out;
 }
 
+function getTrimmedEnvValue(input: string | undefined | null): string {
+  return typeof input === "string" ? input.trim() : "";
+}
+
+function resolvePersistentSecret(opts: {
+  envValue?: string | null;
+  filePath: string;
+  label: string;
+}): string {
+  const explicit = getTrimmedEnvValue(opts.envValue);
+  if (explicit) {
+    return explicit;
+  }
+
+  const resolvedPath = resolve(opts.filePath);
+  if (existsSync(resolvedPath)) {
+    const persisted = getTrimmedEnvValue(readFileSync(resolvedPath, "utf8"));
+    if (persisted) {
+      return persisted;
+    }
+  }
+
+  const generated = generatePersistentSecret();
+  mkdirSync(dirname(resolvedPath), { recursive: true });
+  writeFileSync(resolvedPath, `${generated}\n`, "utf8");
+  console.log(`[manager] generated ${opts.label} at ${resolvedPath}`);
+  return generated;
+}
+
 function isPeerFullyConnected(session: Session, role: Role): boolean {
   return session.sockets[role].control !== null && session.sockets[role].data !== null;
 }
@@ -326,13 +367,40 @@ function sendSystemMessage(ws: ServerWebSocket<WebSocketData>, type: string, pay
   ws.send(JSON.stringify({ type, ...payload }));
 }
 
+function isPrivateDevelopmentHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1") {
+    return true;
+  }
+
+  const octets = normalized.split(".");
+  if (octets.length !== 4 || octets.some((part) => !/^\d+$/.test(part))) {
+    return false;
+  }
+
+  const numbers = octets.map((part) => Number(part));
+  if (numbers.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+
+  return (
+    numbers[0] === 10 ||
+    (numbers[0] === 192 && numbers[1] === 168) ||
+    (numbers[0] === 172 && numbers[1] >= 16 && numbers[1] <= 31)
+  );
+}
+
+function isAllowedGatewayProtocol(parsed: URL): boolean {
+  return parsed.protocol === "https:" || (parsed.protocol === "http:" && isPrivateDevelopmentHostname(parsed.hostname));
+}
+
 function normalizeGatewayUrl(input: string | null): string | null {
   if (!input) return null;
   try {
     const raw = input.trim();
     const withScheme = raw.includes("://") ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
-    if (parsed.protocol !== "https:") {
+    if (!isAllowedGatewayProtocol(parsed)) {
       return null;
     }
     const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
@@ -425,6 +493,24 @@ function extractClientIp(req: Request): string {
   return raw || "unknown";
 }
 
+function extractUserAgent(req: Request): string {
+  const userAgent = (req.headers.get("user-agent") || "unknown").trim();
+  return userAgent ? userAgent.slice(0, 200) : "unknown";
+}
+
+function logAssembleEvent(message: string, fields?: Record<string, unknown>): void {
+  if (!fields || Object.keys(fields).length === 0) {
+    console.log(`[assemble] ${message}`);
+    return;
+  }
+
+  try {
+    console.log(`[assemble] ${message} ${JSON.stringify(fields)}`);
+  } catch {
+    console.log(`[assemble] ${message}`);
+  }
+}
+
 function toIpv4Subnet24(ip: string): string {
   const match = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return `host:${ip}`;
@@ -478,6 +564,121 @@ function redactSensitive(input: unknown): unknown {
   return input;
 }
 
+const MANAGER_SCHEMA_VERSION = 1;
+
+interface SqlitePragmaUserVersionRow {
+  user_version?: number;
+}
+
+interface SqliteTableInfoRow {
+  name?: string;
+}
+
+function getSqliteUserVersion(db: Database): number {
+  const row = db.query("PRAGMA user_version").get() as SqlitePragmaUserVersionRow | null;
+  return Number(row?.user_version ?? 0);
+}
+
+function setSqliteUserVersion(db: Database, version: number): void {
+  db.run(`PRAGMA user_version = ${Math.max(0, Math.trunc(version))}`);
+}
+
+function listTableColumns(db: Database, tableName: string): Set<string> {
+  const rows = db.query(`PRAGMA table_info(${tableName})`).all() as SqliteTableInfoRow[];
+  return new Set(
+    rows
+      .map((row) => String(row.name || ""))
+      .filter(Boolean)
+  );
+}
+
+function ensureSqliteColumn(db: Database, tableName: string, columnName: string, sql: string): void {
+  if (listTableColumns(db, tableName).has(columnName)) {
+    return;
+  }
+  db.run(sql);
+}
+
+function inferManagerSchemaVersion(db: Database): number {
+  const proxyColumns = listTableColumns(db, "proxies");
+  const sessionColumns = listTableColumns(db, "sessions");
+  const proxiesAligned = [
+    "password",
+    "gateway_id",
+    "state",
+    "state_source",
+    "cpu_percent",
+    "memory_used_mb",
+    "memory_total_mb",
+    "network_in_bps",
+    "network_out_bps",
+    "last_telemetry",
+  ].every((column) => proxyColumns.has(column));
+  const sessionsAligned = sessionColumns.has("paired_at");
+  return proxiesAligned && sessionsAligned ? MANAGER_SCHEMA_VERSION : 0;
+}
+
+function runManagerSchemaMigrations(db: Database): void {
+  let currentVersion = getSqliteUserVersion(db);
+  if (currentVersion === 0) {
+    const inferredVersion = inferManagerSchemaVersion(db);
+    if (inferredVersion > 0) {
+      setSqliteUserVersion(db, inferredVersion);
+      currentVersion = inferredVersion;
+      console.log(`[manager] detected schema v${currentVersion}`);
+    }
+  }
+
+  const migrations = [
+    {
+      version: 1,
+      name: "backfill proxy telemetry columns and session pairing metadata",
+      up: () => {
+        ensureSqliteColumn(db, "proxies", "password", `ALTER TABLE proxies ADD COLUMN password TEXT NOT NULL DEFAULT ''`);
+        ensureSqliteColumn(db, "proxies", "gateway_id", `ALTER TABLE proxies ADD COLUMN gateway_id TEXT NOT NULL DEFAULT ''`);
+        ensureSqliteColumn(db, "proxies", "state", `ALTER TABLE proxies ADD COLUMN state TEXT NOT NULL DEFAULT 'active'`);
+        ensureSqliteColumn(db, "proxies", "state_source", `ALTER TABLE proxies ADD COLUMN state_source TEXT NOT NULL DEFAULT 'manual'`);
+        ensureSqliteColumn(db, "proxies", "cpu_percent", `ALTER TABLE proxies ADD COLUMN cpu_percent REAL NOT NULL DEFAULT 0`);
+        ensureSqliteColumn(db, "proxies", "memory_used_mb", `ALTER TABLE proxies ADD COLUMN memory_used_mb REAL NOT NULL DEFAULT 0`);
+        ensureSqliteColumn(db, "proxies", "memory_total_mb", `ALTER TABLE proxies ADD COLUMN memory_total_mb REAL NOT NULL DEFAULT 0`);
+        ensureSqliteColumn(db, "proxies", "network_in_bps", `ALTER TABLE proxies ADD COLUMN network_in_bps REAL NOT NULL DEFAULT 0`);
+        ensureSqliteColumn(db, "proxies", "network_out_bps", `ALTER TABLE proxies ADD COLUMN network_out_bps REAL NOT NULL DEFAULT 0`);
+        ensureSqliteColumn(db, "proxies", "last_telemetry", `ALTER TABLE proxies ADD COLUMN last_telemetry INTEGER NOT NULL DEFAULT 0`);
+        ensureSqliteColumn(db, "sessions", "paired_at", `ALTER TABLE sessions ADD COLUMN paired_at INTEGER`);
+      },
+    },
+  ] as const;
+
+  for (const migration of migrations) {
+    if (currentVersion >= migration.version) {
+      continue;
+    }
+
+    console.log(
+      `[manager] running schema migration v${currentVersion}->v${migration.version}: ${migration.name}`
+    );
+
+    db.run("BEGIN IMMEDIATE");
+    try {
+      migration.up();
+      setSqliteUserVersion(db, migration.version);
+      db.run("COMMIT");
+      currentVersion = migration.version;
+      console.log(`[manager] schema migration complete: v${currentVersion}`);
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Ignore rollback failures and surface the original migration error.
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `manager schema migration v${migration.version} failed (${migration.name}): ${message}`
+      );
+    }
+  }
+}
+
 // ============================================================================
 // Manager mode
 // ============================================================================
@@ -488,7 +689,6 @@ function startManager(): void {
     console.error("MANAGER_ADMIN_PASSWORD is required");
     process.exit(1);
   }
-  const managerAdminTokenSecret = managerAdminPassword;
   const allowLegacyAdminPassword = process.env.MANAGER_ALLOW_LEGACY_ADMIN_PASSWORD === "1";
   const auditRetentionDays = Math.max(1, Number(process.env.MANAGER_AUDIT_RETENTION_DAYS || 30));
   const resumeTokenTtlMs = Math.max(
@@ -502,7 +702,21 @@ function startManager(): void {
   const sandmanAuthToken = (process.env.SANDMAN_AUTH_TOKEN || "").trim();
   const sandmanPublicUrl = normalizeGatewayUrl(process.env.SANDMAN_URL || "") || "";
   const dbPath = process.env.MANAGER_DB_PATH || "manager.db";
+  const managerBindHost = getTrimmedEnvValue(process.env.MANAGER_BIND_HOST || process.env.HOST);
+  const managerPort = Number(process.env.PORT || 8899);
+  const managerAdminTokenSecretPath =
+    getTrimmedEnvValue(process.env.MANAGER_ADMIN_TOKEN_SECRET_PATH) ||
+    `${dbPath}.admin-token-secret`;
+  const managerAdminTokenSecret = resolvePersistentSecret({
+    envValue: process.env.MANAGER_ADMIN_TOKEN_SECRET,
+    filePath: managerAdminTokenSecretPath,
+    label: "admin token secret",
+  });
   const resetManagerState = process.argv.includes("--new");
+
+  if (managerAdminTokenSecret === managerAdminPassword) {
+    console.warn("[manager] warning: MANAGER_ADMIN_TOKEN_SECRET matches MANAGER_ADMIN_PASSWORD; use different values.");
+  }
 
   if (resetManagerState) {
     for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
@@ -537,38 +751,6 @@ function startManager(): void {
       last_telemetry INTEGER NOT NULL DEFAULT 0
     );
   `);
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN password TEXT NOT NULL DEFAULT ''`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN gateway_id TEXT NOT NULL DEFAULT ''`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN state TEXT NOT NULL DEFAULT 'active'`);
-  } catch {
-    // Column already exists for upgraded databases.
-  }
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN state_source TEXT NOT NULL DEFAULT 'manual'`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN cpu_percent REAL NOT NULL DEFAULT 0`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN memory_used_mb REAL NOT NULL DEFAULT 0`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN memory_total_mb REAL NOT NULL DEFAULT 0`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN network_in_bps REAL NOT NULL DEFAULT 0`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN network_out_bps REAL NOT NULL DEFAULT 0`);
-  } catch {}
-  try {
-    db.run(`ALTER TABLE proxies ADD COLUMN last_telemetry INTEGER NOT NULL DEFAULT 0`);
-  } catch {}
   db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
@@ -585,9 +767,6 @@ function startManager(): void {
       ended_at INTEGER
     );
   `);
-  try {
-    db.run(`ALTER TABLE sessions ADD COLUMN paired_at INTEGER`);
-  } catch {}
   db.run(`
     CREATE TABLE IF NOT EXISTS pairings (
       secret TEXT PRIMARY KEY,
@@ -674,6 +853,8 @@ function startManager(): void {
     );
   `);
 
+  runManagerSchemaMigrations(db);
+
   const upsertProxyStmt = db.query(`
     INSERT INTO proxies (
       url, gateway_id, state, state_source, active_connections, active_sessions, unique_sessions_24h, last_heartbeat,
@@ -744,6 +925,23 @@ function startManager(): void {
     ORDER BY last_used_at DESC
     LIMIT 10
   `);
+  const getLatestPairingByPhoneStmt = db.query(`
+    SELECT secret, pc_id as pcId, phone_id as phoneId, root, hostname,
+           created_at as createdAt, updated_at as updatedAt, paired_at as pairedAt,
+           last_used_at as lastUsedAt, revoked_at as revokedAt
+    FROM pairings
+    WHERE phone_id = ?1 AND revoked_at IS NULL
+    ORDER BY last_used_at DESC
+    LIMIT 1
+  `);
+  const listRecentBootstrapSessionsStmt = db.query(`
+    SELECT session_id, code, resume_token, primary_gateway, backup_gateway, state,
+           reconnect_deadline, created_at, updated_at, expires_at, paired_at, ended_at
+    FROM sessions
+    WHERE state IN ('pending', 'active', 'app_offline_grace', 'cli_offline_grace')
+    ORDER BY updated_at DESC
+    LIMIT 10
+  `);
   const insertPairingStmt = db.query(`
     INSERT INTO pairings (
       secret, pc_id, phone_id, root, hostname, created_at, updated_at, paired_at, last_used_at, revoked_at
@@ -754,6 +952,16 @@ function startManager(): void {
     SET hostname = ?2,
         updated_at = ?3,
         last_used_at = ?3
+    WHERE secret = ?1
+  `);
+  const updatePairingScopeStmt = db.query(`
+    UPDATE pairings
+    SET pc_id = ?2,
+        phone_id = ?3,
+        root = ?4,
+        hostname = ?5,
+        updated_at = ?6,
+        last_used_at = ?6
     WHERE secret = ?1
   `);
   const revokePairingStmt = db.query(`
@@ -1419,6 +1627,19 @@ function startManager(): void {
     };
   };
 
+  const resolveLatestServerBootstrapSession = (
+    now: number
+  ): { row: any; snapshot: ReturnType<typeof buildSessionSnapshot> } | null => {
+    const candidates = listRecentBootstrapSessionsStmt.all() as Array<any>;
+    for (const candidate of candidates) {
+      const snapshot = buildSessionSnapshot(candidate, now);
+      if (snapshot.exists && snapshot.valid && typeof snapshot.resumeToken === "string" && snapshot.resumeToken) {
+        return { row: candidate, snapshot };
+      }
+    }
+    return null;
+  };
+
   const getAdminBearerToken = (req: Request): string => {
     const authHeader = req.headers.get("authorization") || "";
     if (!authHeader.toLowerCase().startsWith("bearer ")) return "";
@@ -1447,20 +1668,20 @@ function startManager(): void {
   const loadAllProxies = (): ManagerProxyMetrics[] => {
     return listProxiesStmt.all() as ManagerProxyMetrics[];
   };
-  const managerControlSocketsByGateway = new Map<string, Set<ServerWebSocket<ManagerControlSocketData>>>();
+  const managerControlSocketsByGateway = new Map<string, Set<ManagerServerSocket>>();
 
   const attachGatewayControlSocket = (
     gatewayUrl: string,
-    ws: ServerWebSocket<ManagerControlSocketData>
+    ws: ManagerServerSocket
   ): void => {
-    const set = managerControlSocketsByGateway.get(gatewayUrl) || new Set<ServerWebSocket<ManagerControlSocketData>>();
+    const set = managerControlSocketsByGateway.get(gatewayUrl) || new Set<ManagerServerSocket>();
     set.add(ws);
     managerControlSocketsByGateway.set(gatewayUrl, set);
   };
 
   const detachGatewayControlSocket = (
     gatewayUrl: string,
-    ws: ServerWebSocket<ManagerControlSocketData>
+    ws: ManagerServerSocket
   ): void => {
     const set = managerControlSocketsByGateway.get(gatewayUrl);
     if (!set) return;
@@ -1566,6 +1787,22 @@ function startManager(): void {
 
   const cleanupExpiredV2State = (now = Date.now()): void => {
     for (const [code, session] of assembleSessionsByCode) {
+      if (!session.appWs && session.appPendingAt && session.appPendingAt + ASSEMBLE_UPGRADE_PENDING_TTL_MS <= now) {
+        logAssembleEvent("cleared stale app pending upgrade", {
+          traceId: session.traceId,
+          code,
+          pendingForMs: now - session.appPendingAt,
+        });
+        session.appPendingAt = null;
+      }
+      if (!session.cliWs && session.cliPendingAt && session.cliPendingAt + ASSEMBLE_UPGRADE_PENDING_TTL_MS <= now) {
+        logAssembleEvent("cleared stale cli pending upgrade", {
+          traceId: session.traceId,
+          code,
+          pendingForMs: now - session.cliPendingAt,
+        });
+        session.cliPendingAt = null;
+      }
       if (session.expiresAt <= now) {
         try {
           session.appWs?.close(1000, "code expired");
@@ -1599,11 +1836,14 @@ function startManager(): void {
     }
     const created: AssembleSession = {
       code,
+      traceId: randomUUID(),
       createdAt: now,
       expiresAt: now + V2_CODE_TTL_MS,
       password: null,
       appWs: null,
       cliWs: null,
+      appPendingAt: null,
+      cliPendingAt: null,
       appAcked: false,
       cliAcked: false,
     };
@@ -1611,9 +1851,48 @@ function startManager(): void {
     return created;
   };
 
+  const getAssembleSessionSnapshot = (session: AssembleSession, now = Date.now()) => ({
+    traceId: session.traceId,
+    code: session.code,
+    ageMs: Math.max(0, now - session.createdAt),
+    expiresInMs: Math.max(0, session.expiresAt - now),
+    passwordIssued: Boolean(session.password),
+    appConnected: Boolean(session.appWs),
+    cliConnected: Boolean(session.cliWs),
+    appPending: Boolean(session.appPendingAt),
+    cliPending: Boolean(session.cliPendingAt),
+    appAcked: session.appAcked,
+    cliAcked: session.cliAcked,
+  });
+
+  const isAssembleRoleReserved = (session: AssembleSession, role: Role): boolean => (
+    role === "app" ? Boolean(session.appWs || session.appPendingAt) : Boolean(session.cliWs || session.cliPendingAt)
+  );
+
+  const reserveAssembleRole = (session: AssembleSession, role: Role, now = Date.now()): void => {
+    if (role === "app") {
+      session.appPendingAt = now;
+      return;
+    }
+    session.cliPendingAt = now;
+  };
+
+  const clearAssembleRolePending = (session: AssembleSession, role: Role): void => {
+    if (role === "app") {
+      session.appPendingAt = null;
+      return;
+    }
+    session.cliPendingAt = null;
+  };
+
   const maybeCompleteAssembleSession = (session: AssembleSession): void => {
     if (!session.password) return;
     if (!session.appAcked || !session.cliAcked) return;
+    logAssembleEvent("session completed", {
+      traceId: session.traceId,
+      code: session.code,
+      session: getAssembleSessionSnapshot(session),
+    });
     try {
       session.appWs?.close(1000, "assembled");
     } catch {
@@ -1648,6 +1927,11 @@ function startManager(): void {
       code: session.code,
       password,
     });
+    logAssembleEvent("password issued", {
+      traceId: session.traceId,
+      code: session.code,
+      session: getAssembleSessionSnapshot(session),
+    });
     session.appWs.send(payload);
     session.cliWs.send(payload);
   };
@@ -1672,13 +1956,44 @@ function startManager(): void {
 
   const getReattachSession = (resumeToken: string, now = Date.now()): ReattachSessionRow | null => {
     cleanupExpiredV2State(now);
-    const row = getReattachSessionStmt.get(resumeToken) as ReattachSessionRow | null;
+    const row = getReattachSessionStmt.get(resumeToken) as
+      | (ReattachSessionRow & {
+          resume_token?: string;
+          proxy_url?: string | null;
+          waiting_for?: string;
+          app_attached?: number;
+          cli_attached?: number;
+          created_at?: number;
+          updated_at?: number;
+          expires_at?: number;
+        })
+      | null;
     if (!row) return null;
-    if (Number(row.expiresAt || 0) <= now) {
+
+    const waitingForRaw = String(row.waitingFor ?? row.waiting_for ?? "none");
+    const expiresAt = Number(row.expiresAt ?? row.expires_at ?? 0);
+    const normalized: ReattachSessionRow = {
+      resumeToken: String(row.resumeToken ?? row.resume_token ?? resumeToken),
+      generation: Number(row.generation || 0),
+      proxyUrl: normalizeGatewayUrl(String(row.proxyUrl ?? row.proxy_url ?? "")) || "",
+      waitingFor: (
+        waitingForRaw === "app" ||
+        waitingForRaw === "cli" ||
+        waitingForRaw === "both" ||
+        waitingForRaw === "none"
+      ) ? waitingForRaw : "none",
+      appAttached: Number(row.appAttached ?? row.app_attached ?? 0),
+      cliAttached: Number(row.cliAttached ?? row.cli_attached ?? 0),
+      createdAt: Number(row.createdAt ?? row.created_at ?? now),
+      updatedAt: Number(row.updatedAt ?? row.updated_at ?? now),
+      expiresAt,
+    };
+
+    if (expiresAt <= now) {
       deleteReattachSessionStmt.run(resumeToken);
       return null;
     }
-    return row;
+    return normalized;
   };
 
   const resolveReattachSource = (
@@ -2768,8 +3083,9 @@ function startManager(): void {
   setInterval(cleanupManagerSessions, 60 * 1000);
   setInterval(() => cleanupExpiredV2State(), 30 * 1000);
 
-  Bun.serve({
-    port: Number(process.env.PORT || 8899),
+  Bun.serve<ManagerSocketData>({
+    hostname: managerBindHost || undefined,
+    port: managerPort,
     fetch(req, server) {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -2780,37 +3096,205 @@ function startManager(): void {
 
       if (path === "/v2/qr" && req.method === "GET") {
         cleanupExpiredV2State();
+        const sourceIp = extractClientIp(req);
+        const userAgent = extractUserAgent(req);
         let code = "";
         do {
           code = generateSecureCode();
         } while (assembleSessionsByCode.has(code));
-        getOrCreateAssembleSession(code);
+        const session = getOrCreateAssembleSession(code);
+        logAssembleEvent("qr issued", {
+          traceId: session.traceId,
+          code,
+          sourceIp,
+          userAgent,
+          session: getAssembleSessionSnapshot(session),
+        });
         return Response.json({ code, expiresInMs: V2_CODE_TTL_MS }, { headers: corsHeaders });
+      }
+
+      if (path === "/v2/assemble/preflight" && req.method === "GET") {
+        cleanupExpiredV2State();
+        const code = (url.searchParams.get("code") || "").trim();
+        const role = (url.searchParams.get("role") || "").trim() as Role;
+        const sourceIp = extractClientIp(req);
+        const userAgent = extractUserAgent(req);
+        if (!code) {
+          logAssembleEvent("preflight rejected missing code", {
+            role,
+            sourceIp,
+            userAgent,
+          });
+          return Response.json(
+            { ok: false, error: "code is required", reason: "missing_code" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+        if (role !== "app" && role !== "cli") {
+          logAssembleEvent("preflight rejected invalid role", {
+            code,
+            role,
+            sourceIp,
+            userAgent,
+          });
+          return Response.json(
+            { ok: false, error: "role must be app or cli", reason: "invalid_role" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+
+        const session = assembleSessionsByCode.get(code);
+        if (!session || session.expiresAt <= Date.now()) {
+          logAssembleEvent("preflight rejected expired or missing session", {
+            code,
+            role,
+            sourceIp,
+            userAgent,
+          });
+          return Response.json(
+            { ok: false, error: "code not found or expired", reason: "code_not_found_or_expired" },
+            { status: 404, headers: corsHeaders }
+          );
+        }
+
+        const appConnected = Boolean(session.appWs || session.appPendingAt);
+        const cliConnected = Boolean(session.cliWs || session.cliPendingAt);
+        if ((role === "app" && appConnected) || (role === "cli" && cliConnected)) {
+          logAssembleEvent("preflight rejected role already reserved", {
+            traceId: session.traceId,
+            code,
+            role,
+            sourceIp,
+            userAgent,
+            session: getAssembleSessionSnapshot(session),
+          });
+          return Response.json(
+            {
+              ok: false,
+              error: `${role} already connected for code`,
+              reason: "role_already_connected",
+              traceId: session.traceId,
+              code,
+              role,
+              expiresAt: session.expiresAt,
+              appConnected,
+              cliConnected,
+              appPending: Boolean(session.appPendingAt),
+              cliPending: Boolean(session.cliPendingAt),
+            },
+            { status: 409, headers: corsHeaders }
+          );
+        }
+
+        logAssembleEvent("preflight ok", {
+          traceId: session.traceId,
+          code,
+          role,
+          sourceIp,
+          userAgent,
+          session: getAssembleSessionSnapshot(session),
+        });
+
+        return Response.json(
+          {
+            ok: true,
+            traceId: session.traceId,
+            code,
+            role,
+            expiresAt: session.expiresAt,
+            appConnected,
+            cliConnected,
+            appPending: Boolean(session.appPendingAt),
+            cliPending: Boolean(session.cliPendingAt),
+          },
+          { headers: corsHeaders }
+        );
       }
 
       if (path === "/v2/assemble" && req.method === "GET") {
         cleanupExpiredV2State();
         const code = (url.searchParams.get("code") || "").trim();
         const role = (url.searchParams.get("role") || "").trim() as Role;
+        const sourceIp = extractClientIp(req);
+        const userAgent = extractUserAgent(req);
         if (!code) {
+          logAssembleEvent("upgrade rejected missing code", {
+            role,
+            sourceIp,
+            userAgent,
+          });
           return Response.json({ error: "code is required" }, { status: 400, headers: corsHeaders });
         }
         if (role !== "app" && role !== "cli") {
+          logAssembleEvent("upgrade rejected invalid role", {
+            code,
+            role,
+            sourceIp,
+            userAgent,
+          });
           return Response.json({ error: "role must be app or cli" }, { status: 400, headers: corsHeaders });
         }
         const session = assembleSessionsByCode.get(code);
         if (!session || session.expiresAt <= Date.now()) {
+          logAssembleEvent("upgrade rejected expired or missing session", {
+            code,
+            role,
+            sourceIp,
+            userAgent,
+          });
           return Response.json({ error: "code not found or expired" }, { status: 404, headers: corsHeaders });
         }
-        if ((role === "app" && session.appWs) || (role === "cli" && session.cliWs)) {
+        if (isAssembleRoleReserved(session, role)) {
+          logAssembleEvent("upgrade rejected role already reserved", {
+            traceId: session.traceId,
+            code,
+            role,
+            sourceIp,
+            userAgent,
+            session: getAssembleSessionSnapshot(session),
+          });
           return Response.json({ error: `${role} already connected for code` }, { status: 409, headers: corsHeaders });
         }
+        reserveAssembleRole(session, role);
+        logAssembleEvent("upgrade requested", {
+          traceId: session.traceId,
+          code,
+          role,
+          sourceIp,
+          userAgent,
+          session: getAssembleSessionSnapshot(session),
+        });
         const upgraded = server.upgrade(req, {
-          data: { type: "assemble", code, role } as AssembleWebSocketData,
+          data: {
+            type: "assemble",
+            code,
+            role,
+            traceId: session.traceId,
+            sourceIp,
+            userAgent,
+            requestedAt: Date.now(),
+          },
         });
         if (!upgraded) {
+          clearAssembleRolePending(session, role);
+          logAssembleEvent("upgrade failed", {
+            traceId: session.traceId,
+            code,
+            role,
+            sourceIp,
+            userAgent,
+            session: getAssembleSessionSnapshot(session),
+          });
           return Response.json({ error: "upgrade failed" }, { status: 500, headers: corsHeaders });
         }
+        logAssembleEvent("upgrade accepted", {
+          traceId: session.traceId,
+          code,
+          role,
+          sourceIp,
+          userAgent,
+          session: getAssembleSessionSnapshot(session),
+        });
         return undefined;
       }
 
@@ -2861,6 +3345,9 @@ function startManager(): void {
             if (!record || !record.proxyUrl) {
               return Response.json({ error: "reattach unavailable" }, { status: 404, headers: corsHeaders });
             }
+            if (pairing) {
+              updatePairingTouchStmt.run(pairing.secret, pairing.hostname, Date.now());
+            }
             return Response.json({
               proxyUrl: record.proxyUrl,
               generation: record.generation,
@@ -2881,11 +3368,12 @@ function startManager(): void {
         if (role && role !== "app" && role !== "cli") {
           return Response.json({ valid: false, reason: "invalid_role" }, { status: 400, headers: corsHeaders });
         }
+        const reattach = getReattachSession(password);
         const record = issuedPasswordsByHash.get(hashPassword(password));
-        if (!record || record.expiresAt <= Date.now()) {
+        const source = resolveReattachSource(password);
+        if ((!record || record.expiresAt <= Date.now()) && !source) {
           return Response.json({ valid: false, reason: "invalid_password" }, { headers: corsHeaders });
         }
-        const reattach = getReattachSession(password);
         if (reattach) {
           if (role === "app" || role === "cli") {
             if (!Number.isFinite(generation) || generation < 1) {
@@ -2894,7 +3382,7 @@ function startManager(): void {
                 reason: "reattach_generation_required",
                 proxyUrl: reattach.proxyUrl,
                 generation: reattach.generation,
-                code: record.code,
+                code: source?.code || record?.code || null,
               }, { headers: corsHeaders });
             }
             if (generation !== Number(reattach.generation || 0)) {
@@ -2903,7 +3391,7 @@ function startManager(): void {
                 reason: "stale_generation",
                 proxyUrl: reattach.proxyUrl,
                 generation: reattach.generation,
-                code: record.code,
+                code: source?.code || record?.code || null,
               }, { headers: corsHeaders });
             }
           }
@@ -2911,8 +3399,11 @@ function startManager(): void {
             valid: true,
             proxyUrl: reattach.proxyUrl,
             generation: reattach.generation,
-            code: record.code,
+            code: source?.code || record?.code || null,
           }, { headers: corsHeaders });
+        }
+        if (!record || record.expiresAt <= Date.now()) {
+          return Response.json({ valid: false, reason: "invalid_password" }, { headers: corsHeaders });
         }
         return Response.json({ valid: true, proxyUrl: record.proxyUrl, code: record.code }, { headers: corsHeaders });
       }
@@ -3157,16 +3648,40 @@ function startManager(): void {
 
             const existingPairing = getPairingBySecretStmt.get(activeSecret) as any;
             if (existingPairing) {
-              if (
-                Number(existingPairing.revokedAt || 0) > 0 ||
-                existingPairing.pcId !== pcId ||
-                existingPairing.phoneId !== phoneId ||
-                existingPairing.root !== root
-              ) {
+              if (Number(existingPairing.revokedAt || 0) > 0) {
                 return Response.json({ error: "pairing secret is invalid" }, { status: 403, headers: corsHeaders });
               }
               const now = Date.now();
-              updatePairingTouchStmt.run(existingPairing.secret, hostname, now);
+              const scopeChanged = (
+                existingPairing.pcId !== pcId ||
+                existingPairing.phoneId !== phoneId ||
+                existingPairing.root !== root
+              );
+              if (scopeChanged) {
+                if (existingPairing.phoneId !== phoneId) {
+                  return Response.json({ error: "pairing secret is invalid" }, { status: 403, headers: corsHeaders });
+                }
+                updatePairingScopeStmt.run(existingPairing.secret, pcId, phoneId, root, hostname, now);
+                writeAuditLog({
+                  actorType: "public",
+                  actorId: phoneId,
+                  action: "pairing.register",
+                  targetType: "pairing",
+                  targetId: String(existingPairing.secret || "").slice(0, 12),
+                  sourceIp,
+                  status: "ok",
+                  message: "persistent pairing scope refreshed",
+                  metadata: {
+                    previousPcId: existingPairing.pcId,
+                    previousRoot: existingPairing.root,
+                    nextPcId: pcId,
+                    nextRoot: root,
+                    hostname,
+                  },
+                });
+              } else {
+                updatePairingTouchStmt.run(existingPairing.secret, hostname, now);
+              }
               if (existingPairing.secret !== activeSecret && sessionRow?.primary_gateway) {
                 const aliasCalls: Promise<void>[] = [
                   aliasGatewaySession(sessionRow.primary_gateway, {
@@ -3185,8 +3700,8 @@ function startManager(): void {
               return Response.json({
                 secret: existingPairing.secret,
                 hostname,
-                root: existingPairing.root,
-                phoneId: existingPairing.phoneId,
+                root,
+                phoneId,
                 pairedAt: existingPairing.pairedAt,
                 lastUsedAt: now,
               }, { headers: corsHeaders });
@@ -3316,6 +3831,113 @@ function startManager(): void {
                 pairedAt: row.pairedAt,
                 lastUsedAt: row.lastUsedAt,
               })),
+            }, { headers: corsHeaders });
+          })
+          .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: corsHeaders }));
+      }
+
+      if (path === "/v1/pairings/bootstrap" && req.method === "POST") {
+        const sourceIp = extractClientIp(req);
+        const blocked = enforceRateLimit(req, "manager:pairings-bootstrap", {
+          windowMs: 60_000,
+          perIp: 240,
+          perSubnet: 1200,
+        });
+        if (blocked) return blocked;
+
+        return req
+          .json()
+          .then((body: { phoneId?: string; allowServerFallback?: boolean }) => {
+            const phoneId = (body.phoneId || "").trim();
+            const allowServerFallback = body.allowServerFallback === true;
+            if (!phoneId) {
+              return Response.json({ error: "phoneId is required" }, { status: 400, headers: corsHeaders });
+            }
+
+            const now = Date.now();
+            const pairing = getLatestPairingByPhoneStmt.get(phoneId) as any;
+            const snapshot = buildPairingSnapshot(pairing);
+            if (!snapshot.valid && allowServerFallback) {
+              const fallback = resolveLatestServerBootstrapSession(now);
+              if (fallback) {
+                writeAuditLog({
+                  actorType: "public",
+                  actorId: phoneId,
+                  action: "pairing.bootstrap",
+                  targetType: "session",
+                  targetId: String(fallback.snapshot.sessionId || "latest").slice(0, 32),
+                  sourceIp,
+                  status: "ok",
+                  message: "latest server session resolved",
+                  metadata: {
+                    state: fallback.snapshot.state ?? null,
+                    sessionId: fallback.snapshot.sessionId ?? null,
+                  },
+                });
+                return Response.json({
+                  secret: fallback.snapshot.resumeToken,
+                  hostname: "Latest Server Session",
+                  root: "Direct server entry",
+                  phoneId,
+                  pairedAt: null,
+                  lastUsedAt: now,
+                }, { headers: corsHeaders });
+              }
+            }
+            if (!snapshot.exists) {
+              writeAuditLog({
+                actorType: "public",
+                actorId: phoneId,
+                action: "pairing.bootstrap",
+                targetType: "pairing_scope",
+                targetId: "latest",
+                sourceIp,
+                status: "error",
+                message: "pairing not found",
+              });
+              return Response.json({ error: "pairing not found", reason: "not_found" }, { status: 404, headers: corsHeaders });
+            }
+            if (!snapshot.valid) {
+              const status = snapshot.reason === "no_healthy_gateways" ? 503 : 404;
+              writeAuditLog({
+                actorType: "public",
+                actorId: phoneId,
+                action: "pairing.bootstrap",
+                targetType: "pairing_scope",
+                targetId: String(pairing?.secret || "").slice(0, 12) || "latest",
+                sourceIp,
+                status: "error",
+                message: `pairing bootstrap rejected: ${snapshot.reason}`,
+              });
+              return Response.json(
+                { error: "pairing unavailable", reason: snapshot.reason },
+                { status, headers: corsHeaders }
+              );
+            }
+
+            updatePairingTouchStmt.run(pairing.secret, pairing.hostname, now);
+            writeAuditLog({
+              actorType: "public",
+              actorId: phoneId,
+              action: "pairing.bootstrap",
+              targetType: "pairing",
+              targetId: String(pairing.secret || "").slice(0, 12),
+              sourceIp,
+              status: "ok",
+              message: "latest pairing resolved",
+              metadata: {
+                pcId: pairing.pcId,
+                root: pairing.root,
+                hostname: pairing.hostname,
+              },
+            });
+            return Response.json({
+              secret: pairing.secret,
+              hostname: pairing.hostname,
+              root: pairing.root,
+              phoneId: pairing.phoneId,
+              pairedAt: pairing.pairedAt,
+              lastUsedAt: now,
             }, { headers: corsHeaders });
           })
           .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: corsHeaders }));
@@ -3489,7 +4111,7 @@ function startManager(): void {
         }
 
         const upgraded = server.upgrade(req, {
-          data: { type: "manager-control", authed: false } as ManagerControlSocketData,
+          data: { type: "manager-control", authed: false },
         });
         if (!upgraded) {
           return Response.json({ error: "upgrade failed" }, { status: 500, headers: corsHeaders });
@@ -3555,7 +4177,7 @@ function startManager(): void {
               jti: randomUUID(),
             };
             console.log(`[admin] login success (ip=${sourceIp})`);
-            const token = signJwtToken(claims, managerAdminTokenSecret);
+            const token = signJwtToken(claims as unknown as Record<string, unknown>, managerAdminTokenSecret);
             writeAuditLog({
               actorType: "admin",
               actorId: "admin",
@@ -3859,23 +4481,62 @@ function startManager(): void {
           void assembleMutex.runExclusive(() => {
             const session = assembleSessionsByCode.get(assembleData.code);
             if (!session || session.expiresAt <= Date.now()) {
+              logAssembleEvent("socket open rejected expired or missing session", {
+                traceId: assembleData.traceId ?? null,
+                code: assembleData.code,
+                role: assembleData.role,
+                sourceIp: assembleData.sourceIp ?? "unknown",
+                userAgent: assembleData.userAgent ?? "unknown",
+              });
               ws.close(1008, "code expired");
               return;
             }
             if (assembleData.role === "app") {
-              session.appWs = ws as ServerWebSocket<AssembleWebSocketData>;
+              if (session.appWs && session.appWs !== ws) {
+                clearAssembleRolePending(session, "app");
+                logAssembleEvent("socket open rejected duplicate app connection", {
+                  traceId: session.traceId,
+                  code: assembleData.code,
+                  role: assembleData.role,
+                  sourceIp: assembleData.sourceIp ?? "unknown",
+                  userAgent: assembleData.userAgent ?? "unknown",
+                  session: getAssembleSessionSnapshot(session),
+                });
+                ws.close(1008, "app already connected");
+                return;
+              }
+              session.appWs = ws;
+              clearAssembleRolePending(session, "app");
             } else {
-              session.cliWs = ws as ServerWebSocket<AssembleWebSocketData>;
+              if (session.cliWs && session.cliWs !== ws) {
+                clearAssembleRolePending(session, "cli");
+                logAssembleEvent("socket open rejected duplicate cli connection", {
+                  traceId: session.traceId,
+                  code: assembleData.code,
+                  role: assembleData.role,
+                  sourceIp: assembleData.sourceIp ?? "unknown",
+                  userAgent: assembleData.userAgent ?? "unknown",
+                  session: getAssembleSessionSnapshot(session),
+                });
+                ws.close(1008, "cli already connected");
+                return;
+              }
+              session.cliWs = ws;
+              clearAssembleRolePending(session, "cli");
             }
+            logAssembleEvent("socket opened", {
+              traceId: session.traceId,
+              code: assembleData.code,
+              role: assembleData.role,
+              sourceIp: assembleData.sourceIp ?? "unknown",
+              userAgent: assembleData.userAgent ?? "unknown",
+              pendingForMs: typeof assembleData.requestedAt === "number" ? Math.max(0, Date.now() - assembleData.requestedAt) : null,
+              session: getAssembleSessionSnapshot(session),
+            });
             maybeIssueAssemblePassword(session);
           });
           return;
         }
-
-        (ws.data as ManagerControlSocketData) = {
-          type: "manager-control",
-          authed: false,
-        };
       },
       close(ws, _code, reason) {
         const socketData = (ws.data || {}) as Partial<WebSocketData | ManagerControlSocketData>;
@@ -3883,7 +4544,18 @@ function startManager(): void {
           const assembleData = socketData as AssembleWebSocketData;
           void assembleMutex.runExclusive(() => {
             const session = assembleSessionsByCode.get(assembleData.code);
-            if (!session) return;
+            if (!session) {
+              logAssembleEvent("socket closed after session missing", {
+                traceId: assembleData.traceId ?? null,
+                code: assembleData.code,
+                role: assembleData.role,
+                reason: typeof reason === "string" ? reason : null,
+                sourceIp: assembleData.sourceIp ?? "unknown",
+                userAgent: assembleData.userAgent ?? "unknown",
+              });
+              return;
+            }
+            clearAssembleRolePending(session, assembleData.role);
             const completed = session.appAcked && session.cliAcked;
             if (assembleData.role === "app" && session.appWs === ws) {
               session.appWs = null;
@@ -3891,6 +4563,16 @@ function startManager(): void {
             if (assembleData.role === "cli" && session.cliWs === ws) {
               session.cliWs = null;
             }
+            logAssembleEvent("socket closed", {
+              traceId: session.traceId,
+              code: assembleData.code,
+              role: assembleData.role,
+              reason: typeof reason === "string" ? reason : null,
+              sourceIp: assembleData.sourceIp ?? "unknown",
+              userAgent: assembleData.userAgent ?? "unknown",
+              completedBeforeClose: completed,
+              session: getAssembleSessionSnapshot(session),
+            });
             if (!completed) {
               try {
                 session.appWs?.close(1000, "assemble cancelled");
@@ -3902,6 +4584,13 @@ function startManager(): void {
               } catch {
                 // ignore
               }
+              logAssembleEvent("session cancelled due to premature socket close", {
+                traceId: session.traceId,
+                code: assembleData.code,
+                role: assembleData.role,
+                reason: typeof reason === "string" ? reason : null,
+                session: getAssembleSessionSnapshot(session),
+              });
             }
             assembleSessionsByCode.delete(assembleData.code);
           });
@@ -3929,15 +4618,30 @@ function startManager(): void {
           const socketData = (ws.data || {}) as Partial<WebSocketData | ManagerControlSocketData>;
           if (socketData.type === "assemble") {
             const assembleData = socketData as AssembleWebSocketData;
-            const raw = typeof message === "string" ? message : Buffer.from(message as ArrayBuffer).toString("utf-8");
+            const raw = typeof message === "string" ? message : Buffer.from(message).toString("utf-8");
             const parsed = JSON.parse(raw) as { type?: string };
             if (parsed.type !== "ack") {
+              logAssembleEvent("socket message rejected non-ack payload", {
+                traceId: assembleData.traceId ?? null,
+                code: assembleData.code,
+                role: assembleData.role,
+                sourceIp: assembleData.sourceIp ?? "unknown",
+                userAgent: assembleData.userAgent ?? "unknown",
+                rawPreview: raw.slice(0, 120),
+              });
               ws.close(1008, "ack required");
               return;
             }
             void assembleMutex.runExclusive(() => {
               const session = assembleSessionsByCode.get(assembleData.code);
               if (!session || !session.password) {
+                logAssembleEvent("socket ack rejected session not ready", {
+                  traceId: assembleData.traceId ?? null,
+                  code: assembleData.code,
+                  role: assembleData.role,
+                  sourceIp: assembleData.sourceIp ?? "unknown",
+                  userAgent: assembleData.userAgent ?? "unknown",
+                });
                 ws.close(1008, "session not ready");
                 return;
               }
@@ -3946,13 +4650,21 @@ function startManager(): void {
               } else {
                 session.cliAcked = true;
               }
+              logAssembleEvent("ack received", {
+                traceId: session.traceId,
+                code: assembleData.code,
+                role: assembleData.role,
+                sourceIp: assembleData.sourceIp ?? "unknown",
+                userAgent: assembleData.userAgent ?? "unknown",
+                session: getAssembleSessionSnapshot(session),
+              });
               maybeCompleteAssembleSession(session);
             });
             return;
           }
 
           const controlSocketData = socketData as Partial<ManagerControlSocketData>;
-          const raw = typeof message === "string" ? message : Buffer.from(message as ArrayBuffer).toString("utf-8");
+          const raw = typeof message === "string" ? message : Buffer.from(message).toString("utf-8");
           const event = JSON.parse(raw) as GatewayControlEvent;
           if (!controlSocketData.authed) {
             if (event.type === "gateway_auth" && event.password) {
@@ -3961,12 +4673,16 @@ function startManager(): void {
               const proxyRow = gateway ? getProxyPasswordStmt.get(gateway) as { password: string } | null : null;
               const storedPassword = proxyRow?.password || "";
               if (gateway && storedPassword && event.password === storedPassword) {
-                (ws.data as ManagerControlSocketData).authed = true;
-                (ws.data as ManagerControlSocketData).gatewayId = gatewayId || gateway;
-                (ws.data as ManagerControlSocketData).gatewayUrl = gateway;
+                if (ws.data.type !== "manager-control") {
+                  ws.close(1011, "invalid websocket state");
+                  return;
+                }
+                ws.data.authed = true;
+                ws.data.gatewayId = gatewayId || gateway;
+                ws.data.gatewayUrl = gateway;
                 attachGatewayControlSocket(
                   gateway,
-                  ws as ServerWebSocket<ManagerControlSocketData>
+                  ws
                 );
                 // Send current ring immediately so this proxy doesn't need to wait for next gateway_hello
                 try {
@@ -4255,9 +4971,9 @@ function startManager(): void {
   });
 
   const configuredCount = configured.length;
-  console.log(`[manager] started — port=${process.env.PORT || 8899}`);
+  console.log(`[manager] started — host=${managerBindHost || "0.0.0.0"} port=${managerPort} cors=${corsHeaders["Access-Control-Allow-Origin"]}`);
   if (configuredCount > 0) console.log(`[manager] ${configuredCount} proxy(ies) loaded from PROXIES env`);
-  console.log(`[manager] admin UI at http://localhost:${process.env.PORT || 8899}`);
+  console.log(`[manager] admin UI at http://localhost:${managerPort}`);
 }
 
 startManager();

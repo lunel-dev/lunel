@@ -920,7 +920,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             </TouchableOpacity>
             <MenuView
               shouldOpenOnLongPress={false}
-              preferredMenuAnchorPosition="bottom"
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === 'new-file') {
                   setCreateType('file'); setNewName(''); setShowCreateModal(true);
@@ -1047,7 +1046,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           )}
           <FlashList
             data={loading || error ? [] : currentItems}
-            estimatedItemSize={44}
             ListEmptyComponent={null}
             ItemSeparatorComponent={null}
             contentContainerStyle={{ paddingTop: spacing[2], paddingBottom: spacing[6] }}
@@ -1438,7 +1436,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             backgroundColor: colors.bg.raised,
             borderRadius: radius["2xl"],
             borderWidth: 0.5,
-            borderColor: colors.border.default,
+            borderColor: colors.border.main,
             overflow: 'hidden',
             paddingBottom: spacing[6],
             paddingHorizontal: spacing[4],

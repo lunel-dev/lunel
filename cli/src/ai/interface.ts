@@ -42,9 +42,22 @@ export interface ShareInfo {
   [key: string]: unknown;
 }
 
+export interface AiBackendCapabilities {
+  setAuth: boolean;
+  command: boolean;
+  revert: boolean;
+  unrevert: boolean;
+  share: boolean;
+  permissionReply: boolean;
+  questionReply: boolean;
+  questionReject: boolean;
+  fileAttachments: boolean;
+}
+
 export interface ProviderInfo {
   providers: unknown[];
   default: Record<string, string>;
+  capabilities?: AiBackendCapabilities;
   [key: string]: unknown;
 }
 
@@ -53,6 +66,8 @@ export interface ProviderInfo {
  * Method names map 1-to-1 with the "ai" namespace actions in index.ts.
  */
 export interface AIProvider {
+  readonly capabilities: AiBackendCapabilities;
+
   // Lifecycle
   init(): Promise<void>;
   destroy(): Promise<void>;

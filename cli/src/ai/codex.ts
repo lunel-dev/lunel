@@ -4,10 +4,12 @@
 
 import * as crypto from "crypto";
 import * as path from "path";
-import { spawn, ChildProcess } from "child_process";
+import { spawn, spawnSync, ChildProcess } from "child_process";
 import { createInterface } from "readline";
+import { assertCliCommandReady, resolveCliCommand } from "./command-resolution.js";
 import type {
   AIProvider,
+  AiBackendCapabilities,
   AiEventEmitter,
   CodexPromptOptions,
   FileAttachment,
@@ -123,6 +125,19 @@ function joinStreamingText(previousText: string, nextChunk: string): string {
 }
 
 export class CodexProvider implements AIProvider {
+  readonly capabilities: AiBackendCapabilities = {
+    setAuth: false,
+    command: false,
+    revert: false,
+    unrevert: false,
+    share: false,
+    permissionReply: true,
+    questionReply: false,
+    questionReject: false,
+    fileAttachments: true,
+  };
+
+  private readonly codexCommand = resolveCliCommand("codex");
   private proc: ChildProcess | null = null;
   private shuttingDown = false;
   private emitter: AiEventEmitter | null = null;
@@ -139,14 +154,49 @@ export class CodexProvider implements AIProvider {
   private assistantMessageIdByTurnId = new Map<string, string>();
   private partTextById = new Map<string, string>();
 
+  private ensureCodexPreflight(): string {
+    const inspection = assertCliCommandReady("codex");
+    const probe = spawnSync(inspection.executable, ["--version"], {
+      encoding: "utf8",
+      env: process.env,
+      shell: process.platform === "win32",
+      windowsHide: true,
+    });
+    const error = probe.error as NodeJS.ErrnoException | undefined;
+    if (error) {
+      throw Object.assign(new Error(`${inspection.displayName} runtime could not be executed: ${inspection.executable}`), {
+        code: (error.code === "ENOENT" || error.code === "ENOTDIR")
+          ? "EAI_MISSING_BINARY"
+          : "EAI_BINARY_NOT_EXECUTABLE",
+      });
+    }
+
+    if (probe.status !== 0) {
+      const detail = `${probe.stderr || ""}\n${probe.stdout || ""}`.trim();
+      throw Object.assign(
+        new Error(detail ? `${inspection.displayName} runtime check failed: ${detail}` : `${inspection.displayName} runtime check failed.`),
+        { code: "EAI_BINARY_NOT_EXECUTABLE" },
+      );
+    }
+
+    const version = (probe.stdout || probe.stderr || inspection.version || "").trim();
+    if (!version) {
+      throw Object.assign(new Error("Codex CLI did not return a version"), {
+        code: "EAI_BINARY_NOT_EXECUTABLE",
+      });
+    }
+    return version;
+  }
+
   async init(): Promise<void> {
-    if (DEBUG_MODE) console.log("Starting Codex app-server...");
+    const version = this.ensureCodexPreflight();
+    if (DEBUG_MODE) console.log(`Starting Codex app-server using ${this.codexCommand} (${version})...`);
 
     const windowsSpawnOptions = process.platform === "win32"
       ? { shell: true as const }
       : {};
 
-    this.proc = spawn("codex", ["app-server"], {
+    this.proc = spawn(this.codexCommand, ["app-server"], {
       stdio: ["pipe", "pipe", "inherit"],
       env: process.env,
       ...windowsSpawnOptions,

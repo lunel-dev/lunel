@@ -145,16 +145,58 @@ export function decodeV2BinaryFrame(data: Uint8Array): { type: number; payload: 
   };
 }
 
+function isPrivateDevelopmentHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1") {
+    return true;
+  }
+
+  const octets = normalized.split(".");
+  if (octets.length !== 4 || octets.some((part) => !/^\d+$/.test(part))) {
+    return false;
+  }
+
+  const numbers = octets.map((part) => Number(part));
+  if (numbers.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+
+  return (
+    numbers[0] === 10 ||
+    (numbers[0] === 192 && numbers[1] === 168) ||
+    (numbers[0] === 172 && numbers[1] >= 16 && numbers[1] <= 31)
+  );
+}
+
+function toWebSocketBaseUrl(gatewayUrl: string): string {
+  const parsed = new URL(gatewayUrl);
+  let protocol: "ws:" | "wss:";
+  switch (parsed.protocol) {
+    case "https:":
+    case "wss:":
+      protocol = "wss:";
+      break;
+    case "http:":
+    case "ws:":
+      if (!isPrivateDevelopmentHostname(parsed.hostname)) {
+        throw new Error("Gateway URL must use https://, except localhost or private LAN IPs may use http://");
+      }
+      protocol = "ws:";
+      break;
+    default:
+      throw new Error("Gateway URL must use https://, except localhost or private LAN IPs may use http://");
+  }
+  const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
+  return `${protocol}//${parsed.host}${path}`;
+}
+
 export function buildSessionV2WsUrl(
   gatewayUrl: string,
   role: "cli" | "app",
   password: string,
   generation?: number | null,
 ): string {
-  const wsBase = gatewayUrl.replace(/^https:/, "wss:");
-  if (!wsBase.startsWith("wss://")) {
-    throw new Error("Gateway URL must use https://");
-  }
+  const wsBase = toWebSocketBaseUrl(gatewayUrl);
   const query = new URLSearchParams({ password });
   if (typeof generation === "number" && Number.isFinite(generation) && generation > 0) {
     query.set("generation", String(generation));

@@ -1,11 +1,16 @@
 .SUFFIXES:
-.PHONY: help install dev build lint \
+.PHONY: help install dev build check lint \
+    local-start local-start-fresh local-status local-stop local-restart \
     app-install app-start app-android app-ios app-web app-lint \
-    cli-install cli-build cli-dev \
-    manager-install manager-dev manager-start \
-    proxy-install proxy-dev proxy-start \
+    cli-install cli-build cli-check cli-dev \
+    manager-install manager-check manager-dev manager-start \
+    proxy-install proxy-check proxy-dev proxy-start \
     sandman-build sandman-run sandman-test sandman-tidy \
     pty-build pty-dev
+
+SANDMAN_DIR := $(wildcard sandman)
+PWSH ?= pwsh
+LOCAL_DEV_SCRIPT := ./scripts/local-dev.ps1
 
 # ─── Help ──────────────────────────────────────────────────────────
 
@@ -13,10 +18,18 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Top-level"
-	@echo "  install            Install deps for app + cli + gateway + sandman"
+	@echo "  install            Install deps for app + cli + gateway components"
 	@echo "  dev                Start gateway + app dev servers in parallel"
-	@echo "  build              Build cli + sandman"
+	@echo "  build              Build cli + pty"
+	@echo "  check              Validate cli + manager + proxy"
 	@echo "  lint               Lint app"
+	@echo ""
+	@echo "Local Dev  (Windows loopback manager + proxy)"
+	@echo "  local-start        Start local manager + proxy"
+	@echo "  local-start-fresh  Start local stack with fresh manager DB"
+	@echo "  local-status       Show local stack status"
+	@echo "  local-stop         Stop local manager + proxy"
+	@echo "  local-restart      Restart local manager + proxy"
 	@echo ""
 	@echo "App        (Expo / React Native)"
 	@echo "  app-install        npm install"
@@ -29,15 +42,18 @@ help:
 	@echo "CLI        (Node + TypeScript)"
 	@echo "  cli-install        npm install"
 	@echo "  cli-build          tsc compile"
+	@echo "  cli-check          Type-check without emitting"
 	@echo "  cli-dev            Build + run"
 	@echo ""
 	@echo "Manager    (Bun session control plane)"
 	@echo "  manager-install    bun install"
+	@echo "  manager-check      Type-check manager sources"
 	@echo "  manager-dev        Dev server with --watch"
 	@echo "  manager-start      Production start"
 	@echo ""
 	@echo "Proxy      (Bun WebSocket relay)"
 	@echo "  proxy-install      bun install"
+	@echo "  proxy-check        Type-check proxy sources"
 	@echo "  proxy-dev          Dev server with --watch"
 	@echo "  proxy-start        Production start"
 	@echo ""
@@ -55,16 +71,33 @@ help:
 
 # ─── Top-level ─────────────────────────────────────────────────────
 
-install: app-install cli-install manager-install proxy-install sandman-tidy
+install: app-install cli-install manager-install proxy-install $(if $(SANDMAN_DIR),sandman-tidy,)
 
 ## Runs proxy + app dev servers in parallel.
 ## Ctrl-C kills both.
 dev:
 	$(MAKE) -j2 proxy-dev app-start
 
-build: cli-build pty-build sandman-build
+build: cli-build pty-build $(if $(SANDMAN_DIR),sandman-build,)
+
+check: cli-check manager-check proxy-check
 
 lint: app-lint
+
+local-start:
+	$(PWSH) -NoProfile -File $(LOCAL_DEV_SCRIPT) start
+
+local-start-fresh:
+	$(PWSH) -NoProfile -File $(LOCAL_DEV_SCRIPT) start -FreshManager
+
+local-status:
+	$(PWSH) -NoProfile -File $(LOCAL_DEV_SCRIPT) status
+
+local-stop:
+	$(PWSH) -NoProfile -File $(LOCAL_DEV_SCRIPT) stop
+
+local-restart:
+	$(PWSH) -NoProfile -File $(LOCAL_DEV_SCRIPT) restart
 
 # ─── App ───────────────────────────────────────────────────────────
 
@@ -94,6 +127,9 @@ cli-install:
 cli-build:
 	cd cli && npm run build
 
+cli-check:
+	cd cli && npm run check
+
 cli-dev:
 	cd cli && npm run dev
 
@@ -101,6 +137,9 @@ cli-dev:
 
 manager-install:
 	cd manager && bun install
+
+manager-check:
+	cd manager && bun run check
 
 manager-dev:
 	cd manager && bun run dev
@@ -112,6 +151,9 @@ manager-start:
 
 proxy-install:
 	cd proxy && bun install
+
+proxy-check:
+	cd proxy && bun run check
 
 proxy-dev:
 	cd proxy && bun run dev
@@ -129,6 +171,7 @@ pty-dev:
 
 # ─── Sandman ───────────────────────────────────────────────────────
 
+ifneq ($(strip $(SANDMAN_DIR)),)
 sandman-build:
 	cd sandman && go build -o sandman .
 
@@ -140,3 +183,7 @@ sandman-test:
 
 sandman-tidy:
 	cd sandman && go mod tidy
+else
+sandman-build sandman-run sandman-test sandman-tidy:
+	@echo "sandman/ not present; skipping $@"
+endif

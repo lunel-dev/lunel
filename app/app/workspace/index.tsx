@@ -143,7 +143,7 @@ export default function WorkspaceScreen() {
               paddingVertical: 14,
               backgroundColor: colors.bg.raised,
               borderWidth: 1,
-              borderColor: colors.border.default,
+              borderColor: colors.border.main,
               alignItems: "center",
               gap: 8,
             }}

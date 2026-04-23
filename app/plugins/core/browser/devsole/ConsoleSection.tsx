@@ -412,7 +412,6 @@ export default function ConsoleSection({
             data={filteredEntries}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => <ConsoleRow item={item} />}
-            estimatedItemSize={72}
             contentContainerStyle={{ paddingBottom: 8 }}
             ItemSeparatorComponent={() => (
               <View

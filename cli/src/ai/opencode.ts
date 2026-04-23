@@ -5,6 +5,7 @@ import * as crypto from "crypto";
 import { createOpencodeServer, createOpencodeClient } from "@opencode-ai/sdk";
 import type {
   AIProvider,
+  AiBackendCapabilities,
   AiEventEmitter,
   CodexPromptOptions,
   FileAttachment,
@@ -301,6 +302,18 @@ function normalizeOpenCodeEvent(event: { type: string; properties: Record<string
 }
 
 export class OpenCodeProvider implements AIProvider {
+  readonly capabilities: AiBackendCapabilities = {
+    setAuth: true,
+    command: true,
+    revert: true,
+    unrevert: true,
+    share: true,
+    permissionReply: true,
+    questionReply: true,
+    questionReject: true,
+    fileAttachments: true,
+  };
+
   private client: ReturnType<typeof createOpencodeClient> | null = null;
   private server: Awaited<ReturnType<typeof createOpencodeServer>> | null = null;
   private authHeader: string | null = null;
