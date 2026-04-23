@@ -9,6 +9,7 @@ import { createInterface } from "readline";
 import { assertCliCommandReady, resolveCliCommand } from "./command-resolution.js";
 import type {
   AIProvider,
+  AiBackendCapabilities,
   AiEventEmitter,
   CodexPromptOptions,
   FileAttachment,
@@ -124,6 +125,18 @@ function joinStreamingText(previousText: string, nextChunk: string): string {
 }
 
 export class CodexProvider implements AIProvider {
+  readonly capabilities: AiBackendCapabilities = {
+    setAuth: false,
+    command: false,
+    revert: false,
+    unrevert: false,
+    share: false,
+    permissionReply: true,
+    questionReply: false,
+    questionReject: false,
+    fileAttachments: true,
+  };
+
   private readonly codexCommand = resolveCliCommand("codex");
   private proc: ChildProcess | null = null;
   private shuttingDown = false;

@@ -3,7 +3,15 @@
 // skipped gracefully; the available list is exposed to the app.
 
 import { inspectCliCommand, type CliCommandInspection } from "./command-resolution.js";
-import type { AIProvider, AiEvent, AiEventEmitter, ModelSelector, FileAttachment, CodexPromptOptions } from "./interface.js";
+import type {
+  AIProvider,
+  AiBackendCapabilities,
+  AiEvent,
+  AiEventEmitter,
+  ModelSelector,
+  FileAttachment,
+  CodexPromptOptions,
+} from "./interface.js";
 
 export type AiBackend = "opencode" | "codex" | "claude";
 export type AiBackendAvailabilityStatus = "ready" | "missing_binary" | "configured_path_missing" | "not_executable" | "unavailable";
@@ -25,6 +33,45 @@ export interface AiBackendDiagnostic {
 }
 
 const DEBUG_MODE = process.env.LUNEL_DEBUG === "1" || process.env.LUNEL_DEBUG_AI === "1";
+const AI_BACKEND_PRIORITY: AiBackend[] = ["opencode", "codex", "claude"];
+const EMPTY_AI_BACKEND_CAPABILITIES: AiBackendCapabilities = {
+  setAuth: false,
+  command: false,
+  revert: false,
+  unrevert: false,
+  share: false,
+  permissionReply: false,
+  questionReply: false,
+  questionReject: false,
+  fileAttachments: false,
+};
+const AI_CAPABILITY_LABELS: Record<keyof AiBackendCapabilities, string> = {
+  setAuth: "auth configuration",
+  command: "session commands",
+  revert: "undo",
+  unrevert: "redo",
+  share: "session sharing",
+  permissionReply: "permission replies",
+  questionReply: "question replies",
+  questionReject: "question rejection",
+  fileAttachments: "file attachments",
+};
+
+export function isAiBackend(value: unknown): value is AiBackend {
+  return value === "opencode" || value === "codex" || value === "claude";
+}
+
+export function assertAiBackend(value: unknown): AiBackend {
+  if (isAiBackend(value)) return value;
+  throw Object.assign(new Error(`Unknown AI backend "${String(value)}"`), { code: "EINVAL" });
+}
+
+function cloneCapabilities(capabilities?: AiBackendCapabilities): AiBackendCapabilities {
+  return {
+    ...EMPTY_AI_BACKEND_CAPABILITIES,
+    ...(capabilities ?? {}),
+  };
+}
 
 function toRuntimeDiagnostic(inspection: CliCommandInspection): AiBackendDiagnostic {
   return {
@@ -83,6 +130,7 @@ export class AiManager {
       this.tryInit("codex"),
       this.tryInit("claude"),
     ]);
+    this._available = AI_BACKEND_PRIORITY.filter((backend) => Boolean(this._providers[backend]));
     if (this._available.length === 0) {
       console.warn("[ai] No AI backends available. CLI will continue without AI features.");
       return;
@@ -133,12 +181,24 @@ export class AiManager {
     return [...this._available];
   }
 
+  backendCapabilities(): Record<AiBackend, AiBackendCapabilities> {
+    return {
+      opencode: this.getCapabilities("opencode"),
+      codex: this.getCapabilities("codex"),
+      claude: this.getCapabilities("claude"),
+    };
+  }
+
   backendDiagnostics(): Record<AiBackend, AiBackendDiagnostic> {
     return {
       opencode: { ...this._diagnostics.opencode },
       codex: { ...this._diagnostics.codex },
       claude: { ...this._diagnostics.claude },
     };
+  }
+
+  private getCapabilities(backend: AiBackend): AiBackendCapabilities {
+    return cloneCapabilities(this._providers[backend]?.capabilities);
   }
 
   private get(backend: AiBackend): AIProvider {
@@ -150,6 +210,21 @@ export class AiManager {
       });
     }
     return p;
+  }
+
+  private requireCapability(backend: AiBackend, capability: keyof AiBackendCapabilities): AIProvider {
+    const provider = this.get(backend);
+    if (!provider.capabilities[capability]) {
+      throw Object.assign(
+        new Error(`Backend "${backend}" does not support ${AI_CAPABILITY_LABELS[capability]}`),
+        { code: "ENOTSUP" },
+      );
+    }
+    return provider;
+  }
+
+  private defaultMetadataBackend(): AiBackend | undefined {
+    return this._available[0];
   }
 
   // Wire each provider's events to the emitter, tagged with backend name.
@@ -195,58 +270,98 @@ export class AiManager {
     files?: FileAttachment[],
     codexOptions?: CodexPromptOptions,
   ) {
-    this.get(backend).setActiveSession?.(sessionId);
-    return this.get(backend).prompt(sessionId, text, model, agent, files, codexOptions);
+    const provider = this.get(backend);
+    if ((files?.length ?? 0) > 0 && !provider.capabilities.fileAttachments) {
+      throw Object.assign(
+        new Error(`Backend "${backend}" does not support ${AI_CAPABILITY_LABELS.fileAttachments}`),
+        { code: "ENOTSUP" },
+      );
+    }
+    provider.setActiveSession?.(sessionId);
+    return provider.prompt(sessionId, text, model, agent, files, codexOptions);
   }
 
   abort(backend: AiBackend, sessionId: string) { return this.get(backend).abort(sessionId); }
 
   // Metadata — backend is optional, falls back to first available
   async agents(backend?: AiBackend) {
-    const target = backend ?? this._available[0];
+    const target = backend ?? this.defaultMetadataBackend();
     if (!target) {
-      return { agents: [], availability: this.backendDiagnostics() };
+      return {
+        agents: [],
+        availability: this.backendDiagnostics(),
+        capabilities: this.backendCapabilities(),
+      };
     }
     if (!this._providers[target]) {
-      return { agents: [], availability: this._diagnostics[target] };
+      return {
+        agents: [],
+        availability: this._diagnostics[target],
+        capabilities: this.getCapabilities(target),
+      };
     }
-    return await this.get(target).agents();
+    return {
+      ...(await this.get(target).agents()),
+      availability: this._diagnostics[target],
+      capabilities: this.getCapabilities(target),
+    };
   }
 
   async providers(backend?: AiBackend) {
-    const target = backend ?? this._available[0];
+    const target = backend ?? this.defaultMetadataBackend();
     if (!target) {
-      return { providers: [], default: {}, availability: this.backendDiagnostics() };
+      return {
+        providers: [],
+        default: {},
+        availability: this.backendDiagnostics(),
+        capabilities: this.backendCapabilities(),
+      };
     }
     if (!this._providers[target]) {
-      return { providers: [], default: {}, availability: this._diagnostics[target] };
+      return {
+        providers: [],
+        default: {},
+        availability: this._diagnostics[target],
+        capabilities: this.getCapabilities(target),
+      };
     }
     const result = await this.get(target).providers();
     return {
       ...result,
       availability: this._diagnostics[target],
+      capabilities: this.getCapabilities(target),
     };
   }
 
-  setAuth(backend: AiBackend, providerId: string, key: string) { return this.get(backend).setAuth(providerId, key); }
+  setAuth(backend: AiBackend, providerId: string, key: string) {
+    return this.requireCapability(backend, "setAuth").setAuth(providerId, key);
+  }
 
   // Session operations
-  command(backend: AiBackend, sessionId: string, command: string, args: string) { return this.get(backend).command(sessionId, command, args); }
-  revert(backend: AiBackend, sessionId: string, messageId: string) { return this.get(backend).revert(sessionId, messageId); }
-  unrevert(backend: AiBackend, sessionId: string) { return this.get(backend).unrevert(sessionId); }
-  share(backend: AiBackend, sessionId: string) { return this.get(backend).share(sessionId); }
+  command(backend: AiBackend, sessionId: string, command: string, args: string) {
+    return this.requireCapability(backend, "command").command(sessionId, command, args);
+  }
+  revert(backend: AiBackend, sessionId: string, messageId: string) {
+    return this.requireCapability(backend, "revert").revert(sessionId, messageId);
+  }
+  unrevert(backend: AiBackend, sessionId: string) {
+    return this.requireCapability(backend, "unrevert").unrevert(sessionId);
+  }
+  share(backend: AiBackend, sessionId: string) {
+    return this.requireCapability(backend, "share").share(sessionId);
+  }
   permissionReply(backend: AiBackend, sessionId: string, permissionId: string, response: "once" | "always" | "reject") {
-    return this.get(backend).permissionReply(sessionId, permissionId, response);
+    return this.requireCapability(backend, "permissionReply").permissionReply(sessionId, permissionId, response);
   }
   questionReply(backend: AiBackend, sessionId: string, questionId: string, answers: string[][]) {
-    const provider = this.get(backend);
+    const provider = this.requireCapability(backend, "questionReply");
     if (!provider.questionReply) {
       throw new Error(`Backend "${backend}" does not support question replies`);
     }
     return provider.questionReply(sessionId, questionId, answers);
   }
   questionReject(backend: AiBackend, sessionId: string, questionId: string) {
-    const provider = this.get(backend);
+    const provider = this.requireCapability(backend, "questionReject");
     if (!provider.questionReject) {
       throw new Error(`Backend "${backend}" does not support question rejection`);
     }

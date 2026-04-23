@@ -11,6 +11,7 @@ import { createInterface } from "readline";
 import { assertCliCommandReady, resolveCliCommand } from "./command-resolution.js";
 import type {
   AIProvider,
+  AiBackendCapabilities,
   AiEventEmitter,
   CodexPromptOptions,
   FileAttachment,
@@ -241,6 +242,18 @@ async function moveIfExists(sourcePath: string, destinationPath: string): Promis
 }
 
 export class ClaudeProvider implements AIProvider {
+  readonly capabilities: AiBackendCapabilities = {
+    setAuth: false,
+    command: false,
+    revert: false,
+    unrevert: false,
+    share: false,
+    permissionReply: false,
+    questionReply: false,
+    questionReject: false,
+    fileAttachments: false,
+  };
+
   private readonly claudeCommand = resolveCliCommand("claude");
   private emitter: AiEventEmitter | null = null;
   private sessions = new Map<string, ClaudeSession>();

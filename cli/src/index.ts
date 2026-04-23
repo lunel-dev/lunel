@@ -4,7 +4,7 @@ import { WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import shell from "shelljs";
 import { inspectCliCommand, type CliCommandInspection, type CliCommandName } from "./ai/command-resolution.js";
-import { createAiManager } from "./ai/index.js";
+import { assertAiBackend, createAiManager } from "./ai/index.js";
 import type { AiManager, AiBackend } from "./ai/index.js";
 import type { Message, Response } from "./transport/protocol.js";
 import { V2SessionTransport } from "./transport/v2.js";
@@ -50,6 +50,14 @@ const AI_RUNTIME_INSTALL_CANDIDATES: Record<AiBackend, string[]> = {
   codex: ["@openai/codex", "codex"],
   claude: ["@anthropic-ai/claude-code", "claude"],
 };
+
+function resolveRequestedAiBackend(requestedBackend: unknown, fallback?: AiBackend): AiBackend | undefined {
+  if (requestedBackend === undefined || requestedBackend === null || requestedBackend === "") {
+    return fallback;
+  }
+  return assertAiBackend(requestedBackend);
+}
+
 const PTY_RELEASES: Record<string, PtyReleaseTarget> = {
   "linux:x64": {
     fileName: "lunel-pty-linux-x8664-0",
@@ -3143,20 +3151,22 @@ async function processMessage(message: Message): Promise<Response> {
 
       case "ai": {
         if (!aiManager) throw Object.assign(new Error("AI manager not initialized"), { code: "EUNAVAILABLE" });
-        const requestedBackend = payload.backend as string | undefined;
-        const backend = (requestedBackend === "codex" || requestedBackend === "claude"
-          ? requestedBackend
-          : "opencode") as AiBackend;
+        const backend = action === "agents" || action === "providers"
+          ? resolveRequestedAiBackend(payload.backend)
+          : action === "backends" || action === "listSessions"
+            ? undefined
+            : resolveRequestedAiBackend(payload.backend, "opencode");
         switch (action) {
           case "backends":
             result = {
               backends: aiManager.availableBackends(),
               diagnostics: aiManager.backendDiagnostics(),
+              capabilities: aiManager.backendCapabilities(),
             };
             break;
           case "prompt":
             result = await aiManager.prompt(
-              backend,
+              backend as AiBackend,
               payload.sessionId as string,
               payload.text as string,
               payload.model as { providerID: string; modelID: string } | undefined,
@@ -3165,30 +3175,30 @@ async function processMessage(message: Message): Promise<Response> {
               payload.codexOptions as { reasoningEffort?: "low" | "medium" | "high"; speed?: "fast" | "balanced" | "quality"; permissionMode?: "default" | "full-access" } | undefined,
             );
             break;
-          case "createSession":  result = await aiManager.createSession(backend, payload.title as string | undefined); break;
+          case "createSession":  result = await aiManager.createSession(backend as AiBackend, payload.title as string | undefined); break;
           case "listSessions":   result = await aiManager.listAllSessions(); break;
-          case "getSession":     result = await aiManager.getSession(backend, payload.id as string); break;
-          case "deleteSession":  result = await aiManager.deleteSession(backend, payload.id as string); break;
-          case "renameSession":  result = await aiManager.renameSession(backend, payload.id as string, payload.title as string); break;
-          case "getMessages":    result = await aiManager.getMessages(backend, payload.id as string); break;
-          case "abort":          result = await aiManager.abort(backend, payload.sessionId as string); break;
+          case "getSession":     result = await aiManager.getSession(backend as AiBackend, payload.id as string); break;
+          case "deleteSession":  result = await aiManager.deleteSession(backend as AiBackend, payload.id as string); break;
+          case "renameSession":  result = await aiManager.renameSession(backend as AiBackend, payload.id as string, payload.title as string); break;
+          case "getMessages":    result = await aiManager.getMessages(backend as AiBackend, payload.id as string); break;
+          case "abort":          result = await aiManager.abort(backend as AiBackend, payload.sessionId as string); break;
           case "agents":         result = await aiManager.agents(backend); break;
           case "providers":      result = await aiManager.providers(backend); break;
-          case "setAuth":        result = await aiManager.setAuth(backend, payload.providerId as string, payload.key as string); break;
-          case "command":        result = await aiManager.command(backend, payload.sessionId as string, payload.command as string, (payload.arguments as string) || ""); break;
-          case "revert":         result = await aiManager.revert(backend, payload.sessionId as string, payload.messageId as string); break;
-          case "unrevert":       result = await aiManager.unrevert(backend, payload.sessionId as string); break;
-          case "share":          result = await aiManager.share(backend, payload.sessionId as string); break;
+          case "setAuth":        result = await aiManager.setAuth(backend as AiBackend, payload.providerId as string, payload.key as string); break;
+          case "command":        result = await aiManager.command(backend as AiBackend, payload.sessionId as string, payload.command as string, (payload.arguments as string) || ""); break;
+          case "revert":         result = await aiManager.revert(backend as AiBackend, payload.sessionId as string, payload.messageId as string); break;
+          case "unrevert":       result = await aiManager.unrevert(backend as AiBackend, payload.sessionId as string); break;
+          case "share":          result = await aiManager.share(backend as AiBackend, payload.sessionId as string); break;
           case "permission": {
             const r = payload.response as string | undefined;
             const permResp: "once" | "always" | "reject" =
               r === "once" || r === "always" || r === "reject" ? r : (payload.approved ? "once" : "reject");
-            result = await aiManager.permissionReply(backend, payload.sessionId as string, payload.permissionId as string, permResp);
+            result = await aiManager.permissionReply(backend as AiBackend, payload.sessionId as string, payload.permissionId as string, permResp);
             break;
           }
           case "questionReply":
             result = await aiManager.questionReply(
-              backend,
+              backend as AiBackend,
               payload.sessionId as string,
               payload.questionId as string,
               (payload.answers as string[][]) || [],
@@ -3196,7 +3206,7 @@ async function processMessage(message: Message): Promise<Response> {
             break;
           case "questionReject":
             result = await aiManager.questionReject(
-              backend,
+              backend as AiBackend,
               payload.sessionId as string,
               payload.questionId as string,
             );

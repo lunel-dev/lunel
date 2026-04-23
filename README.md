@@ -247,6 +247,7 @@ Optional deployment hardening:
 - `MANAGER_CORS_ALLOW_ORIGIN` / `PROXY_CORS_ALLOW_ORIGIN`: replace the default `*` CORS origin with a fixed browser origin
 - `MANAGER_ADMIN_TOKEN_SECRET` or `MANAGER_ADMIN_TOKEN_SECRET_PATH`: keep admin JWT signing separate from the login password
 - `npm run check:servers`: run the current `manager` + `proxy` TypeScript checks from the repo root
+- `npm run check:cli`: run the current CLI TypeScript check from the repo root
 
 To point the CLI at the local stack:
 

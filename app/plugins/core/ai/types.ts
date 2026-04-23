@@ -2,6 +2,30 @@
 
 export type AiBackend = "opencode" | "codex";
 
+export interface AIBackendCapabilities {
+  setAuth: boolean;
+  command: boolean;
+  revert: boolean;
+  unrevert: boolean;
+  share: boolean;
+  permissionReply: boolean;
+  questionReply: boolean;
+  questionReject: boolean;
+  fileAttachments: boolean;
+}
+
+export const DEFAULT_AI_BACKEND_CAPABILITIES: AIBackendCapabilities = {
+  setAuth: false,
+  command: false,
+  revert: false,
+  unrevert: false,
+  share: false,
+  permissionReply: false,
+  questionReply: false,
+  questionReject: false,
+  fileAttachments: false,
+};
+
 export interface AIEvent {
   type: string;
   properties: Record<string, unknown>;
@@ -49,6 +73,7 @@ export interface AIProvider {
   id: string;
   name: string;
   models: Record<string, AIModel>;
+  capabilities?: AIBackendCapabilities;
 }
 
 export interface AIPart {
