@@ -669,6 +669,36 @@ async function loadGitignore(dirPath: string): Promise<IgnoreInstance> {
   return ig;
 }
 
+const KNOWN_BINARY_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".avif", ".ico", ".icns", ".heic", ".heif", ".tiff", ".tif",
+  ".psd", ".ai", ".eps",
+  ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac",
+  ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".m4v",
+  ".pdf", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".tar",
+  ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".o", ".obj", ".a", ".lib",
+  ".ttf", ".otf", ".woff", ".woff2", ".eot",
+]);
+
+function isLikelyBinaryContent(content: Buffer): boolean {
+  if (content.length === 0) return false;
+
+  const sample = content.subarray(0, Math.min(content.length, 8192));
+  let suspicious = 0;
+
+  for (const byte of sample) {
+    if (byte === 0) return true; // Null bytes strongly indicate binary data.
+    if (byte < 7 || (byte > 13 && byte < 32)) suspicious += 1;
+  }
+
+  return suspicious / sample.length > 0.3;
+}
+
+function shouldSkipAsBinary(filePath: string, content: Buffer): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  if (KNOWN_BINARY_EXTENSIONS.has(ext)) return true;
+  return isLikelyBinaryContent(content);
+}
+
 async function handleFsGrep(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const reqPath = (payload.path as string) || ".";
   const pattern = payload.pattern as string;
@@ -694,13 +724,13 @@ async function handleFsGrep(payload: Record<string, unknown>): Promise<Record<st
       if (matches.length >= maxResults) return;
 
       try {
-        const grepResult = shell.grep(regex, filePath);
-        if (grepResult.code !== 0 || !grepResult.stdout.trim()) {
+        const rawContent = await fs.readFile(filePath);
+        if (shouldSkipAsBinary(relativePath, rawContent)) {
           regex.lastIndex = 0;
           return;
         }
 
-        const content = await fs.readFile(filePath, "utf-8");
+        const content = rawContent.toString("utf-8");
         const lines = content.split("\n");
 
         for (let i = 0; i < lines.length && matches.length < maxResults; i++) {

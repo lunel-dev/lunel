@@ -22,10 +22,14 @@ import {
   CloudOff,
   X,
   ArrowLeft,
+  ArrowLeftRight,
+  ListTree,
   Search,
   Settings2,
+  CaseSensitive,
   ChevronRight,
   FileText,
+  FileCode2,
   Folder,
   FolderOpen,
   RefreshCw,
@@ -46,7 +50,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { typography } from '@/constants/themes';
 import * as Clipboard from 'expo-clipboard';
 import { useConnection } from '@/contexts/ConnectionContext';
-import { useApi, FileEntry, ApiError } from '@/hooks/useApi';
+import { useApi, FileEntry, ApiError, GrepMatch } from '@/hooks/useApi';
 import { gPI, innerApi } from '@/plugins';
 import { usePlugins } from '@/plugins/context';
 import { PluginPanelProps } from '../../types';
@@ -54,7 +58,31 @@ import { resolveMaterialIconUri } from './materialIconTheme';
 
 type SortOption = 'name' | 'size' | 'modified';
 type FilterOption = 'all' | 'files' | 'folders';
+type SearchMode = 'files' | 'codebase';
 type ExplorerListItem = FileEntry & { __navParent?: boolean };
+interface GroupedMatch {
+  file: string;
+  matches: GrepMatch[];
+}
+interface FileSearchResult {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+}
+type CodeTokenKind =
+  | 'plain'
+  | 'keyword'
+  | 'string'
+  | 'number'
+  | 'comment'
+  | 'function'
+  | 'type'
+  | 'operator'
+  | 'punctuation';
+interface CodeToken {
+  text: string;
+  kind: CodeTokenKind;
+}
 
 // Helper functions (moved outside component to avoid re-creation)
 const formatFileSize = (bytes?: number) => {
@@ -76,6 +104,98 @@ const formatTime = (mtime?: number) => {
   if (days < 7) return `${days}d ago`;
   return date.toLocaleDateString();
 };
+
+function groupMatchesByFile(matches: GrepMatch[]): GroupedMatch[] {
+  const groups: GroupedMatch[] = [];
+  for (const match of matches) {
+    const existing = groups[groups.length - 1];
+    if (existing && existing.file === match.file) {
+      existing.matches.push(match);
+      continue;
+    }
+    groups.push({ file: match.file, matches: [match] });
+  }
+  return groups;
+}
+
+function getHighlightedParts(content: string, query: string, caseSensitive: boolean) {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return [{ text: content, highlighted: false }];
+
+  const source = caseSensitive ? content : content.toLowerCase();
+  const needle = caseSensitive ? trimmedQuery : trimmedQuery.toLowerCase();
+  const parts: { text: string; highlighted: boolean }[] = [];
+  let startIndex = 0;
+
+  while (startIndex < content.length) {
+    const matchIndex = source.indexOf(needle, startIndex);
+    if (matchIndex === -1) {
+      parts.push({ text: content.slice(startIndex), highlighted: false });
+      break;
+    }
+
+    if (matchIndex > startIndex) {
+      parts.push({ text: content.slice(startIndex, matchIndex), highlighted: false });
+    }
+
+    parts.push({
+      text: content.slice(matchIndex, matchIndex + trimmedQuery.length),
+      highlighted: true,
+    });
+    startIndex = matchIndex + trimmedQuery.length;
+  }
+
+  return parts;
+}
+
+function tokenizeCodeLine(content: string, filePath: string): CodeToken[] {
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+  const hashCommentLangs = new Set(['py', 'rb', 'sh', 'bash', 'zsh', 'yml', 'yaml', 'toml', 'ini', 'env']);
+  const keywordPattern = '\\b(?:const|let|var|function|return|if|else|for|while|do|import|from|export|default|class|new|try|catch|finally|throw|await|async|interface|type|extends|implements|public|private|protected|static|switch|case|break|continue|null|undefined|true|false|def|lambda|pass|in|and|or|not|while|with|as|yield|enum|package|namespace|using|void|int|string|boolean|number|any|unknown)\\b';
+  const numberPattern = '\\b\\d+(?:\\.\\d+)?\\b';
+  const stringPattern = '"(?:\\\\.|[^"\\\\])*"|\'(?:\\\\.|[^\'\\\\])*\'|`(?:\\\\.|[^`\\\\])*`';
+  const functionPattern = '\\b[A-Za-z_][A-Za-z0-9_]*\\s*(?=\\()';
+  const typePattern = '\\b[A-Z][A-Za-z0-9_]*\\b';
+  const operatorPattern = '(?:===|!==|==|!=|<=|>=|=>|\\+\\+|--|&&|\\|\\||[+\\-*/%=&|!<>?:])';
+  const punctuationPattern = '[(){}\\[\\].,;]';
+  const commentPattern = hashCommentLangs.has(ext) ? '#.*$' : '//.*$|/\\*.*\\*/';
+  const tokenRegex = new RegExp(
+    `(${commentPattern}|${stringPattern}|${functionPattern}|${typePattern}|${keywordPattern}|${numberPattern}|${operatorPattern}|${punctuationPattern})`,
+    'gi'
+  );
+
+  const tokens: CodeToken[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(content)) !== null) {
+    const matchText = match[0];
+    const start = match.index;
+    if (start > lastIndex) {
+      tokens.push({ text: content.slice(lastIndex, start), kind: 'plain' });
+    }
+
+    let kind: CodeTokenKind = 'plain';
+    if (/^(\/\/|\/\*|#)/.test(matchText)) kind = 'comment';
+    else if (/^['"`]/.test(matchText)) kind = 'string';
+    else if (/^[`'"]/.test(matchText)) kind = 'string';
+    else if (/^\d/.test(matchText)) kind = 'number';
+    else if (/^[A-Za-z_][A-Za-z0-9_]*\s*$/.test(matchText) && /\($/.test(content.slice(start + matchText.length).trimStart())) kind = 'function';
+    else if (/^[A-Z][A-Za-z0-9_]*$/.test(matchText)) kind = 'type';
+    else if (/^(===|!==|==|!=|<=|>=|=>|\+\+|--|&&|\|\||[+\-*/%=&|!<>?:])$/.test(matchText)) kind = 'operator';
+    else if (/^[(){}\[\].,;]$/.test(matchText)) kind = 'punctuation';
+    else kind = 'keyword';
+
+    tokens.push({ text: matchText, kind });
+    lastIndex = start + matchText.length;
+  }
+
+  if (lastIndex < content.length) {
+    tokens.push({ text: content.slice(lastIndex), kind: 'plain' });
+  }
+
+  return tokens.length > 0 ? tokens : [{ text: content, kind: 'plain' }];
+}
 
 // Memoized file item component
 interface FileItemProps {
@@ -113,6 +233,40 @@ const EntryIcon = memo(function EntryIcon({
     return item.type === 'directory'
       ? <Folder size={size} color={colors.accent.default} />
       : <File size={size} color={colors.fg.muted} />;
+  }
+
+  return (
+    <SvgUri
+      width={size + 2}
+      height={size + 2}
+      uri={iconUri}
+      onError={() => setIconLoadFailed(true)}
+    />
+  );
+});
+
+const SearchResultFileIcon = memo(function SearchResultFileIcon({
+  filePath,
+  fallbackColor,
+  size = 14,
+}: {
+  filePath: string;
+  fallbackColor: string;
+  size?: number;
+}) {
+  const [iconLoadFailed, setIconLoadFailed] = useState(false);
+  const fileName = useMemo(() => filePath.split('/').pop() || filePath, [filePath]);
+  const iconUri = useMemo(
+    () => resolveMaterialIconUri({ name: fileName, type: 'file' }),
+    [fileName]
+  );
+
+  useEffect(() => {
+    setIconLoadFailed(false);
+  }, [iconUri]);
+
+  if (!iconUri || iconLoadFailed) {
+    return <FileCode2 size={size} color={fallbackColor} strokeWidth={1.9} />;
   }
 
   return (
@@ -175,7 +329,7 @@ const FileItem = memo(function FileItem({ item, isFirst, onPress, colors, fonts,
 
 
 function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
-  const { colors, fonts, spacing, radius } = useTheme();
+  const { colors, fonts, spacing, radius, isDark } = useTheme();
   const headerHeight = useHeaderHeight();
 
   const { status, capabilities } = useConnection();
@@ -191,6 +345,20 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchMode>('files');
+  const [includeChildReposInFileSearch, setIncludeChildReposInFileSearch] = useState(false);
+  const [repoFileSearchResults, setRepoFileSearchResults] = useState<FileSearchResult[]>([]);
+  const [repoFileSearchLoading, setRepoFileSearchLoading] = useState(false);
+  const [repoFileSearchError, setRepoFileSearchError] = useState<string | null>(null);
+  const [hasTreeFileSearchRun, setHasTreeFileSearchRun] = useState(false);
+  const [codebaseResults, setCodebaseResults] = useState<GrepMatch[]>([]);
+  const [codebaseSearchLoading, setCodebaseSearchLoading] = useState(false);
+  const [codebaseSearchError, setCodebaseSearchError] = useState<string | null>(null);
+  const [hasCodebaseSearched, setHasCodebaseSearched] = useState(false);
+  const [codebaseCaseSensitive, setCodebaseCaseSensitive] = useState(false);
+  const [codebasePath, setCodebasePath] = useState('.');
+  const [showCodebaseOptions, setShowCodebaseOptions] = useState(false);
+  const [collapsedCodebaseFiles, setCollapsedCodebaseFiles] = useState<Record<string, boolean>>({});
   const [sortBy, setSortBy] = useState<SortOption>('name');
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
   const [showHiddenFiles, setShowHiddenFiles] = useState(true);
@@ -203,6 +371,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const uploadPickerInFlightRef = useRef(false);
   const uploadCancelRequestedRef = useRef(false);
   const listRef = useRef<FlashList<ExplorerListItem> | null>(null);
+  const codebaseRequestIdRef = useRef(0);
+  const repoFileSearchRequestIdRef = useRef(0);
   const MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024;
 
   const openWithSystem = async (item: FileEntry) => {
@@ -335,6 +505,186 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     return result;
   }, [items, searchQuery, sortBy, filterBy, showHiddenFiles]);
 
+  const runCodebaseSearch = useCallback(async (opts?: { caseSensitive?: boolean }) => {
+    if (!isConnected || searchMode !== 'codebase') return;
+
+    const query = searchQuery.trim();
+    const grepPath = codebasePath.trim() || '.';
+    const caseSensitive = opts?.caseSensitive ?? codebaseCaseSensitive;
+    if (!query) {
+      setCodebaseResults([]);
+      setCodebaseSearchError(null);
+      setCodebaseSearchLoading(false);
+      setHasCodebaseSearched(false);
+      return;
+    }
+
+    const requestId = ++codebaseRequestIdRef.current;
+    setCodebaseSearchLoading(true);
+    setCodebaseSearchError(null);
+    setHasCodebaseSearched(true);
+
+    try {
+      const matches = await fs.grep(query, grepPath, {
+        caseSensitive,
+        maxResults: 300,
+      });
+      if (requestId !== codebaseRequestIdRef.current) return;
+      setCodebaseResults(matches);
+    } catch (err) {
+      if (requestId !== codebaseRequestIdRef.current) return;
+      const apiError = err as ApiError;
+      setCodebaseResults([]);
+      setCodebaseSearchError(apiError.message || 'Codebase search failed');
+    } finally {
+      if (requestId === codebaseRequestIdRef.current) {
+        setCodebaseSearchLoading(false);
+      }
+    }
+  }, [codebaseCaseSensitive, codebasePath, fs, isConnected, searchMode, searchQuery]);
+
+  const runRepoFileSearch = useCallback(async (opts?: { forceTreeMode?: boolean }) => {
+    if (!isConnected || searchMode !== 'files') return;
+
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      setRepoFileSearchResults([]);
+      setRepoFileSearchError(null);
+      setRepoFileSearchLoading(false);
+      setHasTreeFileSearchRun(false);
+      return;
+    }
+
+    const includeChildren = opts?.forceTreeMode ?? includeChildReposInFileSearch;
+    if (includeChildren) {
+      setHasTreeFileSearchRun(true);
+    }
+
+    const requestId = ++repoFileSearchRequestIdRef.current;
+    setRepoFileSearchLoading(true);
+    setRepoFileSearchError(null);
+
+    try {
+      const maxResults = 400;
+      const maxDirectories = includeChildren ? 600 : 250;
+      const maxDurationMs = includeChildren ? 10000 : 5000;
+      const startedAt = Date.now();
+
+      const matches: FileSearchResult[] = [];
+      const visited = new Set<string>(['.']);
+      const queue: string[] = ['.'];
+      let scannedDirectories = 0;
+
+      while (queue.length > 0) {
+        if (requestId !== repoFileSearchRequestIdRef.current) return;
+        if (matches.length >= maxResults || scannedDirectories >= maxDirectories) break;
+        if (Date.now() - startedAt > maxDurationMs) break;
+
+        const dir = queue.shift()!;
+        scannedDirectories += 1;
+
+        let entries: FileEntry[];
+        try {
+          entries = await fs.list(dir);
+        } catch {
+          continue;
+        }
+
+        const hasGitDir = entries.some((entry) => entry.type === 'directory' && entry.name === '.git');
+        if (hasGitDir && dir !== '.' && !includeChildren) {
+          continue;
+        }
+
+        for (const entry of entries) {
+          if (entry.name === '.git') continue;
+          if (!showHiddenFiles && entry.name.startsWith('.')) continue;
+
+          const relPath = dir === '.' ? entry.name : `${dir}/${entry.name}`;
+          const matchesQuery =
+            entry.name.toLowerCase().includes(query)
+            || relPath.toLowerCase().includes(query);
+
+          const passesFilter = filterBy === 'all'
+            || (filterBy === 'files' && entry.type === 'file')
+            || (filterBy === 'folders' && entry.type === 'directory');
+
+          if (matchesQuery && passesFilter) {
+            matches.push({
+              path: relPath,
+              name: entry.name,
+              type: entry.type,
+            });
+            if (matches.length >= maxResults) break;
+          }
+
+          if (entry.type === 'directory' && !visited.has(relPath)) {
+            visited.add(relPath);
+            queue.push(relPath);
+          }
+        }
+      }
+
+      if (requestId !== repoFileSearchRequestIdRef.current) return;
+      matches.sort((a, b) => a.path.localeCompare(b.path));
+      setRepoFileSearchResults(matches);
+    } catch (err) {
+      if (requestId !== repoFileSearchRequestIdRef.current) return;
+      const apiError = err as ApiError;
+      setRepoFileSearchResults([]);
+      setRepoFileSearchError(apiError.message || 'File search failed');
+    } finally {
+      if (requestId === repoFileSearchRequestIdRef.current) {
+        setRepoFileSearchLoading(false);
+      }
+    }
+  }, [
+    filterBy,
+    fs,
+    includeChildReposInFileSearch,
+    isConnected,
+    searchMode,
+    searchQuery,
+    showHiddenFiles,
+  ]);
+
+  useEffect(() => {
+    if (!showSearch || searchMode !== 'files' || !isConnected) {
+      setRepoFileSearchLoading(false);
+      setRepoFileSearchError(null);
+      return;
+    }
+
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      setRepoFileSearchResults([]);
+      setRepoFileSearchLoading(false);
+      setRepoFileSearchError(null);
+      setHasTreeFileSearchRun(false);
+      return;
+    }
+
+    if (includeChildReposInFileSearch) {
+      setRepoFileSearchLoading(false);
+      setRepoFileSearchError(null);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      void runRepoFileSearch({ forceTreeMode: false });
+    }, 160);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [
+    includeChildReposInFileSearch,
+    isConnected,
+    runRepoFileSearch,
+    searchMode,
+    searchQuery,
+    showSearch,
+  ]);
+
   const navigateUp = useCallback(() => {
     if (currentPath === '.' || currentPath === '') return;
     const segments = currentPath.split('/').filter(Boolean);
@@ -375,6 +725,28 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       openModal();
     }
   };
+
+  const toggleCodebaseFileCollapse = useCallback((file: string) => {
+    setCollapsedCodebaseFiles((prev) => ({
+      ...prev,
+      [file]: !prev[file],
+    }));
+  }, []);
+
+  const openFileSearchResult = useCallback(async (result: FileSearchResult) => {
+    if (result.type === 'directory') {
+      setCurrentPath(result.path);
+      return;
+    }
+
+    try {
+      openTab('editor');
+      await gPI.editor.openFile(result.path);
+    } catch (err) {
+      const apiError = err as ApiError;
+      Alert.alert('Error', apiError.message || 'Failed to open file in editor');
+    }
+  }, [openTab]);
 
   const openModal = () => {};
 
@@ -614,6 +986,62 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   };
 
   const hasActiveFilters = sortBy !== 'name' || filterBy !== 'all';
+  const syntaxPalette = useMemo(() => {
+    if (isDark) {
+      return {
+        plain: colors.fg.muted,
+        keyword: '#c792ea',
+        string: '#c3e88d',
+        number: '#f78c6c',
+        comment: '#7f848e',
+        function: '#82aaff',
+        type: '#ffcb6b',
+        operator: '#89ddff',
+        punctuation: '#bfc7d5',
+      };
+    }
+    return {
+      plain: colors.fg.muted,
+      keyword: '#7c3aed',
+      string: '#15803d',
+      number: '#c2410c',
+      comment: '#6b7280',
+      function: '#1d4ed8',
+      type: '#b45309',
+      operator: '#0f766e',
+      punctuation: '#4b5563',
+    };
+  }, [colors.fg.muted, isDark]);
+  const groupedCodebaseMatches = useMemo(() => groupMatchesByFile(codebaseResults), [codebaseResults]);
+  const codebaseFileCount = useMemo(() => new Set(codebaseResults.map((match) => match.file)).size, [codebaseResults]);
+  const codebaseMatchCountText = useMemo(() => String(codebaseResults.length), [codebaseResults.length]);
+  const codebaseMatchLabel = useMemo(
+    () => `${codebaseResults.length} match${codebaseResults.length === 1 ? '' : 'es'}`,
+    [codebaseResults.length]
+  );
+  const codebaseResultSummary = useMemo(() => {
+    if (codebaseSearchLoading) return `Searching in ${codebasePath.trim() || '.'}`;
+    const fileLabel = `${codebaseFileCount} file${codebaseFileCount === 1 ? '' : 's'}`;
+    return `${codebaseMatchLabel} across ${fileLabel} in ${codebasePath.trim() || '.'}`;
+  }, [codebaseFileCount, codebaseMatchLabel, codebasePath, codebaseSearchLoading]);
+  const searchStateContainerStyle = {
+    flex: 1,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    paddingHorizontal: spacing[4],
+    paddingBottom: spacing[18],
+  };
+  const searchStateTextStyle = {
+    marginTop: spacing[3],
+    fontSize: 13,
+    fontFamily: fonts.sans.regular,
+    color: colors.fg.muted,
+    textAlign: 'center' as const,
+  };
+
+  useEffect(() => {
+    setCollapsedCodebaseFiles({});
+  }, [codebaseResults]);
   const isRootPath = currentPath === '.' || currentPath === '';
   const displayItems = useMemo<ExplorerListItem[]>(() => {
     if (isRootPath) return currentItems;
@@ -723,40 +1151,455 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           borderBottomWidth: StyleSheet.hairlineWidth,
           borderBottomColor: colors.border.secondary,
         }}>
-          <View style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            backgroundColor: colors.bg.raised,
-            borderRadius: radius.md,
-            height: 40,
-            paddingHorizontal: spacing[3],
-            gap: spacing[2],
-          }}>
-            <Search size={16} color={colors.fg.default} strokeWidth={2} />
-            <TextInput
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[2] }}>
+            <View style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: colors.bg.raised,
+              borderRadius: radius.md,
+              height: 40,
+              paddingHorizontal: spacing[3],
+              gap: spacing[2],
+            }}>
+              <Search size={16} color={colors.fg.default} strokeWidth={2} />
+              <TextInput
+                style={{
+                  flex: 1,
+                  fontSize: typography.body,
+                  fontFamily: fonts.sans.regular,
+                  color: colors.fg.default,
+                  outline: 'none',
+                } as any}
+                placeholder={searchMode === 'codebase' ? 'search in codebase...' : 'search files...'}
+                placeholderTextColor={colors.fg.subtle}
+                value={searchQuery}
+                onChangeText={(value) => {
+                  setSearchQuery(value);
+                  if (searchMode === 'codebase') {
+                    setHasCodebaseSearched(false);
+                    setCodebaseSearchError(null);
+                  } else if (searchMode === 'files' && includeChildReposInFileSearch) {
+                    setHasTreeFileSearchRun(false);
+                    setRepoFileSearchError(null);
+                  }
+                }}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
+                autoFocus
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType={(searchMode === 'codebase' || (searchMode === 'files' && includeChildReposInFileSearch)) ? 'search' : 'done'}
+                onSubmitEditing={() => {
+                  if (searchMode === 'codebase') {
+                    void runCodebaseSearch();
+                  } else if (searchMode === 'files' && includeChildReposInFileSearch) {
+                    void runRepoFileSearch({ forceTreeMode: true });
+                  }
+                }}
+              />
+            </View>
+            {searchMode === 'files' ? (
+              <TouchableOpacity
+                onPress={() => {
+                  setIncludeChildReposInFileSearch((prev) => {
+                    const next = !prev;
+                    if (!next) {
+                      setHasTreeFileSearchRun(false);
+                    }
+                    setRepoFileSearchError(null);
+                    return next;
+                  });
+                }}
+                activeOpacity={0.7}
+                style={{
+                  height: 40,
+                  width: 40,
+                  borderRadius: radius.md,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: includeChildReposInFileSearch ? colors.accent.default : colors.bg.raised,
+                }}
+              >
+                <ListTree
+                  size={18}
+                  color={includeChildReposInFileSearch ? '#ffffff' : colors.fg.default}
+                  strokeWidth={2}
+                />
+              </TouchableOpacity>
+            ) : null}
+            {searchMode === 'codebase' ? (
+              <TouchableOpacity
+                onPress={() => setShowCodebaseOptions((prev) => !prev)}
+                activeOpacity={0.7}
+                style={{
+                  height: 40,
+                  width: 40,
+                  borderRadius: radius.md,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: showCodebaseOptions ? colors.accent.default : colors.bg.raised,
+                }}
+              >
+                <Settings2
+                  size={16}
+                  color={showCodebaseOptions ? '#ffffff' : colors.fg.default}
+                  strokeWidth={2}
+                />
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              onPress={() => setSearchMode((prev) => {
+                const next = prev === 'files' ? 'codebase' : 'files';
+                setSearchQuery('');
+                setHasCodebaseSearched(false);
+                setCodebaseResults([]);
+                setCodebaseSearchError(null);
+                setRepoFileSearchResults([]);
+                setRepoFileSearchError(null);
+                setRepoFileSearchLoading(false);
+                setHasTreeFileSearchRun(false);
+                if (next !== 'codebase') {
+                  setShowCodebaseOptions(false);
+                }
+                return next;
+              })}
+              activeOpacity={0.7}
               style={{
-                flex: 1,
-                fontSize: typography.body,
-                fontFamily: fonts.sans.regular,
-                color: colors.fg.default,
-                outline: 'none',
-              } as any}
-              placeholder="search files..."
-              placeholderTextColor={colors.fg.subtle}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              autoFocus
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
+                width: 40,
+                height: 40,
+                borderRadius: radius.md,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: colors.bg.raised,
+              }}
+            >
+              <ArrowLeftRight size={16} color={colors.fg.default} strokeWidth={2} />
+            </TouchableOpacity>
           </View>
+          {searchMode === 'codebase' && showCodebaseOptions ? (
+            <View style={{ marginTop: spacing[2], flexDirection: 'row', alignItems: 'center', gap: spacing[2] }}>
+              <View style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: colors.bg.raised,
+                borderRadius: radius.md,
+                height: 40,
+                paddingHorizontal: spacing[3],
+                gap: spacing[2],
+              }}>
+                <Text style={{
+                  fontSize: typography.caption,
+                  fontFamily: fonts.sans.medium,
+                  color: colors.fg.muted,
+                }}>
+                  Path
+                </Text>
+                <TextInput
+                  style={{
+                    flex: 1,
+                    fontSize: typography.body,
+                    fontFamily: fonts.sans.regular,
+                    color: colors.fg.default,
+                    outline: 'none',
+                  } as any}
+                  value={codebasePath}
+                  onChangeText={(value) => {
+                    setCodebasePath(value);
+                    setHasCodebaseSearched(false);
+                    setCodebaseSearchError(null);
+                  }}
+                  placeholder="."
+                  placeholderTextColor={colors.fg.subtle}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                  onSubmitEditing={() => { void runCodebaseSearch(); }}
+                />
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  const nextCaseSensitive = !codebaseCaseSensitive;
+                  setCodebaseCaseSensitive(nextCaseSensitive);
+                  setCodebaseSearchError(null);
+                  if (searchQuery.trim()) {
+                    void runCodebaseSearch({ caseSensitive: nextCaseSensitive });
+                  } else {
+                    setHasCodebaseSearched(false);
+                    setCodebaseResults([]);
+                  }
+                }}
+                activeOpacity={0.7}
+                style={{
+                  height: 40,
+                  width: 40,
+                  borderRadius: radius.md,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: codebaseCaseSensitive ? colors.accent.default : colors.bg.raised,
+                }}
+              >
+                <CaseSensitive
+                  size={18}
+                  color={codebaseCaseSensitive ? '#ffffff' : colors.fg.default}
+                  strokeWidth={2}
+                />
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </View>
       )}
 
       {/* File List with Action Buttons as header */}
       <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
+          {searchMode === 'codebase' && showSearch ? (
+            <View style={{ flex: 1 }}>
+              {!searchQuery.trim() ? (
+                <View style={searchStateContainerStyle}>
+                  <Search size={28} color={colors.fg.subtle} />
+                  <Text style={searchStateTextStyle}>
+                    Type to search across the entire codebase
+                  </Text>
+                </View>
+              ) : !hasCodebaseSearched ? (
+                <View style={searchStateContainerStyle}>
+                  <Search size={28} color={colors.fg.subtle} />
+                  <Text style={searchStateTextStyle}>
+                    Press search on keyboard to run codebase search
+                  </Text>
+                </View>
+              ) : codebaseSearchLoading ? (
+                <View style={{ flex: 1 }}>
+                  <Loading />
+                </View>
+              ) : codebaseSearchError ? (
+                <View style={searchStateContainerStyle}>
+                  <AlertCircle size={28} color={'#ef4444'} />
+                  <Text style={[searchStateTextStyle, { color: '#ef4444' }]}>
+                    {codebaseSearchError}
+                  </Text>
+                </View>
+              ) : codebaseResults.length === 0 ? (
+                <View
+                  style={{
+                    flex: 1,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingHorizontal: spacing[4],
+                    paddingVertical: spacing[8],
+                    paddingBottom: spacing[18],
+                    gap: spacing[3],
+                  }}
+                >
+                  <FileCode2 size={36} color={colors.fg.subtle} strokeWidth={1.8} />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Text style={{ color: colors.fg.muted, fontFamily: fonts.sans.medium, fontSize: 14 }}>
+                      No matches for
+                    </Text>
+                    <Text style={{ color: colors.fg.default, fontFamily: fonts.mono.medium, fontSize: 14 }}>
+                      {searchQuery.trim()}
+                    </Text>
+                  </View>
+                  <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.regular, fontSize: typography.caption }}>
+                    Try a broader path or change the casing filter.
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView
+                  contentContainerStyle={{ paddingTop: spacing[1], paddingBottom: spacing[6] }}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View style={[styles.summaryRow, { paddingHorizontal: spacing[3], marginTop: spacing[1] }]}>
+                    <Text style={{ flex: 1, color: colors.fg.muted, fontFamily: fonts.sans.medium, fontSize: 13 }}>
+                      <Text style={{ color: '#22c55e', fontFamily: fonts.sans.medium }}>
+                        {codebaseMatchCountText}
+                      </Text>
+                      <Text>
+                        {codebaseResultSummary.slice(codebaseMatchCountText.length)}
+                      </Text>
+                    </Text>
+                    <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.regular, fontSize: 13 }}>
+                      Tap a hit to open the file
+                    </Text>
+                  </View>
+                  {groupedCodebaseMatches.map((group) => (
+                    <View
+                      key={group.file}
+                      style={{
+                        paddingHorizontal: spacing[3],
+                        paddingVertical: spacing[1],
+                        gap: 6,
+                      }}
+                    >
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => toggleCodebaseFileCollapse(group.file)}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: spacing[1],
+                          borderRadius: radius.sm,
+                          marginHorizontal: -spacing[1],
+                          paddingHorizontal: spacing[1],
+                          paddingVertical: 6,
+                          backgroundColor: collapsedCodebaseFiles[group.file] ? colors.bg.raised : 'transparent',
+                        }}
+                      >
+                        <ChevronRight
+                          size={17}
+                          color={colors.fg.subtle}
+                          strokeWidth={2}
+                          style={{ transform: [{ rotate: collapsedCodebaseFiles[group.file] ? '0deg' : '90deg' }] }}
+                        />
+                        <SearchResultFileIcon filePath={group.file} fallbackColor={colors.fg.muted} size={14} />
+                        <Text
+                          style={{
+                            flex: 1,
+                            fontSize: typography.body,
+                            fontFamily: fonts.sans.medium,
+                            color: colors.fg.default,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {group.file}
+                        </Text>
+                      </TouchableOpacity>
+
+                      {!collapsedCodebaseFiles[group.file] ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                          <View style={{ width: 40 }}>
+                            {group.matches.map((match, index) => (
+                              <Text
+                                key={`${match.file}:${match.line}:${index}:line`}
+                                style={{
+                                  color: colors.fg.subtle,
+                                  fontFamily: fonts.mono.regular,
+                                  fontSize: 12,
+                                  lineHeight: 18,
+                                }}
+                                numberOfLines={1}
+                              >
+                                {match.line}
+                              </Text>
+                            ))}
+                          </View>
+                          <ScrollView
+                            horizontal
+                            style={{ flex: 1 }}
+                            contentContainerStyle={{ paddingRight: spacing[2] }}
+                            showsHorizontalScrollIndicator={false}
+                            nestedScrollEnabled
+                          >
+                            <View>
+                              {group.matches.map((match, index) => {
+                                const lineTokens = tokenizeCodeLine(match.content, match.file);
+                                return (
+                                  <Text
+                                    key={`${match.file}:${match.line}:${index}:code`}
+                                    style={{
+                                      fontFamily: fonts.mono.regular,
+                                      fontSize: typography.caption,
+                                      lineHeight: 18,
+                                    }}
+                                    numberOfLines={1}
+                                  >
+                                    {lineTokens.map((token, tokenIndex) => {
+                                      const highlightedParts = getHighlightedParts(token.text, searchQuery, codebaseCaseSensitive);
+                                      const baseColor = syntaxPalette[token.kind];
+                                      return highlightedParts.map((part, partIndex) => (
+                                        <Text
+                                          key={`${match.file}:${match.line}:${tokenIndex}:${partIndex}`}
+                                          style={part.highlighted
+                                            ? {
+                                              color: colors.fg.default,
+                                              backgroundColor: colors.accent.default + '33',
+                                              fontFamily: fonts.mono.bold,
+                                            }
+                                            : {
+                                              color: baseColor,
+                                              fontFamily: fonts.mono.regular,
+                                            }}
+                                        >
+                                          {part.text}
+                                        </Text>
+                                      ));
+                                    })}
+                                  </Text>
+                                );
+                              })}
+                            </View>
+                          </ScrollView>
+                        </View>
+                      ) : null}
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          ) : searchMode === 'files' && showSearch && !!searchQuery.trim() ? (
+            <View style={{ flex: 1 }}>
+              {includeChildReposInFileSearch && !hasTreeFileSearchRun ? (
+                <View style={searchStateContainerStyle}>
+                  <ListTree size={28} color={colors.fg.subtle} />
+                  <Text style={searchStateTextStyle}>
+                    Press search on keyboard to run tree search
+                  </Text>
+                </View>
+              ) : repoFileSearchLoading ? (
+                <Loading />
+              ) : repoFileSearchError ? (
+                <View style={searchStateContainerStyle}>
+                  <AlertCircle size={28} color={'#ef4444'} />
+                  <Text style={[searchStateTextStyle, { color: '#ef4444' }]}>
+                    {repoFileSearchError}
+                  </Text>
+                </View>
+              ) : repoFileSearchResults.length === 0 ? (
+                <View style={searchStateContainerStyle}>
+                  <Search size={28} color={colors.fg.subtle} />
+                  <Text style={searchStateTextStyle}>
+                    No matching files {includeChildReposInFileSearch ? 'in current + child repos' : 'in current repo'}
+                  </Text>
+                </View>
+              ) : (
+                <FlashList
+                  data={repoFileSearchResults}
+                  estimatedItemSize={56}
+                  contentContainerStyle={{ paddingTop: spacing[2], paddingBottom: spacing[6] }}
+                  keyExtractor={(item) => item.path}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => { void openFileSearchResult(item); }}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        paddingHorizontal: spacing[3],
+                        paddingVertical: spacing[2],
+                        gap: spacing[2],
+                      }}
+                    >
+                      <SearchResultFileIcon filePath={item.path} fallbackColor={colors.fg.muted} size={15} />
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            fontSize: typography.body,
+                            fontFamily: fonts.sans.regular,
+                            color: colors.fg.default,
+                          }}
+                        >
+                          {item.path}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+                />
+              )}
+            </View>
+          ) : (
+            <>
           {loading && (
             <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10 }}>
               <Loading />
@@ -823,6 +1666,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             )}
             keyExtractor={(item) => (item.__navParent ? '__parent__' : item.name)}
           />
+            </>
+          )}
       </View>
 
       <InfoSheet
@@ -1060,18 +1905,18 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                     paddingVertical: spacing[3],
                     paddingHorizontal: spacing[3],
                     borderRadius: radius.lg,
-                    backgroundColor: sortBy === option ? colors.accent.default + '20' : 'rgba(255,255,255,0.06)',
+                    backgroundColor: sortBy === option ? colors.bg.raised : 'transparent',
                   }}
                 >
                   <Circle
                     size={18}
-                    color={sortBy === option ? colors.accent.default : 'rgba(255,255,255,0.3)'}
-                    fill={sortBy === option ? colors.accent.default : 'transparent'}
+                    color={sortBy === option ? colors.fg.default : 'rgba(255,255,255,0.3)'}
+                    fill={sortBy === option ? colors.fg.default : 'transparent'}
                   />
                   <Text style={{
                     fontSize: typography.body,
                     fontFamily: sortBy === option ? fonts.sans.semibold : fonts.sans.regular,
-                    color: sortBy === option ? colors.accent.default : '#ffffff',
+                    color: sortBy === option ? colors.fg.default : '#ffffff',
                   }}>
                     {getSortLabel(option)}
                   </Text>
@@ -1103,18 +1948,18 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                     paddingVertical: spacing[3],
                     paddingHorizontal: spacing[3],
                     borderRadius: radius.lg,
-                    backgroundColor: filterBy === option ? colors.accent.default + '20' : 'rgba(255,255,255,0.06)',
+                    backgroundColor: filterBy === option ? colors.bg.raised : 'transparent',
                   }}
                 >
                   <Circle
                     size={18}
-                    color={filterBy === option ? colors.accent.default : 'rgba(255,255,255,0.3)'}
-                    fill={filterBy === option ? colors.accent.default : 'transparent'}
+                    color={filterBy === option ? colors.fg.default : 'rgba(255,255,255,0.3)'}
+                    fill={filterBy === option ? colors.fg.default : 'transparent'}
                   />
                   <Text style={{
                     fontSize: typography.body,
                     fontFamily: filterBy === option ? fonts.sans.semibold : fonts.sans.regular,
-                    color: filterBy === option ? colors.accent.default : '#ffffff',
+                    color: filterBy === option ? colors.fg.default : '#ffffff',
                   }}>
                     {getFilterLabel(option)}
                   </Text>
@@ -1124,6 +1969,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           </View>
         </ScrollView>
       </InfoSheet>
+
     </View>
   );
 }
@@ -1136,6 +1982,19 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 2,
     gap: 10,
+  },
+  summaryRow: {
+    minHeight: 24,
+    paddingTop: 8,
+    paddingBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  matchRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 0,
   },
 });
 
