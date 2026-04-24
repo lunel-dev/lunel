@@ -106,6 +106,23 @@ const formatTime = (mtime?: number) => {
   return date.toLocaleDateString();
 };
 
+const getUniqueName = (name: string, existingNames: Set<string>, suffix: string): string => {
+  if (!existingNames.has(name)) return name;
+
+  const dotIndex = name.lastIndexOf('.');
+  const hasExtension = dotIndex > 0;
+  const base = hasExtension ? name.slice(0, dotIndex) : name;
+  const ext = hasExtension ? name.slice(dotIndex) : '';
+
+  let attempt = `${base} ${suffix}${ext}`;
+  let counter = 2;
+  while (existingNames.has(attempt)) {
+    attempt = `${base} ${suffix} ${counter}${ext}`;
+    counter += 1;
+  }
+  return attempt;
+};
+
 const getParentPathLabel = (path: string) => {
   const idx = path.lastIndexOf('/');
   if (idx <= 0) return '';
@@ -442,6 +459,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const [selectedItem, setSelectedItem] = useState<FileEntry | null>(null);
   const [selectedItemPathOverride, setSelectedItemPathOverride] = useState<string | null>(null);
   const [selectedItemIsBinary, setSelectedItemIsBinary] = useState<boolean | null>(null);
+  const [copiedFile, setCopiedFile] = useState<{ path: string; name: string } | null>(null);
+  const [movedFile, setMovedFile] = useState<{ path: string; name: string } | null>(null);
   const [showFiltersModal, setShowFiltersModal] = useState(false);
   const [directoryItemCounts, setDirectoryItemCounts] = useState<Record<string, number>>({});
   const [uploading, setUploading] = useState(false);
@@ -886,6 +905,65 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     setSelectedItemIsBinary(null);
   };
 
+  const handleCopySelectedFile = useCallback(() => {
+    if (!selectedItem || selectedItem.type !== 'file') return;
+    const sourcePath = selectedItemPathOverride ?? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`);
+    setCopiedFile({
+      path: sourcePath,
+      name: selectedItem.name,
+    });
+    closeModal();
+  }, [currentPath, selectedItem, selectedItemPathOverride]);
+
+  const handleMoveSelectedFile = useCallback(() => {
+    if (!selectedItem || selectedItem.type !== 'file') return;
+    const sourcePath = selectedItemPathOverride ?? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`);
+    setMovedFile({
+      path: sourcePath,
+      name: selectedItem.name,
+    });
+    closeModal();
+  }, [currentPath, selectedItem, selectedItemPathOverride]);
+
+  const handlePasteCopiedFile = useCallback(async () => {
+    if (!copiedFile) return;
+    try {
+      const sourceContent = await fs.read(copiedFile.path);
+      const existingNames = new Set(items.map((entry) => entry.name));
+      const targetName = getUniqueName(copiedFile.name, existingNames, 'copy');
+      const targetPath = currentPath === '.' ? targetName : `${currentPath}/${targetName}`;
+
+      await fs.write(targetPath, sourceContent.content, sourceContent.encoding, 120000, { source: 'explorer-copy' });
+      await loadDirectory(currentPath);
+      Alert.alert('Pasted', `"${targetName}" was pasted into ${currentPath === '.' ? 'the current folder' : currentPath}.`);
+    } catch (err) {
+      const apiError = err as ApiError;
+      Alert.alert('Paste failed', apiError.message || 'Failed to paste file');
+    }
+  }, [copiedFile, currentPath, fs, items, loadDirectory]);
+
+  const handlePasteMovedFile = useCallback(async () => {
+    if (!movedFile) return;
+    try {
+      const existingNames = new Set(items.map((entry) => entry.name));
+      const targetName = getUniqueName(movedFile.name, existingNames, 'moved');
+      const targetPath = currentPath === '.' ? targetName : `${currentPath}/${targetName}`;
+
+      if (targetPath === movedFile.path) {
+        Alert.alert('Move skipped', 'File is already in this folder.');
+        return;
+      }
+
+      await fs.move(movedFile.path, targetPath);
+      setMovedFile(null);
+      await loadDirectory(currentPath);
+      Alert.alert('Moved', `"${targetName}" was moved to ${currentPath === '.' ? 'the current folder' : currentPath}.`);
+    } catch (err) {
+      const apiError = err as ApiError;
+      Alert.alert('Move failed', apiError.message || 'Failed to move file');
+    }
+  }, [currentPath, fs, items, loadDirectory, movedFile]);
+
   // Detect binary/text for selected file to render the correct primary action.
   useEffect(() => {
     if (!selectedItem || selectedItem.type !== 'file') return;
@@ -1287,6 +1365,10 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   promptCreate('directory');
                 } else if (nativeEvent.event === 'upload-file') {
                   handleUploadFile();
+                } else if (nativeEvent.event === 'paste-file') {
+                  void handlePasteCopiedFile();
+                } else if (nativeEvent.event === 'paste-move-file') {
+                  void handlePasteMovedFile();
                 } else if (nativeEvent.event === 'toggle-hidden-files') {
                   setShowHiddenFiles((prev) => !prev);
                 } else if (nativeEvent.event === 'copy-relative-path') {
@@ -1301,6 +1383,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 { id: 'new-file', title: 'New File' },
                 { id: 'new-folder', title: 'New Folder' },
                 { id: 'upload-file', title: 'Upload File' },
+                ...(copiedFile ? [{ id: 'paste-file', title: 'Paste File' }] : []),
+                ...(movedFile ? [{ id: 'paste-move-file', title: 'Paste Move' }] : []),
                 { id: 'copy-relative-path', title: 'Copy Relative Path' },
                 { id: 'copy-path', title: 'Copy Path' },
                 {
@@ -1918,6 +2002,34 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             ) : null}
 
             <View style={{ borderRadius: 10, overflow: 'hidden', backgroundColor: colors.bg.raised }}>
+              <TouchableOpacity
+                style={[styles.sheetRow, { marginBottom: 0 }]}
+                onPress={handleCopySelectedFile}
+                activeOpacity={0.7}
+              >
+                <Copy size={18} color={colors.fg.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                  Copy file
+                </Text>
+                <ChevronRight size={18} color={colors.fg.subtle} />
+              </TouchableOpacity>
+
+              <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary, marginLeft: 50 }} />
+
+              <TouchableOpacity
+                style={[styles.sheetRow, { marginBottom: 0 }]}
+                onPress={handleMoveSelectedFile}
+                activeOpacity={0.7}
+              >
+                <ArrowLeft size={18} color={colors.fg.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                  Move file
+                </Text>
+                <ChevronRight size={18} color={colors.fg.subtle} />
+              </TouchableOpacity>
+
+              <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary, marginLeft: 50 }} />
+
               <TouchableOpacity
                 style={[styles.sheetRow, { marginBottom: 0 }]}
                 onPress={async () => {
