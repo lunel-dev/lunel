@@ -4,12 +4,12 @@ import { logger } from "@/lib/logger";
 import InfoSheet from "@/components/InfoSheet";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
-import { ChevronRight, History, ScanLine, X } from "lucide-react-native";
+import { ChevronRight, History, Loader2, ScanLine, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, BackHandler, Dimensions, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
-import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+import Animated, { Easing, cancelAnimation, runOnJS, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from "react-native-reanimated";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import Svg, { Path } from "react-native-svg";
@@ -274,6 +274,28 @@ export default function Auth() {
   const [showPastSessionsSheet, setShowPastSessionsSheet] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateCheckResponse | null>(null);
   const cancelledContinueRef = useRef(false);
+  const connectingSpinner = useSharedValue(0);
+  const connectingSpinnerStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${connectingSpinner.value}deg` }],
+  }));
+
+  useEffect(() => {
+    if (isContinuing) {
+      connectingSpinner.value = 0;
+      connectingSpinner.value = withRepeat(
+        withTiming(360, {
+          duration: 900,
+          easing: Easing.linear,
+        }),
+        -1,
+        false
+      );
+      return;
+    }
+
+    cancelAnimation(connectingSpinner);
+    connectingSpinner.value = 0;
+  }, [isContinuing, connectingSpinner]);
 
   useFocusEffect(
     useCallback(() => {
@@ -505,7 +527,7 @@ export default function Auth() {
                   Lunel
                 </Text>
                 <Text style={[styles.tagline, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
-                  ship from anywhere
+                  Ship from Anywhere
                 </Text>
               </View>
             </View>
@@ -560,7 +582,10 @@ export default function Auth() {
       {isContinuing && connectingHostname && (
         <View style={styles.loadingOverlay}>
           <View style={[styles.loadingCard, { backgroundColor: colors.bg.raised }]}>
-            <Text style={[styles.loadingTitle, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]}>
+            <Animated.View style={connectingSpinnerStyle}>
+              <Loader2 size={26} color={colors.fg.default} strokeWidth={2.25} />
+            </Animated.View>
+            <Text style={[styles.loadingTitle, { color: colors.fg.default, fontFamily: fonts.sans.medium }]}>
               Connecting
             </Text>
             <Text style={[styles.loadingSubtitle, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
@@ -641,6 +666,7 @@ const styles = StyleSheet.create({
   brandText: {
     alignItems: "center",
     gap: 2,
+    marginTop: 6,
   },
   actionsSection: {
     width: "100%",
@@ -656,12 +682,12 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   appName: {
-    fontSize: 24,
+    fontSize: 30,
     letterSpacing: 0.3,
     textAlign: "center",
   },
   appNameTablet: {
-    fontSize: 24,
+    fontSize: 32,
   },
   tagline: {
     fontSize: 13,
@@ -806,7 +832,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 14,
-    marginBottom: 4,
+    marginBottom: 0,
     gap: 10,
   },
   sheetRowLabel: {
@@ -843,13 +869,14 @@ const styles = StyleSheet.create({
     gap: 14,
     paddingHorizontal: 20,
     paddingVertical: 20,
-    borderRadius: 15,
+    borderRadius: 28,
   },
   loadingTitle: {
-    fontSize: 16,
+    fontSize: 17,
     textAlign: "center",
   },
   loadingSubtitle: {
+    marginTop: -8,
     fontSize: 12,
     textAlign: "center",
   },
@@ -860,7 +887,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10,
+    borderRadius: 16,
   },
   loadingCancelText: {
     fontSize: 14,
@@ -872,9 +899,9 @@ const pastSessionsSheetStyles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingVertical: 8,
+    paddingVertical: 2,
     borderRadius: 12,
-    marginBottom: 8,
+    marginBottom: 12,
   },
   sessionHostname: {
     fontSize: 14,
