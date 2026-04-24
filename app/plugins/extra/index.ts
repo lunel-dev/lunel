@@ -2,7 +2,6 @@
 // Keep this aligned with the surface exposed from the tabs launcher.
 
 import './explorer';
-import './search';
 import './brainrot';
 import './git';
 import './ports';
@@ -12,7 +11,6 @@ import './monitor';
 import './tools';
 
 export { ExplorerPanel } from './explorer';
-export { SearchPanel } from './search';
 export { BrainrotPanel } from './brainrot';
 export { GitPanel } from './git';
 export { PortsPanel } from './ports';

@@ -72,7 +72,6 @@ function SpinningLoader({ color, opacity = 1, size = 18 }: { color: string; opac
 }
 
 const HIDE_SIDEBAR_SESSION_PLUGIN_IDS = new Set([
-  "search",
   "git",
   "ports",
   "processes",

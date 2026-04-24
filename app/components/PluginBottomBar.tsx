@@ -11,7 +11,6 @@ import {
   LayoutGrid,
   X,
   Folder,
-  Search,
   Plug,
   ChartNoAxesColumn,
   Shield,
@@ -53,7 +52,6 @@ const NAV_ITEMS = [
 
 const EXTRA_PLUGIN_ORDER = [
   "explorer",
-  "search",
   "ports",
   "processes",
   "http",
@@ -64,7 +62,6 @@ const EXTRA_PLUGIN_ORDER = [
 
 const EXTRA_ICON_OVERRIDES = {
   explorer: Folder,
-  search: Search,
   ports: Plug,
   processes: ChartNoAxesColumn,
   http: Shield,
