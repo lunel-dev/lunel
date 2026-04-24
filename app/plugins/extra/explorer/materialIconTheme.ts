@@ -13,9 +13,6 @@ const manifest = generateManifest();
 const fileNameToIconKey: Record<string, string> = Object.fromEntries(
   Object.entries(manifest.fileNames ?? {}).map(([name, iconKey]) => [name.toLowerCase(), iconKey])
 );
-const folderNameToIconKey: Record<string, string> = Object.fromEntries(
-  Object.entries(manifest.folderNames ?? {}).map(([name, iconKey]) => [name.toLowerCase(), iconKey])
-);
 const extensionToIconKey: Record<string, string> = Object.fromEntries(
   Object.entries(manifest.fileExtensions ?? {}).map(([extension, iconKey]) => [extension.toLowerCase(), iconKey])
 );
@@ -54,7 +51,7 @@ const getIconKeyFromEntry = (entry: ExplorerEntryLike): string => {
   const fileNameLower = entry.name.toLowerCase();
 
   if (entry.type === 'directory') {
-    return folderNameToIconKey[fileNameLower] ?? manifest.folder;
+    return manifest.folder;
   }
 
   const exactFileKey = fileNameToIconKey[fileNameLower] ?? fileNameFallbacks[fileNameLower];

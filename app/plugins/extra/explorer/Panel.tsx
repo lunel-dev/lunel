@@ -68,6 +68,8 @@ interface FileSearchResult {
   path: string;
   name: string;
   type: 'file' | 'directory';
+  size?: number;
+  mtime?: number;
 }
 type CodeTokenKind =
   | 'plain'
@@ -103,6 +105,45 @@ const formatTime = (mtime?: number) => {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return date.toLocaleDateString();
+};
+
+const getParentPathLabel = (path: string) => {
+  const idx = path.lastIndexOf('/');
+  if (idx <= 0) return '';
+  const parent = path.slice(0, idx);
+  if (parent === '.' || parent === './') return '';
+  return parent.startsWith('./') ? parent.slice(2) : parent;
+};
+
+const computeFuzzyFileScore = (candidate: string, query: string): number | null => {
+  if (!query) return 0;
+  const haystack = candidate.toLowerCase();
+  const needle = query.toLowerCase();
+
+  const containsIndex = haystack.indexOf(needle);
+  if (containsIndex >= 0) {
+    const boundaryBoost = containsIndex === 0 || haystack[containsIndex - 1] === '/' ? 18 : 0;
+    return 110 + boundaryBoost - containsIndex * 0.2 - haystack.length * 0.02;
+  }
+
+  let qi = 0;
+  let score = 0;
+  let lastMatch = -1;
+  for (let i = 0; i < haystack.length && qi < needle.length; i += 1) {
+    if (haystack[i] !== needle[qi]) continue;
+    score += 4;
+    if (i === 0 || haystack[i - 1] === '/' || haystack[i - 1] === '-' || haystack[i - 1] === '_') {
+      score += 3;
+    }
+    if (lastMatch === i - 1) {
+      score += 2;
+    }
+    lastMatch = i;
+    qi += 1;
+  }
+
+  if (qi < needle.length) return null;
+  return score - haystack.length * 0.04;
 };
 
 function groupMatchesByFile(matches: GrepMatch[]): GroupedMatch[] {
@@ -201,7 +242,11 @@ function tokenizeCodeLine(content: string, filePath: string): CodeToken[] {
 interface FileItemProps {
   item: ExplorerListItem;
   isFirst: boolean;
-  onPress: (item: ExplorerListItem) => void;
+  onPress: () => void;
+  directoryItemCount?: number;
+  secondaryTextOverride?: string;
+  titleRightText?: string;
+  showChevron?: boolean;
   colors: any;
   fonts: any;
   spacing: any;
@@ -212,7 +257,7 @@ interface FileItemProps {
 const EntryIcon = memo(function EntryIcon({
   item,
   colors,
-  size = 18,
+  size = 22,
 }: {
   item: ExplorerListItem;
   colors: any;
@@ -220,25 +265,26 @@ const EntryIcon = memo(function EntryIcon({
 }) {
   const [iconLoadFailed, setIconLoadFailed] = useState(false);
   const iconUri = item.__navParent ? null : resolveMaterialIconUri(item);
+  const effectiveSize = item.type === 'directory' && !item.__navParent ? size + 2 : size;
 
   useEffect(() => {
     setIconLoadFailed(false);
   }, [iconUri]);
 
   if (item.__navParent) {
-    return <ArrowLeft size={size} color="#ffffff" />;
+    return <ArrowLeft size={effectiveSize} color="#ffffff" />;
   }
 
   if (!iconUri || iconLoadFailed) {
     return item.type === 'directory'
-      ? <Folder size={size} color={colors.accent.default} />
-      : <File size={size} color={colors.fg.muted} />;
+      ? <Folder size={effectiveSize} color={colors.accent.default} />
+      : <File size={effectiveSize} color={colors.fg.muted} />;
   }
 
   return (
     <SvgUri
-      width={size + 2}
-      height={size + 2}
+      width={effectiveSize + 2}
+      height={effectiveSize + 2}
       uri={iconUri}
       onError={() => setIconLoadFailed(true)}
     />
@@ -279,48 +325,80 @@ const SearchResultFileIcon = memo(function SearchResultFileIcon({
   );
 });
 
-const FileItem = memo(function FileItem({ item, isFirst, onPress, colors, fonts, spacing, radius }: FileItemProps) {
+const FileItem = memo(function FileItem({
+  item,
+  isFirst,
+  onPress,
+  directoryItemCount,
+  secondaryTextOverride,
+  titleRightText,
+  showChevron,
+  colors,
+  fonts,
+  spacing,
+  radius,
+}: FileItemProps) {
+  const secondaryText = secondaryTextOverride ?? (item.__navParent
+    ? 'Back'
+    : item.type === 'directory'
+      ? directoryItemCount == null
+        ? '...'
+        : `${directoryItemCount} item${directoryItemCount === 1 ? '' : 's'}`
+      : formatFileSize(item.size));
+  const shouldShowChevron = showChevron ?? (item.type === 'directory' && !item.__navParent);
+
   return (
     <TouchableOpacity
-      onPress={() => onPress(item)}
+      onPress={onPress}
       activeOpacity={0.7}
       style={{
         flexDirection: 'row',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         paddingHorizontal: spacing[3],
         paddingVertical: spacing[1],
-        gap: spacing[3],
+        gap: spacing[2] + (spacing[3] - spacing[2]) * 0.5,
       }}
     >
       <View style={{
-        width: 36,
-        height: 36,
-        borderRadius: 6,
-        backgroundColor: item.type === 'directory' ? colors.accent.default + '20' : colors.bg.raised,
+        backgroundColor: 'transparent',
         alignItems: 'center',
         justifyContent: 'center',
       }}>
         <EntryIcon item={item} colors={colors} />
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={{
-          fontSize: typography.body,
-          fontFamily: fonts.sans.regular,
-          color: colors.fg.default,
-        }} numberOfLines={1}>
-          {item.name}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[2] }}>
+          <Text style={{
+            fontSize: typography.body,
+            fontFamily: fonts.sans.regular,
+            color: colors.fg.default,
+            maxWidth: titleRightText ? '62%' : '100%',
+          }} numberOfLines={1}>
+            {item.name}
+          </Text>
+          {titleRightText ? (
+            <Text style={{
+              maxWidth: '38%',
+              fontSize: typography.caption,
+              fontFamily: fonts.sans.regular,
+              color: colors.fg.muted,
+              opacity: 0.68,
+            }} numberOfLines={1}>
+              {titleRightText}
+            </Text>
+          ) : null}
+        </View>
         <Text style={{
           fontSize: typography.caption,
           fontFamily: fonts.sans.regular,
           color: colors.fg.muted,
-          marginTop: 2,
+          marginTop: 1,
         }}>
-          {item.__navParent ? 'Back' : item.type === 'directory' ? 'Directory' : formatFileSize(item.size)}
+          {secondaryText}
           {item.mtime && ` · ${formatTime(item.mtime)}`}
         </Text>
       </View>
-      {item.type === 'directory' && !item.__navParent ? (
+      {shouldShowChevron ? (
         <ChevronRight size={18} color={colors.fg.subtle} />
       ) : null}
     </TouchableOpacity>
@@ -346,11 +424,11 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const [showSearch, setShowSearch] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchMode, setSearchMode] = useState<SearchMode>('files');
-  const [includeChildReposInFileSearch, setIncludeChildReposInFileSearch] = useState(false);
+  const [searchFromRoot, setSearchFromRoot] = useState(false);
   const [repoFileSearchResults, setRepoFileSearchResults] = useState<FileSearchResult[]>([]);
   const [repoFileSearchLoading, setRepoFileSearchLoading] = useState(false);
   const [repoFileSearchError, setRepoFileSearchError] = useState<string | null>(null);
-  const [hasTreeFileSearchRun, setHasTreeFileSearchRun] = useState(false);
+  const [hasFileSearchRun, setHasFileSearchRun] = useState(false);
   const [codebaseResults, setCodebaseResults] = useState<GrepMatch[]>([]);
   const [codebaseSearchLoading, setCodebaseSearchLoading] = useState(false);
   const [codebaseSearchError, setCodebaseSearchError] = useState<string | null>(null);
@@ -363,8 +441,10 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
   const [showHiddenFiles, setShowHiddenFiles] = useState(true);
   const [selectedItem, setSelectedItem] = useState<FileEntry | null>(null);
+  const [selectedItemPathOverride, setSelectedItemPathOverride] = useState<string | null>(null);
   const [selectedItemIsBinary, setSelectedItemIsBinary] = useState<boolean | null>(null);
   const [showFiltersModal, setShowFiltersModal] = useState(false);
+  const [directoryItemCounts, setDirectoryItemCounts] = useState<Record<string, number>>({});
   const [uploading, setUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [uploadStage, setUploadStage] = useState<'idle' | 'preparing' | 'writing'>('idle');
@@ -373,10 +453,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const listRef = useRef<FlashList<ExplorerListItem> | null>(null);
   const codebaseRequestIdRef = useRef(0);
   const repoFileSearchRequestIdRef = useRef(0);
+  const directoryCountRequestIdRef = useRef(0);
+  const lastLocalSearchPathRef = useRef(currentPath);
   const MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024;
 
-  const openWithSystem = async (item: FileEntry) => {
-    const filePath = currentPath === '.' ? item.name : `${currentPath}/${item.name}`;
+  const openWithSystem = async (item: FileEntry, pathOverride?: string) => {
+    const filePath = pathOverride ?? (currentPath === '.' ? item.name : `${currentPath}/${item.name}`);
 
     try {
       const result = await fs.read(filePath);
@@ -410,8 +492,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     }
   };
 
-  const openInEditor = async (item: FileEntry) => {
-    const filePath = currentPath === '.' ? item.name : `${currentPath}/${item.name}`;
+  const openInEditor = async (item: FileEntry, pathOverride?: string) => {
+    const filePath = pathOverride ?? (currentPath === '.' ? item.name : `${currentPath}/${item.name}`);
 
     closeModal();
     try {
@@ -477,12 +559,6 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       result = result.filter(item => !item.name.startsWith('.'));
     }
 
-    // Search
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(item => item.name.toLowerCase().includes(query));
-    }
-
     // Sort
     result.sort((a, b) => {
       // Folders always first
@@ -503,7 +579,55 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     });
 
     return result;
-  }, [items, searchQuery, sortBy, filterBy, showHiddenFiles]);
+  }, [items, sortBy, filterBy, showHiddenFiles]);
+
+  useEffect(() => {
+    if (!isConnected) {
+      setDirectoryItemCounts({});
+      return;
+    }
+
+    const directories = currentItems.filter((entry) => entry.type === 'directory');
+    if (directories.length === 0) {
+      setDirectoryItemCounts({});
+      return;
+    }
+
+    const requestId = ++directoryCountRequestIdRef.current;
+    const directoryPaths = directories.map((entry) => (
+      currentPath === '.' ? entry.name : `${currentPath}/${entry.name}`
+    ));
+
+    setDirectoryItemCounts((prev) => {
+      const next: Record<string, number> = {};
+      for (const path of directoryPaths) {
+        if (prev[path] != null) {
+          next[path] = prev[path];
+        }
+      }
+      return next;
+    });
+
+    void Promise.all(
+      directoryPaths.map(async (path) => {
+        try {
+          const entries = await fs.list(path);
+          return { path, count: entries.length };
+        } catch {
+          return { path, count: 0 };
+        }
+      })
+    ).then((results) => {
+      if (requestId !== directoryCountRequestIdRef.current) return;
+      setDirectoryItemCounts((prev) => {
+        const next = { ...prev };
+        for (const { path, count } of results) {
+          next[path] = count;
+        }
+        return next;
+      });
+    });
+  }, [currentItems, currentPath, fs, isConnected]);
 
   const runCodebaseSearch = useCallback(async (opts?: { caseSensitive?: boolean }) => {
     if (!isConnected || searchMode !== 'codebase') return;
@@ -543,7 +667,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     }
   }, [codebaseCaseSensitive, codebasePath, fs, isConnected, searchMode, searchQuery]);
 
-  const runRepoFileSearch = useCallback(async (opts?: { forceTreeMode?: boolean }) => {
+  const runRepoFileSearch = useCallback(async (searchFromRootOverride?: boolean) => {
     if (!isConnected || searchMode !== 'files') return;
 
     const query = searchQuery.trim().toLowerCase();
@@ -551,28 +675,26 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       setRepoFileSearchResults([]);
       setRepoFileSearchError(null);
       setRepoFileSearchLoading(false);
-      setHasTreeFileSearchRun(false);
+      setHasFileSearchRun(false);
       return;
-    }
-
-    const includeChildren = opts?.forceTreeMode ?? includeChildReposInFileSearch;
-    if (includeChildren) {
-      setHasTreeFileSearchRun(true);
     }
 
     const requestId = ++repoFileSearchRequestIdRef.current;
     setRepoFileSearchLoading(true);
     setRepoFileSearchError(null);
+    setHasFileSearchRun(true);
 
     try {
+      const includeChildren = searchFromRootOverride ?? searchFromRoot;
       const maxResults = 400;
-      const maxDirectories = includeChildren ? 600 : 250;
-      const maxDurationMs = includeChildren ? 10000 : 5000;
+      const maxDirectories = includeChildren ? 650 : 1;
+      const maxDurationMs = includeChildren ? 10000 : 4000;
       const startedAt = Date.now();
 
-      const matches: FileSearchResult[] = [];
-      const visited = new Set<string>(['.']);
-      const queue: string[] = ['.'];
+      const matches: (FileSearchResult & { score: number })[] = [];
+      const basePath = currentPath === '' ? '.' : currentPath;
+      const visited = new Set<string>([basePath]);
+      const queue: string[] = [basePath];
       let scannedDirectories = 0;
 
       while (queue.length > 0) {
@@ -590,34 +712,32 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           continue;
         }
 
-        const hasGitDir = entries.some((entry) => entry.type === 'directory' && entry.name === '.git');
-        if (hasGitDir && dir !== '.' && !includeChildren) {
-          continue;
-        }
-
         for (const entry of entries) {
           if (entry.name === '.git') continue;
           if (!showHiddenFiles && entry.name.startsWith('.')) continue;
 
           const relPath = dir === '.' ? entry.name : `${dir}/${entry.name}`;
-          const matchesQuery =
-            entry.name.toLowerCase().includes(query)
-            || relPath.toLowerCase().includes(query);
+          const nameScore = computeFuzzyFileScore(entry.name, query);
+          const pathScore = computeFuzzyFileScore(relPath, query);
+          const score = Math.max(
+            nameScore == null ? -Infinity : nameScore + 12,
+            pathScore == null ? -Infinity : pathScore
+          );
 
-          const passesFilter = filterBy === 'all'
-            || (filterBy === 'files' && entry.type === 'file')
-            || (filterBy === 'folders' && entry.type === 'directory');
+          const passesFilter = entry.type === 'file' && (filterBy === 'all' || filterBy === 'files');
 
-          if (matchesQuery && passesFilter) {
+          if (score > -Infinity && passesFilter) {
             matches.push({
               path: relPath,
               name: entry.name,
               type: entry.type,
+              size: entry.size,
+              mtime: entry.mtime,
+              score,
             });
-            if (matches.length >= maxResults) break;
           }
 
-          if (entry.type === 'directory' && !visited.has(relPath)) {
+          if (includeChildren && entry.type === 'directory' && !visited.has(relPath)) {
             visited.add(relPath);
             queue.push(relPath);
           }
@@ -625,8 +745,29 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       }
 
       if (requestId !== repoFileSearchRequestIdRef.current) return;
-      matches.sort((a, b) => a.path.localeCompare(b.path));
-      setRepoFileSearchResults(matches);
+      matches.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+        return a.path.localeCompare(b.path);
+      });
+      const topMatches = matches.slice(0, maxResults);
+      const hydratedMatches = await Promise.all(topMatches.map(async (item) => {
+        if (item.type !== 'file' || (item.size != null && item.mtime != null)) {
+          return item;
+        }
+        try {
+          const stat = await fs.stat(item.path);
+          return {
+            ...item,
+            size: item.size ?? stat.size,
+            mtime: item.mtime ?? stat.mtime,
+          };
+        } catch {
+          return item;
+        }
+      }));
+      if (requestId !== repoFileSearchRequestIdRef.current) return;
+      setRepoFileSearchResults(hydratedMatches.map(({ score: _score, ...item }) => item));
     } catch (err) {
       if (requestId !== repoFileSearchRequestIdRef.current) return;
       const apiError = err as ApiError;
@@ -638,52 +779,39 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       }
     }
   }, [
+    currentPath,
     filterBy,
     fs,
-    includeChildReposInFileSearch,
     isConnected,
     searchMode,
+    searchFromRoot,
     searchQuery,
     showHiddenFiles,
   ]);
 
   useEffect(() => {
-    if (!showSearch || searchMode !== 'files' || !isConnected) {
-      setRepoFileSearchLoading(false);
-      setRepoFileSearchError(null);
-      return;
-    }
-
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) {
+    if (searchMode !== 'files') return;
+    if (!searchQuery.trim()) {
       setRepoFileSearchResults([]);
       setRepoFileSearchLoading(false);
       setRepoFileSearchError(null);
-      setHasTreeFileSearchRun(false);
+      setHasFileSearchRun(false);
       return;
     }
+  }, [searchMode, searchQuery]);
 
-    if (includeChildReposInFileSearch) {
-      setRepoFileSearchLoading(false);
+  useEffect(() => {
+    if (searchMode !== 'files') return;
+    if (searchFromRoot) {
+      lastLocalSearchPathRef.current = currentPath;
+      return;
+    }
+    if (lastLocalSearchPathRef.current !== currentPath) {
+      setHasFileSearchRun(false);
       setRepoFileSearchError(null);
-      return;
+      lastLocalSearchPathRef.current = currentPath;
     }
-
-    const timeout = setTimeout(() => {
-      void runRepoFileSearch({ forceTreeMode: false });
-    }, 160);
-
-    return () => {
-      clearTimeout(timeout);
-    };
-  }, [
-    includeChildReposInFileSearch,
-    isConnected,
-    runRepoFileSearch,
-    searchMode,
-    searchQuery,
-    showSearch,
-  ]);
+  }, [currentPath, searchFromRoot, searchMode]);
 
   const navigateUp = useCallback(() => {
     if (currentPath === '.' || currentPath === '') return;
@@ -721,6 +849,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       setCurrentPath(newPath);
     } else {
       setSelectedItem(item);
+      setSelectedItemPathOverride(null);
       setSelectedItemIsBinary(null);
       openModal();
     }
@@ -739,19 +868,22 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
       return;
     }
 
-    try {
-      openTab('editor');
-      await gPI.editor.openFile(result.path);
-    } catch (err) {
-      const apiError = err as ApiError;
-      Alert.alert('Error', apiError.message || 'Failed to open file in editor');
-    }
-  }, [openTab]);
+    setSelectedItem({
+      name: result.name,
+      type: result.type,
+      size: result.size,
+      mtime: result.mtime,
+    });
+    setSelectedItemPathOverride(result.path);
+    setSelectedItemIsBinary(null);
+    openModal();
+  }, []);
 
   const openModal = () => {};
 
   const closeModal = () => {
     setSelectedItem(null);
+    setSelectedItemPathOverride(null);
     setSelectedItemIsBinary(null);
   };
 
@@ -761,7 +893,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     let cancelled = false;
 
     const detectEncoding = async () => {
-      const filePath = currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`;
+      const filePath = selectedItemPathOverride ?? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`);
       try {
         const stat = await fs.stat(filePath);
         if (cancelled) return;
@@ -777,7 +909,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedItem, currentPath, fs]);
+  }, [selectedItem, selectedItemPathOverride, currentPath, fs]);
 
   const promptCreate = (type: 'file' | 'directory') => {
     Alert.prompt(
@@ -806,8 +938,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     );
   };
 
-  const handleDelete = async (item: FileEntry) => {
-    const path = currentPath === '.' ? item.name : `${currentPath}/${item.name}`;
+  const handleDelete = async (item: FileEntry, pathOverride?: string) => {
+    const path = pathOverride ?? (currentPath === '.' ? item.name : `${currentPath}/${item.name}`);
     Alert.alert(
       'Delete',
       `Are you sure you want to delete "${item.name}"?`,
@@ -834,7 +966,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
 
   const openRenameModal = () => {
     if (!selectedItem) return;
-    const fromPath = currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`;
+    const fromPath = selectedItemPathOverride ?? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`);
     const currentName = selectedItem.name;
     closeModal();
 
@@ -986,6 +1118,22 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   };
 
   const hasActiveFilters = sortBy !== 'name' || filterBy !== 'all';
+  const resetAndCloseSearch = useCallback(() => {
+    setShowSearch(false);
+    setSearchFocused(false);
+    setSearchMode('files');
+    setSearchQuery('');
+    setSearchFromRoot(false);
+    setRepoFileSearchResults([]);
+    setRepoFileSearchError(null);
+    setRepoFileSearchLoading(false);
+    setHasFileSearchRun(false);
+    setCodebaseResults([]);
+    setCodebaseSearchError(null);
+    setCodebaseSearchLoading(false);
+    setHasCodebaseSearched(false);
+    setShowCodebaseOptions(false);
+  }, []);
   const syntaxPalette = useMemo(() => {
     if (isDark) {
       return {
@@ -1043,12 +1191,16 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     setCollapsedCodebaseFiles({});
   }, [codebaseResults]);
   const isRootPath = currentPath === '.' || currentPath === '';
+  const hasQuery = searchQuery.trim().length > 0;
+  const showCodebaseSearchView = searchMode === 'codebase'
+    && (showSearch || hasQuery || hasCodebaseSearched || codebaseSearchLoading || !!codebaseSearchError);
+  const showFileSearchView = searchMode === 'files' && (showSearch || hasQuery);
   const displayItems = useMemo<ExplorerListItem[]>(() => {
     if (isRootPath) return currentItems;
     return [{ name: '..', type: 'directory', __navParent: true }, ...currentItems];
   }, [isRootPath, currentItems]);
   const selectedItemPath = selectedItem
-    ? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`)
+    ? (selectedItemPathOverride ?? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`))
     : '';
   const getAbsolutePath = useCallback((path: string) => {
     const rootDir = capabilities?.rootDir ?? '';
@@ -1075,7 +1227,19 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
         colors={colors}
         rightAccessory={
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <TouchableOpacity onPress={() => setShowSearch(!showSearch)} style={{ padding: 8 }}>
+            <TouchableOpacity
+              onPress={() => {
+                if (showSearch) {
+                  resetAndCloseSearch();
+                } else {
+                  setSearchFromRoot(false);
+                  setHasFileSearchRun(false);
+                  setRepoFileSearchError(null);
+                  setShowSearch(true);
+                }
+              }}
+              style={{ padding: 8 }}
+            >
               {showSearch ? (
                 <X size={20} color={colors.fg.muted} strokeWidth={2} />
               ) : (
@@ -1179,8 +1343,8 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   if (searchMode === 'codebase') {
                     setHasCodebaseSearched(false);
                     setCodebaseSearchError(null);
-                  } else if (searchMode === 'files' && includeChildReposInFileSearch) {
-                    setHasTreeFileSearchRun(false);
+                  } else if (searchMode === 'files') {
+                    setHasFileSearchRun(false);
                     setRepoFileSearchError(null);
                   }
                 }}
@@ -1189,12 +1353,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 autoFocus
                 autoCapitalize="none"
                 autoCorrect={false}
-                returnKeyType={(searchMode === 'codebase' || (searchMode === 'files' && includeChildReposInFileSearch)) ? 'search' : 'done'}
+                returnKeyType="search"
                 onSubmitEditing={() => {
                   if (searchMode === 'codebase') {
                     void runCodebaseSearch();
-                  } else if (searchMode === 'files' && includeChildReposInFileSearch) {
-                    void runRepoFileSearch({ forceTreeMode: true });
+                  } else if (searchMode === 'files') {
+                    void runRepoFileSearch();
                   }
                 }}
               />
@@ -1202,14 +1366,17 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             {searchMode === 'files' ? (
               <TouchableOpacity
                 onPress={() => {
-                  setIncludeChildReposInFileSearch((prev) => {
-                    const next = !prev;
-                    if (!next) {
-                      setHasTreeFileSearchRun(false);
-                    }
+                  const next = !searchFromRoot;
+                  setSearchFromRoot(next);
+                  if (searchQuery.trim()) {
                     setRepoFileSearchError(null);
-                    return next;
-                  });
+                    void runRepoFileSearch(next);
+                  } else {
+                    setHasFileSearchRun(false);
+                    setRepoFileSearchResults([]);
+                    setRepoFileSearchLoading(false);
+                    setRepoFileSearchError(null);
+                  }
                 }}
                 activeOpacity={0.7}
                 style={{
@@ -1218,12 +1385,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   borderRadius: radius.md,
                   alignItems: 'center',
                   justifyContent: 'center',
-                  backgroundColor: includeChildReposInFileSearch ? colors.accent.default : colors.bg.raised,
+                  backgroundColor: searchFromRoot ? colors.accent.default : colors.bg.raised,
                 }}
               >
                 <ListTree
                   size={18}
-                  color={includeChildReposInFileSearch ? '#ffffff' : colors.fg.default}
+                  color={searchFromRoot ? '#ffffff' : colors.fg.default}
                   strokeWidth={2}
                 />
               </TouchableOpacity>
@@ -1258,7 +1425,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 setRepoFileSearchResults([]);
                 setRepoFileSearchError(null);
                 setRepoFileSearchLoading(false);
-                setHasTreeFileSearchRun(false);
+                setHasFileSearchRun(false);
                 if (next !== 'codebase') {
                   setShowCodebaseOptions(false);
                 }
@@ -1353,7 +1520,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
 
       {/* File List with Action Buttons as header */}
       <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
-          {searchMode === 'codebase' && showSearch ? (
+          {showCodebaseSearchView ? (
             <View style={{ flex: 1 }}>
               {!searchQuery.trim() ? (
                 <View style={searchStateContainerStyle}>
@@ -1537,13 +1704,13 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 </ScrollView>
               )}
             </View>
-          ) : searchMode === 'files' && showSearch && !!searchQuery.trim() ? (
+          ) : showFileSearchView && hasQuery ? (
             <View style={{ flex: 1 }}>
-              {includeChildReposInFileSearch && !hasTreeFileSearchRun ? (
+              {!hasFileSearchRun ? (
                 <View style={searchStateContainerStyle}>
-                  <ListTree size={28} color={colors.fg.subtle} />
+                  <Search size={28} color={colors.fg.subtle} />
                   <Text style={searchStateTextStyle}>
-                    Press search on keyboard to run tree search
+                    Tap search to find files {searchFromRoot ? `in ${currentPath || '.'} + child folders` : `only in ${currentPath || '.'}`}
                   </Text>
                 </View>
               ) : repoFileSearchLoading ? (
@@ -1559,7 +1726,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 <View style={searchStateContainerStyle}>
                   <Search size={28} color={colors.fg.subtle} />
                   <Text style={searchStateTextStyle}>
-                    No matching files {includeChildReposInFileSearch ? 'in current + child repos' : 'in current repo'}
+                    No matching files {searchFromRoot ? `in ${currentPath || '.'} + child folders` : `inside ${currentPath || '.'}`}
                   </Text>
                 </View>
               ) : (
@@ -1569,31 +1736,18 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   contentContainerStyle={{ paddingTop: spacing[2], paddingBottom: spacing[6] }}
                   keyExtractor={(item) => item.path}
                   renderItem={({ item }) => (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
+                    <FileItem
+                      item={{ name: item.name, type: item.type, size: item.size, mtime: item.mtime }}
+                      isFirst={false}
                       onPress={() => { void openFileSearchResult(item); }}
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        paddingHorizontal: spacing[3],
-                        paddingVertical: spacing[2],
-                        gap: spacing[2],
-                      }}
-                    >
-                      <SearchResultFileIcon filePath={item.path} fallbackColor={colors.fg.muted} size={15} />
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          numberOfLines={1}
-                          style={{
-                            fontSize: typography.body,
-                            fontFamily: fonts.sans.regular,
-                            color: colors.fg.default,
-                          }}
-                        >
-                          {item.path}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
+                      secondaryTextOverride={item.type === 'directory' ? 'Directory' : undefined}
+                      titleRightText={getParentPathLabel(item.path)}
+                      showChevron={item.type === 'directory'}
+                      colors={colors}
+                      fonts={fonts}
+                      spacing={spacing}
+                      radius={radius}
+                    />
                   )}
                 />
               )}
@@ -1657,7 +1811,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
               <FileItem
                 item={item}
                 isFirst={false}
-                onPress={openItem}
+                onPress={() => openItem(item)}
+                directoryItemCount={
+                  item.type === 'directory' && !item.__navParent
+                    ? directoryItemCounts[currentPath === '.' ? item.name : `${currentPath}/${item.name}`]
+                    : undefined
+                }
                 colors={colors}
                 fonts={fonts}
                 spacing={spacing}
@@ -1704,7 +1863,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             {selectedItemIsBinary !== true ? (
               <TouchableOpacity
                 style={[styles.sheetRow, { borderRadius: 10, backgroundColor: colors.accent.default, marginBottom: 0 }]}
-                onPress={() => { if (selectedItem) openInEditor(selectedItem); }}
+                onPress={() => { if (selectedItem) openInEditor(selectedItem, selectedItemPath); }}
                 activeOpacity={0.7}
               >
                 <FileText size={20} color={'#ffffff'} />
@@ -1718,7 +1877,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             {selectedItemIsBinary === true ? (
               <TouchableOpacity
                 style={[styles.sheetRow, { borderRadius: 10, backgroundColor: colors.accent.default, marginBottom: 0 }]}
-                onPress={() => { if (selectedItem) openWithSystem(selectedItem); }}
+                onPress={() => { if (selectedItem) openWithSystem(selectedItem, selectedItemPath); }}
                 activeOpacity={0.7}
               >
                 <ExternalLink size={20} color={'#ffffff'} />
@@ -1782,7 +1941,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
 
               <TouchableOpacity
                 style={[styles.sheetRow, { marginBottom: 0 }]}
-                onPress={() => { if (selectedItem) handleDelete(selectedItem); }}
+                onPress={() => { if (selectedItem) handleDelete(selectedItem, selectedItemPath); }}
                 activeOpacity={0.7}
               >
                 <Trash size={18} color={'#ef4444'} />
