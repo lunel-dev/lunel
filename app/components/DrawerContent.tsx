@@ -6,7 +6,8 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useApi, FileEntry } from "@/hooks/useApi";
 import { gPI } from "@/plugins";
 import { usePlugins } from "@/plugins/context";
-import { resolveMaterialIconUri } from "@/plugins/extra/explorer/materialIconTheme";
+import InfoSheet from "@/components/InfoSheet";
+import InputModal from "@/components/InputModal";
 import { DrawerContentComponentProps, useDrawerStatus } from "@react-navigation/drawer";
 import * as Haptics from "expo-haptics";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -24,7 +25,6 @@ import {
   MessageCircle,
   PencilLine,
   RefreshCw,
-  SquarePen,
   Search,
   Settings,
   Trash,
@@ -45,7 +45,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { SvgUri } from "react-native-svg";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 function SpinningLoader({ color, opacity = 1, size = 18 }: { color: string; opacity?: number; size?: number }) {
@@ -157,58 +156,23 @@ function TreeIcon({
   isExpanded: boolean;
   colors: any;
 }) {
-  const [iconLoadFailed, setIconLoadFailed] = useState(false);
-  const iconUri = resolveMaterialIconUri({ name: node.name, type: node.type });
-
-  useEffect(() => {
-    setIconLoadFailed(false);
-  }, [iconUri]);
-
-  if (!iconUri || iconLoadFailed) {
-    if (node.type === "directory") {
-      return isExpanded
-        ? <FolderOpen size={16} color={colors.accent.default} strokeWidth={2} />
-        : <Folder size={16} color={colors.accent.default} strokeWidth={2} />;
-    }
-    return <File size={16} color={colors.fg.muted} strokeWidth={2} />;
+  if (node.type === "directory") {
+    return isExpanded
+      ? <FolderOpen size={16} color={colors.accent.default} strokeWidth={2} />
+      : <Folder size={16} color={colors.accent.default} strokeWidth={2} />;
   }
 
-  return (
-    <SvgUri
-      width={18}
-      height={18}
-      uri={iconUri}
-      onError={() => setIconLoadFailed(true)}
-    />
-  );
+  return <File size={16} color={colors.fg.muted} strokeWidth={2} />;
 }
 
 function SessionFileIcon({
-  fileName,
+  fileName: _fileName,
   colors,
 }: {
   fileName: string;
   colors: any;
 }) {
-  const [iconLoadFailed, setIconLoadFailed] = useState(false);
-  const iconUri = resolveMaterialIconUri({ name: fileName, type: "file" });
-
-  useEffect(() => {
-    setIconLoadFailed(false);
-  }, [iconUri]);
-
-  if (!iconUri || iconLoadFailed) {
-    return <File size={15} color={colors.fg.muted} strokeWidth={2} />;
-  }
-
-  return (
-    <SvgUri
-      width={16}
-      height={16}
-      uri={iconUri}
-      onError={() => setIconLoadFailed(true)}
-    />
-  );
+  return <File size={15} color={colors.fg.muted} strokeWidth={2} />;
 }
 
 export default function DrawerContent(props: DrawerContentComponentProps) {
@@ -234,6 +198,8 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
   const [loadedEditorDirs, setLoadedEditorDirs] = useState<Set<string>>(new Set());
   const [loadingEditorDirs, setLoadingEditorDirs] = useState<Set<string>>(new Set());
   const [editorTreeError, setEditorTreeError] = useState<string | null>(null);
+  const [selectedSessionAction, setSelectedSessionAction] = useState<SessionItem | null>(null);
+  const [renameSessionTarget, setRenameSessionTarget] = useState<SessionItem | null>(null);
   const inputRef = useRef<TextInput>(null);
   const pendingNavigationRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const interactionHandleRef = useRef<{ cancel?: () => void } | null>(null);
@@ -344,23 +310,9 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
 
   const handleSessionRenameStart = (id: string, currentTitle: string) => {
     if (!reg?.onSessionRename) return;
-    Alert.prompt(
-      "Rename Session",
-      "Enter a new title",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Rename",
-          onPress: (value) => {
-            const trimmed = (value || "").trim();
-            if (!trimmed) return;
-            reg.onSessionRename?.(id, trimmed);
-          },
-        },
-      ],
-      "plain-text",
-      currentTitle,
-    );
+    const target = sessions.find((session) => session.id === id);
+    if (!target) return;
+    setRenameSessionTarget({ ...target, title: currentTitle });
   };
 
   const hideCreateButton = activePluginId === 'editor' || activePluginId === 'explorer';
@@ -720,6 +672,7 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
                                 <TouchableOpacity
                                   key={item.id}
                                   onPress={() => handleSessionPress(item.id)}
+                                  onLongPress={() => setSelectedSessionAction(item)}
                                   activeOpacity={0.7}
                                   style={[
                                     styles.sessionItem,
@@ -739,26 +692,6 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
                                   >
                                     {item.title}
                                   </Text>
-                                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                                    {reg?.onSessionRename ? (
-                                      <TouchableOpacity
-                                        onPress={() => handleSessionRenameStart(item.id, item.title)}
-                                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                        activeOpacity={0.6}
-                                        style={{ opacity: 0.7 }}
-                                      >
-                                        <SquarePen size={17} color={colors.fg.muted} strokeWidth={2} />
-                                      </TouchableOpacity>
-                                    ) : null}
-                                    <TouchableOpacity
-                                      onPress={() => handleSessionClose(item.id)}
-                                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                      activeOpacity={0.6}
-                                      style={{ opacity: 0.7 }}
-                                    >
-                                      <Trash size={17} color={colors.fg.muted} strokeWidth={2} />
-                                    </TouchableOpacity>
-                                  </View>
                                 </TouchableOpacity>
                               );
                             })}
@@ -847,6 +780,70 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
           <View style={[styles.statusDot, { backgroundColor: isConnected ? '#22c55e' : colors.fg.subtle }]} />
         </View>
 
+        <InfoSheet
+          visible={selectedSessionAction !== null}
+          onClose={() => setSelectedSessionAction(null)}
+          title={selectedSessionAction?.title ?? "Session"}
+          description="Session actions"
+        >
+          <View style={{ gap: 8, paddingBottom: 8 }}>
+            {reg?.onSessionRename ? (
+              <TouchableOpacity
+                onPress={() => {
+                  if (!selectedSessionAction) return;
+                  setSelectedSessionAction(null);
+                  handleSessionRenameStart(selectedSessionAction.id, selectedSessionAction.title);
+                }}
+                activeOpacity={0.7}
+                style={[styles.sheetRow, { backgroundColor: colors.bg.raised, borderRadius: 10, marginBottom: 0 }]}
+              >
+                <PencilLine size={18} color={colors.fg.default} strokeWidth={2} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.fg.default }}>
+                  Rename
+                </Text>
+                <ChevronRight size={18} color={colors.fg.subtle} strokeWidth={2} />
+              </TouchableOpacity>
+            ) : null}
+
+            <TouchableOpacity
+              onPress={() => {
+                if (!selectedSessionAction) return;
+                const id = selectedSessionAction.id;
+                setSelectedSessionAction(null);
+                handleSessionClose(id);
+              }}
+              activeOpacity={0.7}
+              style={[styles.sheetRow, { backgroundColor: colors.bg.raised, borderRadius: 10, marginBottom: 0 }]}
+            >
+              <Trash size={18} color={colors.git.deleted} strokeWidth={2} />
+              <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.git.deleted }}>
+                Delete
+              </Text>
+              <ChevronRight size={18} color={colors.git.deleted} strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
+        </InfoSheet>
+
+        <InputModal
+          visible={renameSessionTarget !== null}
+          onCancel={() => setRenameSessionTarget(null)}
+          onAccept={(value) => {
+            const trimmed = value.trim();
+            if (!trimmed || !renameSessionTarget || !reg?.onSessionRename) {
+              setRenameSessionTarget(null);
+              return;
+            }
+            reg.onSessionRename(renameSessionTarget.id, trimmed);
+            setRenameSessionTarget(null);
+          }}
+          title="Rename Session"
+          description="Enter a new title"
+          placeholder="Session title"
+          acceptLabel="Rename"
+          cancelLabel="Cancel"
+          initialValue={renameSessionTarget?.title ?? ""}
+        />
+
       </SafeAreaView>
     </View>
   );
@@ -917,6 +914,13 @@ const styles = StyleSheet.create({
   },
   sessionTitle: {
     fontSize: typography.body,
+  },
+  sheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
   },
   sessionFileIconWrap: {
     width: 18,

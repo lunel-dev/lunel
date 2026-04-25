@@ -87,67 +87,77 @@ export default function InputModal({
                 style={[
                   styles.dialog,
                   {
-                    backgroundColor: colors.bg.raised,
-                    borderRadius: radius["2xl"],
-                    padding: spacing[5],
+                    backgroundColor: colors.bg.base,
+                    borderRadius: Platform.OS === "ios" ? 18 : radius.xl,
                     marginHorizontal: spacing[6],
+                    maxWidth: 360,
+                    alignSelf: "center",
+                    width: "100%",
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: colors.border.secondary,
                   },
                   dialogStyle,
                 ]}
               >
-                <Text style={[styles.title, { color: colors.fg.default, fontFamily: fonts.sans.bold }]}>
-                  {title}
-                </Text>
-                {description ? (
-                  <Text style={[styles.description, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
-                    {description}
+                <View style={{ paddingHorizontal: spacing[4], paddingTop: spacing[5], paddingBottom: spacing[4] }}>
+                  <Text style={[styles.title, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]}>
+                    {title}
                   </Text>
-                ) : null}
+                  {description ? (
+                    <Text style={[styles.description, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]}>
+                      {description}
+                    </Text>
+                  ) : null}
 
-                <TextInput
-                  ref={inputRef}
-                  value={value}
-                  onChangeText={setValue}
-                  placeholder={placeholder}
-                  placeholderTextColor={colors.fg.muted}
-                  onSubmitEditing={handleAccept}
-                  returnKeyType="done"
-                  style={[
-                    styles.input,
-                    {
-                      backgroundColor: colors.bg.base,
-                      borderRadius: radius.xl,
-                      color: colors.fg.default,
-                      fontFamily: fonts.sans.regular,
-                      paddingHorizontal: spacing[4],
-                      paddingVertical: spacing[4],
-                      marginTop: spacing[4],
-                      fontSize: typography.body,
-                    },
-                  ]}
-                />
+                  <TextInput
+                    ref={inputRef}
+                    value={value}
+                    onChangeText={setValue}
+                    placeholder={placeholder}
+                    placeholderTextColor={colors.fg.muted}
+                    onSubmitEditing={handleAccept}
+                    returnKeyType="done"
+                    style={[
+                      styles.input,
+                      {
+                        backgroundColor: colors.bg.raised,
+                        borderRadius: Platform.OS === "ios" ? 12 : radius.lg,
+                        color: colors.fg.default,
+                        fontFamily: fonts.sans.regular,
+                        paddingHorizontal: spacing[4],
+                        paddingVertical: Platform.OS === "ios" ? spacing[3] : spacing[3] + 2,
+                        marginTop: spacing[4],
+                        fontSize: typography.body,
+                        borderWidth: StyleSheet.hairlineWidth,
+                        borderColor: colors.border.secondary,
+                      },
+                    ]}
+                  />
+                </View>
 
-                <View style={[styles.buttonRow, { marginTop: spacing[4], gap: spacing[3] }]}>
+                <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary }} />
+                <View style={styles.buttonRow}>
                   <TouchableOpacity
                     onPress={handleCancel}
                     style={[
                       styles.button,
-                      { backgroundColor: colors.bg.base, borderRadius: radius.xl },
+                      { backgroundColor: "transparent" },
                     ]}
                   >
-                    <Text style={[styles.buttonText, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]}>
+                    <Text style={[styles.buttonText, { color: colors.fg.muted, fontFamily: fonts.sans.medium }]}>
                       {cancelLabel}
                     </Text>
                   </TouchableOpacity>
 
+                  <View style={{ width: StyleSheet.hairlineWidth, backgroundColor: colors.border.secondary }} />
                   <TouchableOpacity
                     onPress={handleAccept}
                     style={[
                       styles.button,
-                      { backgroundColor: colors.bg.subtle ?? colors.bg.base, borderRadius: radius.xl },
+                      { backgroundColor: "transparent" },
                     ]}
                   >
-                    <Text style={[styles.buttonText, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]}>
+                    <Text style={[styles.buttonText, { color: colors.accent.default, fontFamily: fonts.sans.semibold }]}>
                       {acceptLabel}
                     </Text>
                   </TouchableOpacity>
@@ -165,23 +175,26 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(0,0,0,0.32)",
+    paddingHorizontal: 20,
   },
   dialog: {
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 24,
-    elevation: 12,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    elevation: 10,
+    overflow: "hidden",
   },
   title: {
-    fontSize: typography.heading,
-    fontWeight: "700",
+    fontSize: 17,
+    textAlign: "center",
   },
   description: {
-    fontSize: typography.body,
+    fontSize: 13,
     marginTop: 6,
-    opacity: 0.75,
+    textAlign: "center",
+    lineHeight: 18,
   },
   input: {
     fontSize: typography.body,
@@ -191,12 +204,11 @@ const styles = StyleSheet.create({
   },
   button: {
     flex: 1,
-    paddingVertical: 16,
+    minHeight: 48,
     alignItems: "center",
     justifyContent: "center",
   },
   buttonText: {
-    fontSize: typography.body,
-    fontWeight: "600",
+    fontSize: 16,
   },
 });

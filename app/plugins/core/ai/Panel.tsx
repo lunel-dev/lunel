@@ -62,11 +62,10 @@ import Fontisto from "@expo/vector-icons/Fontisto";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import Foundation from "@expo/vector-icons/Foundation";
 import { Audio } from "expo-av";
-import Svg, { Path, SvgUri } from "react-native-svg";
+import Svg, { Path } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { MenuView } from "@react-native-menu/menu";
 import { useDrawerStatus } from "@react-navigation/drawer";
-import { resolveMaterialIconUri } from "@/plugins/extra/explorer/materialIconTheme";
 import { innerApi } from "../../innerApi";
 import { PluginPanelProps } from "../../types";
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -146,31 +145,13 @@ function getDropdownHorizontalPosition(
 }
 
 function MentionFileIcon({
-  fileName,
+  fileName: _fileName,
   colors,
 }: {
   fileName: string;
   colors: any;
 }) {
-  const [iconLoadFailed, setIconLoadFailed] = useState(false);
-  const iconUri = resolveMaterialIconUri({ name: fileName, type: "file" });
-
-  useEffect(() => {
-    setIconLoadFailed(false);
-  }, [iconUri]);
-
-  if (!iconUri || iconLoadFailed) {
-    return <File size={14} color={colors.fg.subtle} />;
-  }
-
-  return (
-    <SvgUri
-      width={16}
-      height={16}
-      uri={iconUri}
-      onError={() => setIconLoadFailed(true)}
-    />
-  );
+  return <File size={14} color={colors.fg.subtle} />;
 }
 
 function AISkeleton({ colors, paddingTop = 0 }: { colors: any; paddingTop?: number }) {
@@ -2105,10 +2086,41 @@ function TuneSheet({
     { id: "full-access", label: "Full Access" },
   ];
 
-  const sectionStyle = { marginBottom: 20 };
+  const sectionStyle = { marginBottom: 20, width: "100%" as const, alignSelf: "stretch" as const };
   const sectionLabelStyle = { color: colors.fg.subtle, fontSize: 11, fontFamily: fonts.sans.medium, marginBottom: 8 };
-  const chipRowStyle = { flexDirection: "row" as const, gap: 6 };
+  const chipRowStyle = { width: "100%" as const, flexDirection: "row" as const, alignSelf: "stretch" as const };
   const chipBase = { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 };
+  const renderOptionGroup = (
+    options: Array<{ id: string; label: string; description?: string }>,
+    selectedValue: string,
+    onSelect: (value: any) => void,
+  ) => (
+    <View style={chipRowStyle}>
+      {options.map((opt, index) => {
+        const active = selectedValue === opt.id;
+        return (
+          <TouchableOpacity
+            key={opt.id}
+            onPress={() => onSelect(opt.id)}
+            activeOpacity={0.7}
+            style={[
+              chipBase,
+              {
+                flex: 1,
+                backgroundColor: active ? colors.bg.raised : "transparent",
+                alignItems: "center",
+                marginRight: index === options.length - 1 ? 0 : 6,
+              },
+            ]}
+          >
+            <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>
+              {opt.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
 
   const contextPercent = contextUsage
     ? Math.max(0, 100 - Math.round((contextUsage.used / contextUsage.total) * 100))
@@ -2117,113 +2129,76 @@ function TuneSheet({
   return (
     <InfoSheet visible={visible} onClose={onClose} title="Configure" description="AI parameters">
       <ScrollView
+        style={{ width: "100%" }}
         contentContainerStyle={{ paddingBottom: 48 }}
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
       >
-        {/* Mode */}
-        <View style={sectionStyle}>
-          <Text style={sectionLabelStyle}>Mode</Text>
-          <View style={chipRowStyle}>
-            {agents.map((agent) => {
-              const active = selectedAgent === agent.id;
-              return (
-                <TouchableOpacity
-                  key={agent.id}
-                  onPress={() => onAgentChange(agent.id)}
-                  activeOpacity={0.7}
-                  style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
-                >
-                  <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{agent.name}</Text>
-                </TouchableOpacity>
-              );
-            })}
+        <View style={{ width: "100%" }}>
+          {/* Mode */}
+          <View style={sectionStyle}>
+            <Text style={sectionLabelStyle}>Mode</Text>
+            {renderOptionGroup(
+              agents.map((agent) => ({ id: agent.id, label: agent.name })),
+              selectedAgent,
+              onAgentChange,
+            )}
           </View>
-        </View>
 
-        {backend === "codex" && (
-          <>
-            {/* Reasoning */}
-            <View style={sectionStyle}>
-              <Text style={sectionLabelStyle}>Reasoning</Text>
-              <View style={chipRowStyle}>
-                {reasoningOptions.map((opt) => {
-                  const active = reasoningEffort === opt.id;
-                  return (
-                    <TouchableOpacity
-                      key={opt.id}
-                      onPress={() => onReasoningChange(opt.id)}
-                      activeOpacity={0.7}
-                      style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
-                    >
-                      <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{opt.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+          {backend === "codex" && (
+            <>
+              {/* Reasoning */}
+              <View style={sectionStyle}>
+                <Text style={sectionLabelStyle}>Reasoning</Text>
+                {renderOptionGroup(
+                  reasoningOptions.map((opt) => ({ id: opt.id, label: opt.label })),
+                  reasoningEffort,
+                  onReasoningChange,
+                )}
               </View>
-            </View>
 
-            {/* Speed */}
-            <View style={sectionStyle}>
-              <Text style={sectionLabelStyle}>Speed</Text>
-              <View style={chipRowStyle}>
-                {speedOptions.map((opt) => {
-                  const active = speed === opt.id;
-                  return (
-                    <TouchableOpacity
-                      key={opt.id}
-                      onPress={() => onSpeedChange(opt.id)}
-                      activeOpacity={0.7}
-                      style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
-                    >
-                      <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{opt.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              {/* Speed */}
+              <View style={sectionStyle}>
+                <Text style={sectionLabelStyle}>Speed</Text>
+                {renderOptionGroup(
+                  speedOptions.map((opt) => ({ id: opt.id, label: opt.label })),
+                  speed,
+                  onSpeedChange,
+                )}
               </View>
-            </View>
 
-            {/* Permissions */}
-            <View style={sectionStyle}>
-              <Text style={sectionLabelStyle}>Permission</Text>
-              <View style={chipRowStyle}>
-                {permissionOptions.map((opt) => {
-                  const active = permissionMode === opt.id;
-                  return (
-                    <TouchableOpacity
-                      key={opt.id}
-                      onPress={() => onPermissionChange(opt.id)}
-                      activeOpacity={0.7}
-                      style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
-                    >
-                      <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{opt.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              {/* Permissions */}
+              <View style={sectionStyle}>
+                <Text style={sectionLabelStyle}>Permission</Text>
+                {renderOptionGroup(
+                  permissionOptions.map((opt) => ({ id: opt.id, label: opt.label })),
+                  permissionMode,
+                  onPermissionChange,
+                )}
               </View>
-            </View>
 
-            {/* Context Window */}
-            <View style={sectionStyle}>
-              <Text style={sectionLabelStyle}>Context Window</Text>
-              {contextUsage ? (
-                <View style={{ gap: 4 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <View style={{ flex: 1, height: 6, backgroundColor: colors.border.secondary, borderRadius: 3, overflow: "hidden" }}>
-                      <View style={{ width: `${Math.min(100, Math.round((contextUsage.used / contextUsage.total) * 100))}%` as any, height: "100%", backgroundColor: contextPercent !== null && contextPercent < 20 ? "#ef4444" : colors.accent?.default ?? "#6366f1", borderRadius: 3 }} />
+              {/* Context Window */}
+              <View style={sectionStyle}>
+                <Text style={sectionLabelStyle}>Context Window</Text>
+                {contextUsage ? (
+                  <View style={{ gap: 4 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <View style={{ flex: 1, height: 6, backgroundColor: colors.border.secondary, borderRadius: 3, overflow: "hidden" }}>
+                        <View style={{ width: `${Math.min(100, Math.round((contextUsage.used / contextUsage.total) * 100))}%` as any, height: "100%", backgroundColor: contextPercent !== null && contextPercent < 20 ? "#ef4444" : colors.accent?.default ?? "#6366f1", borderRadius: 3 }} />
+                      </View>
+                      <Text style={{ color: colors.fg.subtle, fontSize: 11, fontFamily: fonts.sans.regular }}>{contextPercent}% left</Text>
                     </View>
-                    <Text style={{ color: colors.fg.subtle, fontSize: 11, fontFamily: fonts.sans.regular }}>{contextPercent}% left</Text>
+                    <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular }}>
+                      {formatTokens(contextUsage.used)} / {formatTokens(contextUsage.total)} tokens used
+                    </Text>
                   </View>
-                  <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular }}>
-                    {formatTokens(contextUsage.used)} / {formatTokens(contextUsage.total)} tokens used
-                  </Text>
-                </View>
-              ) : (
-                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular }}>Usage not available yet</Text>
-              )}
-            </View>
-          </>
-        )}
+                ) : (
+                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular }}>Usage not available yet</Text>
+                )}
+              </View>
+            </>
+          )}
+        </View>
       </ScrollView>
     </InfoSheet>
   );
@@ -4653,14 +4628,11 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={[styles.modelButton, { borderColor: colors.border.secondary, flexShrink: 0, flexGrow: 0, backgroundColor: activeSheet === "tune" ? colors.bg.elevated : "transparent" }]}
+                      style={{ padding: 6, alignItems: "center", justifyContent: "center" }}
                       onPress={() => setActiveSheet(activeSheet === "tune" ? null : "tune")}
                       activeOpacity={0.7}
                     >
-                      <SlidersHorizontal size={13} color={colors.fg.default} style={{ opacity: 0.9 }} />
-                      <Text numberOfLines={1} style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular, marginLeft: 4 }]}>
-                        Configure
-                      </Text>
+                      <SlidersHorizontal size={16} color={colors.fg.default} style={{ opacity: 0.9 }} />
                     </TouchableOpacity>
 
                     <TouchableOpacity

@@ -93,7 +93,6 @@
     "expo-web-browser": "~15.0.9",
     "iconoir-react-native": "^7.11.0",
     "lucide-react-native": "^0.562.0",
-    "material-icon-theme": "^5.33.1",
     "phosphor-react-native": "^3.0.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",

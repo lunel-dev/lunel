@@ -42,8 +42,6 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { typography } from '@/constants/themes';
 import { useConnection } from '@/contexts/ConnectionContext';
 import { useApi, GitStatus, GitCommit, GitCommitDetails, ApiError } from '@/hooks/useApi';
-import { resolveMaterialIconUri } from '@/plugins/extra/explorer/materialIconTheme';
-import { SvgUri } from 'react-native-svg';
 import { PluginPanelProps } from '../../types';
 import InputModal from '@/components/InputModal';
 import ActionSheet from '@/components/ActionSheet';
@@ -157,39 +155,20 @@ function StatusBadge({ status, fonts, colors }: { status: string; fonts: any; co
 }
 
 const GitFileIcon = memo(function GitFileIcon({
-  filePath,
+  filePath: _filePath,
   colors,
 }: {
   filePath: string;
   colors: any;
 }) {
-  const [iconLoadFailed, setIconLoadFailed] = useState(false);
-  const fileName = filePath.split('/').pop() || filePath;
-  const iconUri = resolveMaterialIconUri({ name: fileName, type: 'file' });
-
-  useEffect(() => {
-    setIconLoadFailed(false);
-  }, [iconUri]);
-
-  if (!iconUri || iconLoadFailed) {
-    return <File size={15} color={colors.fg.muted} strokeWidth={2} />;
-  }
-
-  return (
-    <SvgUri
-      width={16}
-      height={16}
-      uri={iconUri}
-      onError={() => setIconLoadFailed(true)}
-    />
-  );
+  return <File size={15} color={colors.fg.muted} strokeWidth={2} />;
 });
 
 function GitPanel({ instanceId, isActive }: PluginPanelProps) {
   const { colors, fonts, spacing, radius } = useTheme();
   const headerHeight = useHeaderHeight();
   const { status: connStatus } = useConnection();
-  const { git } = useApi();
+  const { git, fs } = useApi();
   const isConnected = connStatus === 'connected';
 
   const [activeTab, setActiveTab] = useState<Tab>('changes');
@@ -207,6 +186,11 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
   const [showCommitDetailsModal, setShowCommitDetailsModal] = useState(false);
   const [selectedCommitDetails, setSelectedCommitDetails] = useState<GitCommitDetails | null>(null);
   const [selectedCommitFile, setSelectedCommitFile] = useState<string | null>(null);
+  const [showFileDiffModal, setShowFileDiffModal] = useState(false);
+  const [selectedChangeFile, setSelectedChangeFile] = useState<{ path: string; staged: boolean; status: string } | null>(null);
+  const [selectedChangeDiff, setSelectedChangeDiff] = useState<string>('');
+  const [selectedChangeContent, setSelectedChangeContent] = useState<string | null>(null);
+  const [changeDiffLoading, setChangeDiffLoading] = useState(false);
   const [commitDetailsLoading, setCommitDetailsLoading] = useState(false);
   const [loadingCommitHash, setLoadingCommitHash] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -547,6 +531,30 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
     }
   };
 
+  const handleOpenFileDiff = useCallback(async (path: string, staged: boolean, status: string) => {
+    setChangeDiffLoading(true);
+    setSelectedChangeFile({ path, staged, status });
+    setSelectedChangeDiff('');
+    setSelectedChangeContent(null);
+    setShowFileDiffModal(true);
+    try {
+      const diff = await git.diff(path, staged);
+      setSelectedChangeDiff(diff);
+      if (!staged && status === 'U' && !diff.trim()) {
+        const file = await fs.read(path);
+        if (file.encoding === 'utf8') {
+          setSelectedChangeContent(file.content);
+        }
+      }
+    } catch (err) {
+      Alert.alert('Error', (err as ApiError).message || 'Failed to load diff');
+      setShowFileDiffModal(false);
+      setSelectedChangeFile(null);
+    } finally {
+      setChangeDiffLoading(false);
+    }
+  }, [fs, git]);
+
   const handleDiscard = async (paths?: string[]) => {
     Alert.alert(
       'Discard Changes?',
@@ -761,16 +769,22 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
                         <View style={{ width: 18, alignItems: 'center', justifyContent: 'center' }}>
                           <GitFileIcon filePath={file.path} colors={colors} />
                         </View>
-                        <ScrollView
-                          horizontal
-                          directionalLockEnabled
-                          showsHorizontalScrollIndicator={false}
+                        <TouchableOpacity
+                          onPress={() => { void handleOpenFileDiff(file.path, true, file.status); }}
+                          activeOpacity={0.7}
                           style={{ flex: 1, minWidth: 0 }}
-                          contentContainerStyle={{ alignItems: 'center', gap: 6, paddingRight: 6 }}
                         >
-                          <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.default }}>{name}</Text>
-                          {dir.length > 0 && <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>{dir}</Text>}
-                        </ScrollView>
+                          <ScrollView
+                            horizontal
+                            directionalLockEnabled
+                            showsHorizontalScrollIndicator={false}
+                            style={{ minWidth: 0 }}
+                            contentContainerStyle={{ alignItems: 'center', gap: 6, paddingRight: 6 }}
+                          >
+                            <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.default }}>{name}</Text>
+                            {dir.length > 0 && <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>{dir}</Text>}
+                          </ScrollView>
+                        </TouchableOpacity>
                         <TouchableOpacity
                           onPress={() => handleUnstage([file.path])}
                           disabled={stagingPaths.has(file.path)}
@@ -828,16 +842,22 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
                         <View style={{ width: 18, alignItems: 'center', justifyContent: 'center' }}>
                           <GitFileIcon filePath={file.path} colors={colors} />
                         </View>
-                        <ScrollView
-                          horizontal
-                          directionalLockEnabled
-                          showsHorizontalScrollIndicator={false}
+                        <TouchableOpacity
+                          onPress={() => { void handleOpenFileDiff(file.path, false, file.status); }}
+                          activeOpacity={0.7}
                           style={{ flex: 1, minWidth: 0 }}
-                          contentContainerStyle={{ alignItems: 'center', gap: 6, paddingRight: 6 }}
                         >
-                          <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.default }}>{name}</Text>
-                          {dir.length > 0 && <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>{dir}</Text>}
-                        </ScrollView>
+                          <ScrollView
+                            horizontal
+                            directionalLockEnabled
+                            showsHorizontalScrollIndicator={false}
+                            style={{ minWidth: 0 }}
+                            contentContainerStyle={{ alignItems: 'center', gap: 6, paddingRight: 6 }}
+                          >
+                            <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.default }}>{name}</Text>
+                            {dir.length > 0 && <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>{dir}</Text>}
+                          </ScrollView>
+                        </TouchableOpacity>
                         <TouchableOpacity
                           onPress={() => handleDiscard([file.path])}
                           disabled={discardingPaths.has(file.path)}
@@ -874,16 +894,22 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
                         <View style={{ width: 18, alignItems: 'center', justifyContent: 'center' }}>
                           <GitFileIcon filePath={path} colors={colors} />
                         </View>
-                        <ScrollView
-                          horizontal
-                          directionalLockEnabled
-                          showsHorizontalScrollIndicator={false}
+                        <TouchableOpacity
+                          onPress={() => { void handleOpenFileDiff(path, false, 'U'); }}
+                          activeOpacity={0.7}
                           style={{ flex: 1, minWidth: 0 }}
-                          contentContainerStyle={{ alignItems: 'center', gap: 6, paddingRight: 6 }}
                         >
-                          <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.muted }}>{name}</Text>
-                          {dir.length > 0 && <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>{dir}</Text>}
-                        </ScrollView>
+                          <ScrollView
+                            horizontal
+                            directionalLockEnabled
+                            showsHorizontalScrollIndicator={false}
+                            style={{ minWidth: 0 }}
+                            contentContainerStyle={{ alignItems: 'center', gap: 6, paddingRight: 6 }}
+                          >
+                            <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.muted }}>{name}</Text>
+                            {dir.length > 0 && <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>{dir}</Text>}
+                          </ScrollView>
+                        </TouchableOpacity>
                         <TouchableOpacity
                           onPress={() => handleDiscard([path])}
                           disabled={discardingPaths.has(path)}
@@ -1357,6 +1383,85 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
               </View>
             )}
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showFileDiffModal}
+        transparent={false}
+        animationType="slide"
+        onRequestClose={() => setShowFileDiffModal(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: colors.bg.base }}>
+          <Header
+            title={selectedChangeFile?.path.split('/').pop() ?? 'Diff'}
+            onBack={() => setShowFileDiffModal(false)}
+            colors={colors}
+          />
+
+          {changeDiffLoading ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Loading color={colors.fg.muted} />
+            </View>
+          ) : (
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: spacing[3], paddingBottom: spacing[6] }}>
+              {selectedChangeFile && (
+                <View style={{ marginBottom: spacing[3], gap: spacing[3] }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[2] }}>
+                    <View style={{ width: 18, alignItems: 'center', justifyContent: 'center' }}>
+                      <GitFileIcon filePath={selectedChangeFile.path} colors={colors} />
+                    </View>
+                    <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.mono.regular, color: colors.fg.default }}>
+                      {selectedChangeFile.path}
+                    </Text>
+                    <StatusBadge status={selectedChangeFile.status} fonts={fonts} colors={colors} />
+                  </View>
+                  <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.regular, color: colors.fg.subtle }}>
+                    {selectedChangeFile.staged ? 'Staged changes' : 'Working tree changes'}
+                  </Text>
+                </View>
+              )}
+
+              <View style={{
+                borderRadius: 12,
+                borderWidth: 0.5,
+                borderColor: colors.border.secondary,
+                backgroundColor: colors.bg.raised,
+                overflow: 'hidden',
+              }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing[3], paddingTop: spacing[3], paddingBottom: spacing[2] }}>
+                  <Text style={[sectionHeaderStyle, { color: colors.fg.subtle }]}>
+                    {selectedChangeContent != null ? 'File' : 'Diff'}
+                  </Text>
+                </View>
+                {selectedChangeContent != null ? (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ minWidth: '100%' }}>
+                      <Text
+                        style={{
+                          fontSize: typography.caption,
+                          fontFamily: fonts.mono.regular,
+                          color: colors.fg.default,
+                          paddingHorizontal: 12,
+                          paddingVertical: 10,
+                          lineHeight: 18,
+                        }}
+                        selectable
+                      >
+                        {selectedChangeContent}
+                      </Text>
+                    </View>
+                  </ScrollView>
+                ) : (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ minWidth: '100%' }}>
+                      <DiffViewer diff={selectedChangeDiff} fonts={fonts} colors={colors} />
+                    </View>
+                  </ScrollView>
+                )}
+              </View>
+            </ScrollView>
+          )}
         </View>
       </Modal>
 

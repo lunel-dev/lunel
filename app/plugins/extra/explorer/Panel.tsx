@@ -18,7 +18,6 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { FlashList } from '@shopify/flash-list';
-import { SvgUri } from 'react-native-svg';
 import {
   CloudOff,
   X,
@@ -54,7 +53,6 @@ import { useApi, FileEntry, ApiError, GrepMatch } from '@/hooks/useApi';
 import { gPI, innerApi } from '@/plugins';
 import { usePlugins } from '@/plugins/context';
 import { PluginPanelProps } from '../../types';
-import { resolveMaterialIconUri } from './materialIconTheme';
 import InputModal from '@/components/InputModal';
 
 type SortOption = 'name' | 'size' | 'modified';
@@ -263,42 +261,25 @@ interface FileItemProps {
 const EntryIcon = memo(function EntryIcon({
   item,
   colors,
-  size = 22,
+  size = 18,
 }: {
   item: ExplorerListItem;
   colors: any;
   size?: number;
 }) {
-  const [iconLoadFailed, setIconLoadFailed] = useState(false);
-  const iconUri = item.__navParent ? null : resolveMaterialIconUri(item);
-  const effectiveSize = item.type === 'directory' && !item.__navParent ? size + 2 : size;
-
-  useEffect(() => {
-    setIconLoadFailed(false);
-  }, [iconUri]);
+  const effectiveSize = size;
 
   if (item.__navParent) {
     return <ArrowLeft size={effectiveSize} color="#ffffff" />;
   }
 
-  if (!iconUri || iconLoadFailed) {
-    return item.type === 'directory'
-      ? <Folder size={effectiveSize} color={colors.accent.default} />
-      : <File size={effectiveSize} color={colors.fg.muted} />;
-  }
-
-  return (
-    <SvgUri
-      width={effectiveSize + 2}
-      height={effectiveSize + 2}
-      uri={iconUri}
-      onError={() => setIconLoadFailed(true)}
-    />
-  );
+  return item.type === 'directory'
+    ? <Folder size={effectiveSize} color={colors.accent.default} />
+    : <File size={effectiveSize} color={colors.fg.muted} />;
 });
 
 const SearchResultFileIcon = memo(function SearchResultFileIcon({
-  filePath,
+  filePath: _filePath,
   fallbackColor,
   size = 14,
 }: {
@@ -306,29 +287,7 @@ const SearchResultFileIcon = memo(function SearchResultFileIcon({
   fallbackColor: string;
   size?: number;
 }) {
-  const [iconLoadFailed, setIconLoadFailed] = useState(false);
-  const fileName = useMemo(() => filePath.split('/').pop() || filePath, [filePath]);
-  const iconUri = useMemo(
-    () => resolveMaterialIconUri({ name: fileName, type: 'file' }),
-    [fileName]
-  );
-
-  useEffect(() => {
-    setIconLoadFailed(false);
-  }, [iconUri]);
-
-  if (!iconUri || iconLoadFailed) {
-    return <FileCode2 size={size} color={fallbackColor} strokeWidth={1.9} />;
-  }
-
-  return (
-    <SvgUri
-      width={size + 2}
-      height={size + 2}
-      uri={iconUri}
-      onError={() => setIconLoadFailed(true)}
-    />
-  );
+  return <File size={size} color={fallbackColor} strokeWidth={1.9} />;
 });
 
 const FileItem = memo(function FileItem({
@@ -345,12 +304,15 @@ const FileItem = memo(function FileItem({
   spacing,
   radius,
 }: FileItemProps) {
-  const secondaryText = secondaryTextOverride ?? (item.__navParent
-    ? 'Back'
-    : item.type === 'directory'
-      ? ''
-      : formatFileSize(item.size));
+  const secondaryText = secondaryTextOverride ?? (item.type === 'directory'
+    ? ''
+    : formatFileSize(item.size));
   const showSecondaryLine = secondaryText.trim().length > 0;
+  const inlineFileMeta = item.type === 'file' && !item.__navParent && !secondaryTextOverride
+    ? `${formatFileSize(item.size)}${item.mtime ? ` · ${formatTime(item.mtime)}` : ''}`
+    : '';
+  const effectiveTitleRightText = titleRightText || inlineFileMeta;
+  const showInlineFileMeta = inlineFileMeta.length > 0 && !titleRightText;
   const shouldShowChevron = showChevron ?? (item.type === 'directory' && !item.__navParent);
   const longPressTriggeredRef = useRef(false);
 
@@ -367,6 +329,41 @@ const FileItem = memo(function FileItem({
     onPress();
   };
 
+  if (item.__navParent) {
+    return (
+      <TouchableOpacity
+        onPress={handlePress}
+        onLongPress={handleLongPress}
+        activeOpacity={0.7}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[2],
+          gap: spacing[2] + (spacing[3] - spacing[2]) * 0.5,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: `${colors.fg.subtle}22`,
+        }}
+      >
+        <View style={{
+          backgroundColor: 'transparent',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}>
+          <ArrowLeft size={18} color={colors.fg.muted} />
+        </View>
+        <Text style={{
+          flex: 1,
+          fontSize: typography.body,
+          fontFamily: fonts.sans.regular,
+          color: colors.fg.default,
+        }} numberOfLines={1}>
+          Back
+        </Text>
+      </TouchableOpacity>
+    );
+  }
+
   return (
     <TouchableOpacity
       onPress={handlePress}
@@ -376,8 +373,10 @@ const FileItem = memo(function FileItem({
         flexDirection: 'row',
         alignItems: 'center',
         paddingHorizontal: spacing[3],
-        paddingVertical: spacing[1],
+        paddingVertical: spacing[2],
         gap: spacing[2] + (spacing[3] - spacing[2]) * 0.5,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: `${colors.fg.subtle}22`,
       }}
     >
       <View style={{
@@ -387,29 +386,31 @@ const FileItem = memo(function FileItem({
       }}>
         <EntryIcon item={item} colors={colors} />
       </View>
-      <View style={{ flex: 1, justifyContent: showSecondaryLine ? 'flex-start' : 'center' }}>
+      <View style={{ flex: 1, justifyContent: showSecondaryLine && !showInlineFileMeta ? 'flex-start' : 'center' }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[2] }}>
           <Text style={{
             fontSize: typography.body,
             fontFamily: fonts.sans.regular,
             color: colors.fg.default,
-            maxWidth: titleRightText ? '62%' : '100%',
+            maxWidth: effectiveTitleRightText ? '62%' : '100%',
           }} numberOfLines={1}>
             {item.name}
           </Text>
-          {titleRightText ? (
+          {effectiveTitleRightText ? (
             <Text style={{
               maxWidth: '38%',
               fontSize: typography.caption,
               fontFamily: fonts.sans.regular,
               color: colors.fg.muted,
               opacity: 0.68,
+              marginLeft: 'auto',
+              textAlign: 'right',
             }} numberOfLines={1}>
-              {titleRightText}
+              {effectiveTitleRightText}
             </Text>
           ) : null}
         </View>
-        {showSecondaryLine ? (
+        {showSecondaryLine && !showInlineFileMeta ? (
           <Text style={{
             fontSize: typography.caption,
             fontFamily: fonts.sans.regular,
@@ -615,6 +616,49 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     return result;
   }, [items, sortBy, filterBy, showHiddenFiles]);
 
+  const currentDirSearchResults = useMemo<FileSearchResult[]>(() => {
+    if (searchMode !== 'files' || searchFromRoot) return [];
+
+    const query = searchQuery.trim();
+    if (!query) return [];
+
+    const matches: (FileSearchResult & { score: number })[] = [];
+    const normalizedQuery = query.toLowerCase();
+
+    for (const entry of currentItems) {
+      const relPath = currentPath === '.' ? entry.name : `${currentPath}/${entry.name}`;
+      const passesFilter = filterBy === 'all'
+        || (filterBy === 'files' && entry.type === 'file')
+        || (filterBy === 'folders' && entry.type === 'directory');
+      if (!passesFilter) continue;
+
+      const nameScore = computeFuzzyFileScore(entry.name, normalizedQuery);
+      const pathScore = computeFuzzyFileScore(relPath, normalizedQuery);
+      const score = Math.max(
+        nameScore == null ? -Infinity : nameScore + 12,
+        pathScore == null ? -Infinity : pathScore
+      );
+      if (score === -Infinity) continue;
+
+      matches.push({
+        path: relPath,
+        name: entry.name,
+        type: entry.type,
+        size: entry.size,
+        mtime: entry.mtime,
+        score,
+      });
+    }
+
+    matches.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+      return a.path.localeCompare(b.path);
+    });
+
+    return matches.map(({ score: _score, ...item }) => item);
+  }, [currentItems, currentPath, filterBy, searchFromRoot, searchMode, searchQuery]);
+
   useEffect(() => {
     if (!isConnected) {
       setDirectoryItemCounts({});
@@ -758,7 +802,9 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             pathScore == null ? -Infinity : pathScore
           );
 
-          const passesFilter = entry.type === 'file' && (filterBy === 'all' || filterBy === 'files');
+          const passesFilter = filterBy === 'all'
+            || (filterBy === 'files' && entry.type === 'file')
+            || (filterBy === 'folders' && entry.type === 'directory');
 
           if (score > -Infinity && passesFilter) {
             matches.push({
@@ -1580,7 +1626,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   color: colors.fg.default,
                   outline: 'none',
                 } as any}
-                placeholder={searchMode === 'codebase' ? 'search in codebase...' : 'search files...'}
+                placeholder={searchMode === 'codebase' ? 'search in codebase...' : 'search paths...'}
                 placeholderTextColor={colors.fg.subtle}
                 value={searchQuery}
                 onChangeText={(value) => {
@@ -1750,7 +1796,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 fontFamily: fonts.sans.medium,
                 color: searchMode === 'files' ? '#ffffff' : colors.fg.default,
               }}>
-                Files Search
+                Path Search
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1796,8 +1842,11 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   </Text>
                 </View>
               ) : codebaseSearchLoading ? (
-                <View style={{ flex: 1 }}>
-                  <Loading />
+                <View style={searchStateContainerStyle}>
+                  <ActivityIndicator size="small" color={colors.fg.muted} />
+                  <Text style={searchStateTextStyle}>
+                    Searching in {codebasePath.trim() || '.'}...
+                  </Text>
                 </View>
               ) : codebaseSearchError ? (
                 <View style={searchStateContainerStyle}>
@@ -1965,15 +2014,48 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             </View>
           ) : showFileSearchView && hasQuery ? (
             <View style={{ flex: 1 }}>
-              {!hasFileSearchRun ? (
+              {!searchFromRoot ? (
+                currentDirSearchResults.length === 0 ? (
+                  <View style={searchStateContainerStyle}>
+                    <Search size={28} color={colors.fg.subtle} />
+                    <Text style={searchStateTextStyle}>
+                      No matching paths inside {currentPath || '.'}
+                    </Text>
+                  </View>
+                ) : (
+                  <FlashList
+                    data={currentDirSearchResults}
+                    estimatedItemSize={56}
+                    contentContainerStyle={{ paddingTop: spacing[2], paddingBottom: spacing[6] }}
+                    keyExtractor={(item) => item.path}
+                    renderItem={({ item }) => (
+                      <FileItem
+                        item={{ name: item.path, type: item.type, size: item.size, mtime: item.mtime }}
+                        isFirst={false}
+                        onPress={() => { void openFileSearchResult(item); }}
+                        showChevron={item.type === 'directory'}
+                        colors={colors}
+                        fonts={fonts}
+                        spacing={spacing}
+                        radius={radius}
+                      />
+                    )}
+                  />
+                )
+              ) : !hasFileSearchRun ? (
                 <View style={searchStateContainerStyle}>
                   <Search size={28} color={colors.fg.subtle} />
                   <Text style={searchStateTextStyle}>
-                    Tap search to find files {searchFromRoot ? `in ${currentPath || '.'} + child folders` : `only in ${currentPath || '.'}`}
+                    Tap search to find paths {searchFromRoot ? `in ${currentPath || '.'} + child folders` : `only in ${currentPath || '.'}`}
                   </Text>
                 </View>
               ) : repoFileSearchLoading ? (
-                <Loading />
+                <View style={searchStateContainerStyle}>
+                  <ActivityIndicator size="small" color={colors.fg.muted} />
+                  <Text style={searchStateTextStyle}>
+                    Searching in {currentPath || '.'} and child folders...
+                  </Text>
+                </View>
               ) : repoFileSearchError ? (
                 <View style={searchStateContainerStyle}>
                   <AlertCircle size={28} color={'#ef4444'} />
@@ -1985,7 +2067,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 <View style={searchStateContainerStyle}>
                   <Search size={28} color={colors.fg.subtle} />
                   <Text style={searchStateTextStyle}>
-                    No matching files {searchFromRoot ? `in ${currentPath || '.'} + child folders` : `inside ${currentPath || '.'}`}
+                    No matching paths {searchFromRoot ? `in ${currentPath || '.'} + child folders` : `inside ${currentPath || '.'}`}
                   </Text>
                 </View>
               ) : (
@@ -1996,11 +2078,9 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                   keyExtractor={(item) => item.path}
                   renderItem={({ item }) => (
                     <FileItem
-                      item={{ name: item.name, type: item.type, size: item.size, mtime: item.mtime }}
+                      item={{ name: item.path, type: item.type, size: item.size, mtime: item.mtime }}
                       isFirst={false}
                       onPress={() => { void openFileSearchResult(item); }}
-                      secondaryTextOverride={item.type === 'directory' ? 'Directory' : undefined}
-                      titleRightText={getParentPathLabel(item.path)}
                       showChevron={item.type === 'directory'}
                       colors={colors}
                       fonts={fonts}
@@ -2101,10 +2181,10 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           keyboardDismissMode="on-drag"
         >
           <View>
-            <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.medium, color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>
+            <Text style={{ fontSize: typography.caption, fontFamily: fonts.sans.medium, color: colors.fg.subtle, marginBottom: 4 }}>
               Items
             </Text>
-            <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: '#ffffff' }}>
+            <Text style={{ fontSize: typography.body, fontFamily: fonts.sans.regular, color: colors.fg.default }}>
               {selectedItem?.type === 'directory'
                 ? (selectedDirectoryItemCount == null
                   ? '...'
@@ -2116,29 +2196,29 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           <View style={{ gap: spacing[2], marginTop: spacing[2] }}>
             {selectedItem?.type === 'file' && selectedItemIsBinary !== true ? (
               <TouchableOpacity
-                style={[styles.sheetRow, { borderRadius: 10, backgroundColor: colors.accent.default, marginBottom: 0 }]}
+                style={[styles.sheetRow, { borderRadius: 10, backgroundColor: `${colors.accent.default}18`, marginBottom: 0 }]}
                 onPress={() => { if (selectedItem) openInEditor(selectedItem, selectedItemPath); }}
                 activeOpacity={0.7}
               >
-                <FileText size={20} color={'#ffffff'} />
-                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
+                <FileText size={20} color={colors.accent.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.semibold, color: colors.accent.default }}>
                   Open in editor
                 </Text>
-                <ChevronRight size={18} color={'#ffffff'} />
+                <ChevronRight size={18} color={colors.accent.default} />
               </TouchableOpacity>
             ) : null}
 
             {selectedItem?.type === 'file' && selectedItemIsBinary === true ? (
               <TouchableOpacity
-                style={[styles.sheetRow, { borderRadius: 10, backgroundColor: colors.accent.default, marginBottom: 0 }]}
+                style={[styles.sheetRow, { borderRadius: 10, backgroundColor: `${colors.accent.default}18`, marginBottom: 0 }]}
                 onPress={() => { if (selectedItem) openWithSystem(selectedItem, selectedItemPath); }}
                 activeOpacity={0.7}
               >
-                <ExternalLink size={20} color={'#ffffff'} />
-                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.semibold, color: '#ffffff' }}>
+                <ExternalLink size={20} color={colors.accent.default} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.semibold, color: colors.accent.default }}>
                   Open
                 </Text>
-                <ChevronRight size={18} color={'#ffffff'} />
+                <ChevronRight size={18} color={colors.accent.default} />
               </TouchableOpacity>
             ) : null}
 
@@ -2262,11 +2342,11 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 onPress={() => { if (selectedItem) handleDelete(selectedItem, selectedItemPath); }}
                 activeOpacity={0.7}
               >
-                <Trash size={18} color={'#ef4444'} />
-                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: '#ef4444' }}>
+                <Trash size={18} color={colors.git.deleted} />
+                <Text style={{ flex: 1, fontSize: typography.body, fontFamily: fonts.sans.medium, color: colors.git.deleted }}>
                   Delete
                 </Text>
-                <ChevronRight size={18} color={'#ef4444'} />
+                <ChevronRight size={18} color={colors.git.deleted} />
               </TouchableOpacity>
             </View>
           </View>
@@ -2363,7 +2443,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             <Text style={{
               fontSize: typography.caption,
               fontFamily: fonts.sans.semibold,
-              color: 'rgba(255,255,255,0.4)',
+              color: colors.fg.subtle,
               textTransform: 'uppercase',
               letterSpacing: 0.5,
               marginBottom: spacing[2],
@@ -2387,13 +2467,13 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 >
                   <Circle
                     size={18}
-                    color={sortBy === option ? colors.fg.default : 'rgba(255,255,255,0.3)'}
+                    color={sortBy === option ? colors.fg.default : colors.fg.subtle}
                     fill={sortBy === option ? colors.fg.default : 'transparent'}
                   />
                   <Text style={{
                     fontSize: typography.body,
                     fontFamily: sortBy === option ? fonts.sans.semibold : fonts.sans.regular,
-                    color: sortBy === option ? colors.fg.default : '#ffffff',
+                    color: sortBy === option ? colors.fg.default : colors.fg.muted,
                   }}>
                     {getSortLabel(option)}
                   </Text>
@@ -2406,7 +2486,7 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
             <Text style={{
               fontSize: typography.caption,
               fontFamily: fonts.sans.semibold,
-              color: 'rgba(255,255,255,0.4)',
+              color: colors.fg.subtle,
               textTransform: 'uppercase',
               letterSpacing: 0.5,
               marginBottom: spacing[2],
@@ -2430,13 +2510,13 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
                 >
                   <Circle
                     size={18}
-                    color={filterBy === option ? colors.fg.default : 'rgba(255,255,255,0.3)'}
+                    color={filterBy === option ? colors.fg.default : colors.fg.subtle}
                     fill={filterBy === option ? colors.fg.default : 'transparent'}
                   />
                   <Text style={{
                     fontSize: typography.body,
                     fontFamily: filterBy === option ? fonts.sans.semibold : fonts.sans.regular,
-                    color: filterBy === option ? colors.fg.default : '#ffffff',
+                    color: filterBy === option ? colors.fg.default : colors.fg.muted,
                   }}>
                     {getFilterLabel(option)}
                   </Text>
