@@ -45,6 +45,8 @@ import { useApi, GitStatus, GitCommit, GitCommitDetails, ApiError } from '@/hook
 import { resolveMaterialIconUri } from '@/plugins/extra/explorer/materialIconTheme';
 import { SvgUri } from 'react-native-svg';
 import { PluginPanelProps } from '../../types';
+import InputModal from '@/components/InputModal';
+import ActionSheet from '@/components/ActionSheet';
 
 type Tab = 'changes' | 'history' | 'branches';
 
@@ -199,6 +201,9 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<{ current: string; branches: string[] } | null>(null);
 
+  const [showCommitInputModal, setShowCommitInputModal] = useState(false);
+  const [showBranchInputModal, setShowBranchInputModal] = useState(false);
+  const [showPullActionSheet, setShowPullActionSheet] = useState(false);
   const [showCommitDetailsModal, setShowCommitDetailsModal] = useState(false);
   const [selectedCommitDetails, setSelectedCommitDetails] = useState<GitCommitDetails | null>(null);
   const [selectedCommitFile, setSelectedCommitFile] = useState<string | null>(null);
@@ -344,7 +349,7 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
       return;
     }
 
-    Alert.alert('Commit', 'Native commit input prompt is currently available on iOS only.');
+    setShowCommitInputModal(true);
   }, [dismissGitInputs, actionLoading, handleCommit]);
 
   const handlePull = async () => {
@@ -402,13 +407,17 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
   };
 
   const handlePullLongPress = () => {
-    Alert.alert('Pull options', undefined, [
-      { text: 'Pull', onPress: () => { void handlePull(); } },
-      { text: 'Merge', onPress: () => { void handlePullWithStrategy('merge'); } },
-      { text: 'Rebase', onPress: () => { void handlePullWithStrategy('rebase'); } },
-      { text: 'Fast-forward only', onPress: () => { void handlePullWithStrategy('ff-only'); } },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    if (Platform.OS === 'ios') {
+      Alert.alert('Pull options', undefined, [
+        { text: 'Pull', onPress: () => { void handlePull(); } },
+        { text: 'Merge', onPress: () => { void handlePullWithStrategy('merge'); } },
+        { text: 'Rebase', onPress: () => { void handlePullWithStrategy('rebase'); } },
+        { text: 'Fast-forward only', onPress: () => { void handlePullWithStrategy('ff-only'); } },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    } else {
+      setShowPullActionSheet(true);
+    }
   };
 
   const handlePushWithOptions = async (force?: 'force-with-lease' | 'force') => {
@@ -519,7 +528,7 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
       return;
     }
 
-    Alert.alert('New Branch', 'Native branch input prompt is currently available on iOS only.');
+    setShowBranchInputModal(true);
   }, [dismissGitInputs, actionLoading, handleCreateBranch]);
 
   const handleOpenCommitDetails = async (hash: string) => {
@@ -1350,6 +1359,38 @@ function GitPanel({ instanceId, isActive }: PluginPanelProps) {
           </ScrollView>
         </View>
       </Modal>
+
+      <InputModal
+        visible={showCommitInputModal}
+        title="Commit"
+        description="Enter commit message"
+        acceptLabel="Commit"
+        cancelLabel="Cancel"
+        onCancel={() => setShowCommitInputModal(false)}
+        onAccept={(value) => { setShowCommitInputModal(false); void handleCommit(value); }}
+      />
+
+      <InputModal
+        visible={showBranchInputModal}
+        title="New Branch"
+        description="Enter branch name"
+        acceptLabel="Create"
+        cancelLabel="Cancel"
+        onCancel={() => setShowBranchInputModal(false)}
+        onAccept={(value) => { setShowBranchInputModal(false); void handleCreateBranch(value); }}
+      />
+
+      <ActionSheet
+        visible={showPullActionSheet}
+        onClose={() => setShowPullActionSheet(false)}
+        title="Pull options"
+        options={[
+          { label: 'Pull', onPress: () => { void handlePull(); } },
+          { label: 'Merge', onPress: () => { void handlePullWithStrategy('merge'); } },
+          { label: 'Rebase', onPress: () => { void handlePullWithStrategy('rebase'); } },
+          { label: 'Fast-forward only', onPress: () => { void handlePullWithStrategy('ff-only'); } },
+        ]}
+      />
 
       <Toast
         visible={!!toast}

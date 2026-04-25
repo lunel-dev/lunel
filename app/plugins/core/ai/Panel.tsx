@@ -4067,7 +4067,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         title="New Session"
         description="Choose an AI backend to start a new session"
       >
-        <View style={{ gap: 6, paddingBottom: 80 }}>
+        <View style={{ gap: 6, paddingBottom: 16 }}>
           {[
             { backend: "codex" as const, label: "Codex", description: "OpenAI Codex CLI", Icon: Codex },
             { backend: "opencode" as const, label: "OpenCode", description: "The open source AI coding agent", Icon: OpenCode },

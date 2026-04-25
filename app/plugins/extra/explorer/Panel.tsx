@@ -9,6 +9,7 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
+  Platform,
   BackHandler,
   InteractionManager,
   Linking,
@@ -54,6 +55,7 @@ import { gPI, innerApi } from '@/plugins';
 import { usePlugins } from '@/plugins/context';
 import { PluginPanelProps } from '../../types';
 import { resolveMaterialIconUri } from './materialIconTheme';
+import InputModal from '@/components/InputModal';
 
 type SortOption = 'name' | 'size' | 'modified';
 type FilterOption = 'all' | 'files' | 'folders';
@@ -474,6 +476,12 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
   const [uploading, setUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [uploadStage, setUploadStage] = useState<'idle' | 'preparing' | 'writing'>('idle');
+  const [showCreateFileModal, setShowCreateFileModal] = useState(false);
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameInitialValue, setRenameInitialValue] = useState('');
+  const [renameTitle, setRenameTitle] = useState('');
+  const pendingRenameRef = useRef<{ fromPath: string; currentName: string } | null>(null);
   const uploadPickerInFlightRef = useRef(false);
   const uploadCancelRequestedRef = useRef(false);
   const listRef = useRef<FlashList<ExplorerListItem> | null>(null);
@@ -1107,31 +1115,35 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     };
   }, [currentPath, fs, selectedItem, selectedItemPathOverride]);
 
+  const handleCreateSubmit = async (value: string, type: 'file' | 'directory') => {
+    const name = value.trim();
+    if (!name) return;
+    const path = currentPath === '.' ? name : `${currentPath}/${name}`;
+    try {
+      await fs.create(path, type);
+      loadDirectory(currentPath);
+    } catch (err) {
+      const apiError = err as ApiError;
+      Alert.alert('Error', apiError.message || 'Failed to create');
+    }
+  };
+
   const promptCreate = (type: 'file' | 'directory') => {
-    Alert.prompt(
-      `New ${type === 'file' ? 'File' : 'Folder'}`,
-      undefined,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Create',
-          onPress: async (value) => {
-            const name = (value || '').trim();
-            if (!name) return;
-            const path = currentPath === '.' ? name : `${currentPath}/${name}`;
-            try {
-              await fs.create(path, type);
-              loadDirectory(currentPath);
-            } catch (err) {
-              const apiError = err as ApiError;
-              Alert.alert('Error', apiError.message || 'Failed to create');
-            }
-          },
-        },
-      ],
-      'plain-text',
-      '',
-    );
+    if (Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
+      Alert.prompt(
+        `New ${type === 'file' ? 'File' : 'Folder'}`,
+        undefined,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Create', onPress: (value) => { void handleCreateSubmit(value ?? '', type); } },
+        ],
+        'plain-text',
+        '',
+      );
+      return;
+    }
+    if (type === 'file') setShowCreateFileModal(true);
+    else setShowCreateFolderModal(true);
   };
 
   const handleDelete = async (item: FileEntry, pathOverride?: string) => {
@@ -1160,44 +1172,53 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
     );
   };
 
+  const handleRenameSubmit = async (value: string) => {
+    const pending = pendingRenameRef.current;
+    if (!pending) return;
+    const { fromPath, currentName } = pending;
+    const nextName = value.trim();
+    if (!nextName || nextName === currentName) return;
+    if (nextName.includes('/') || nextName.includes('\\')) {
+      Alert.alert('Invalid name', 'Name cannot contain path separators');
+      return;
+    }
+    const dirPart = fromPath.includes('/') ? fromPath.substring(0, fromPath.lastIndexOf('/')) : '.';
+    const to = dirPart === '.' ? nextName : `${dirPart}/${nextName}`;
+    try {
+      await fs.move(fromPath, to);
+      await gPI.editor.notifyFileRenamed(fromPath, to);
+      loadDirectory(currentPath);
+    } catch (err) {
+      const apiError = err as ApiError;
+      Alert.alert('Error', apiError.message || 'Failed to rename');
+    }
+  };
+
   const openRenameModal = () => {
     if (!selectedItem) return;
     const fromPath = selectedItemPathOverride ?? (currentPath === '.' ? selectedItem.name : `${currentPath}/${selectedItem.name}`);
     const currentName = selectedItem.name;
+    const title = `Rename ${selectedItem.type === 'directory' ? 'Folder' : 'File'}`;
     closeModal();
 
-    Alert.prompt(
-      `Rename ${selectedItem.type === 'directory' ? 'Folder' : 'File'}`,
-      undefined,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Rename',
-          onPress: async (value) => {
-            const nextName = (value || '').trim();
-            if (!nextName || nextName === currentName) return;
-            if (nextName.includes('/') || nextName.includes('\\')) {
-              Alert.alert('Invalid name', 'Name cannot contain path separators');
-              return;
-            }
-            const dirPart = fromPath.includes('/')
-              ? fromPath.substring(0, fromPath.lastIndexOf('/'))
-              : '.';
-            const to = dirPart === '.' ? nextName : `${dirPart}/${nextName}`;
-            try {
-              await fs.move(fromPath, to);
-              await gPI.editor.notifyFileRenamed(fromPath, to);
-              loadDirectory(currentPath);
-            } catch (err) {
-              const apiError = err as ApiError;
-              Alert.alert('Error', apiError.message || 'Failed to rename');
-            }
-          },
-        },
-      ],
-      'plain-text',
-      currentName,
-    );
+    if (Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
+      Alert.prompt(
+        title,
+        undefined,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Rename', onPress: (value) => { void handleRenameSubmit(value ?? ''); } },
+        ],
+        'plain-text',
+        currentName,
+      );
+      return;
+    }
+
+    pendingRenameRef.current = { fromPath, currentName };
+    setRenameTitle(title);
+    setRenameInitialValue(currentName);
+    setShowRenameModal(true);
   };
 
   const handleUploadFile = async () => {
@@ -2425,6 +2446,34 @@ function ExplorerPanel({ instanceId, isActive }: PluginPanelProps) {
           </View>
         </ScrollView>
       </InfoSheet>
+
+      <InputModal
+        visible={showCreateFileModal}
+        title="New File"
+        acceptLabel="Create"
+        cancelLabel="Cancel"
+        onCancel={() => setShowCreateFileModal(false)}
+        onAccept={(value) => { setShowCreateFileModal(false); void handleCreateSubmit(value, 'file'); }}
+      />
+
+      <InputModal
+        visible={showCreateFolderModal}
+        title="New Folder"
+        acceptLabel="Create"
+        cancelLabel="Cancel"
+        onCancel={() => setShowCreateFolderModal(false)}
+        onAccept={(value) => { setShowCreateFolderModal(false); void handleCreateSubmit(value, 'directory'); }}
+      />
+
+      <InputModal
+        visible={showRenameModal}
+        title={renameTitle}
+        acceptLabel="Rename"
+        cancelLabel="Cancel"
+        initialValue={renameInitialValue}
+        onCancel={() => setShowRenameModal(false)}
+        onAccept={(value) => { setShowRenameModal(false); void handleRenameSubmit(value); }}
+      />
 
     </View>
   );

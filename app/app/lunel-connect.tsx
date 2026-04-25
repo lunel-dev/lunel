@@ -1,6 +1,7 @@
 import { useTheme } from "@/contexts/ThemeContext";
 import Toast from "@/components/Toast";
 import InfoSheet from "@/components/InfoSheet";
+import InputModal from "@/components/InputModal";
 import { StatusBar } from "expo-status-bar";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
@@ -583,63 +584,19 @@ const LunelConnect = () => {
         </ScrollView>
       </InfoSheet>
 
-      {/* Enter code sheet */}
-      <InfoSheet
+      <InputModal
         visible={showCodeInput}
-        onClose={() => setShowCodeInput(false)}
         title="Enter code"
         description="Type the code shown in your terminal"
-      >
-        <View style={[styles.codeSheetContent, { paddingBottom: insets.bottom + 24 }]}>
-          <Text style={{ color: colors.fg.default, fontSize: 13, fontFamily: fonts.sans.semibold }}>
-            Connection code
-          </Text>
-          <TextInput
-            style={[
-              styles.codeSheetInput,
-              {
-                backgroundColor: colors.bg.raised,
-                borderColor: colors.border.secondary,
-                color: colors.fg.default,
-                fontFamily: fonts.sans.regular,
-              },
-            ]}
-            placeholder="e.g. abc-123-xyz"
-            placeholderTextColor={colors.fg.subtle}
-            value={manualCode}
-            onChangeText={(text) => { setManualCode(text); setError(null); }}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!isConnecting}
-            autoFocus
-            returnKeyType="go"
-            onSubmitEditing={() => { handleConnect(); setShowCodeInput(false); }}
-          />
-          <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular, lineHeight: 18 }}>
-            Enter the short code shown next to the QR code in your terminal.
-          </Text>
-          <TouchableOpacity
-            onPress={() => { handleConnect(); setShowCodeInput(false); }}
-            disabled={!manualCode.trim() || isConnecting}
-            activeOpacity={0.8}
-            style={[
-              styles.codeSheetButton,
-              {
-                backgroundColor: manualCode.trim() ? colors.fg.default : colors.bg.raised,
-                borderColor: manualCode.trim() ? colors.fg.default : colors.border.secondary,
-              },
-            ]}
-          >
-            {isConnecting ? (
-              <Animated.View style={{ transform: [{ rotate: loaderSpin }] }}>
-                <LoaderCircle size={18} color={manualCode.trim() ? colors.bg.base : colors.fg.subtle} strokeWidth={2} />
-              </Animated.View>
-            ) : (
-              <Text style={{ color: manualCode.trim() ? colors.bg.base : colors.fg.subtle, fontSize: 15, fontFamily: fonts.sans.semibold }}>Connect</Text>
-            )}
-          </TouchableOpacity>
-        </View>
-      </InfoSheet>
+        placeholder="e.g. abc-123-xyz"
+        acceptLabel="Connect"
+        cancelLabel="Cancel"
+        onCancel={() => setShowCodeInput(false)}
+        onAccept={(code) => {
+          setShowCodeInput(false);
+          if (code.trim()) handleConnectWithCode(code.trim());
+        }}
+      />
     </View>
     </TouchableWithoutFeedback>
   );
