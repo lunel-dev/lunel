@@ -2267,6 +2267,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const messagesListRef = useRef<FlashList<any>>(null);
   const messagesMapRef = useRef<Record<string, AIMessage[]>>({});
   const streamingBySessionRef = useRef<Record<string, true>>({});
+  const codexFinalSyncInFlightRef = useRef<Set<string>>(new Set());
   const isNearBottomRef = useRef(true);
   const autoFollowRef = useRef(true);
   const userDraggingMessagesRef = useRef(false);
@@ -2569,12 +2570,22 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               return next;
             });
             setSessionActivityLabels((prev) => ({ ...prev, [sessId]: "Done" }));
-            if (backend === "codex") {
-              logger.info("ai-panel", "skipping codex final sync", {
+            // Codex streams partial deltas; after completion force a canonical
+            // re-read so final rendering is clean and fully normalized.
+            if (backend === "codex" && !codexFinalSyncInFlightRef.current.has(sessId)) {
+              logger.info("ai-panel", "starting codex final sync", {
                 sessionId: sessId,
-                reason: "streamed state is currently richer than getMessages() history",
-                currentMessageCount: (messagesMapRef.current[sessId] || []).length,
-                currentPartCount: (messagesMapRef.current[sessId] || []).reduce((sum, message) => sum + (message.parts?.length || 0), 0),
+                beforeMessageCount: (messagesMapRef.current[sessId] || []).length,
+                beforePartCount: (messagesMapRef.current[sessId] || []).reduce((sum, message) => sum + (message.parts?.length || 0), 0),
+              });
+              codexFinalSyncInFlightRef.current.add(sessId);
+              void refreshSessionMessagesRef.current(sessId, "codex", true).finally(() => {
+                codexFinalSyncInFlightRef.current.delete(sessId);
+                logger.info("ai-panel", "finished codex final sync", {
+                  sessionId: sessId,
+                  afterMessageCount: (messagesMapRef.current[sessId] || []).length,
+                  afterPartCount: (messagesMapRef.current[sessId] || []).reduce((sum, message) => sum + (message.parts?.length || 0), 0),
+                });
               });
             }
           }
