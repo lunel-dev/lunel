@@ -1086,6 +1086,15 @@ function buildCommandGroupLabel(parts: AIPart[]): string {
   return `${eventCount} Event${eventCount === 1 ? "" : "s"}`;
 }
 
+function isEventDisplayPart(part: AIPart): boolean {
+  if (isHiddenMetaPart(part)) return false;
+  if (part.type === "reasoning" || part.type === "plan") return true;
+  if (part.type === "tool" || part.type === "tool-call" || part.type === "tool-result" || part.type === "file-change") {
+    return true;
+  }
+  return false;
+}
+
 function buildMessageDisplayItems(parts: AIPart[]): MessageDisplayItem[] {
   const items: MessageDisplayItem[] = [];
   let i = 0;
@@ -1095,40 +1104,19 @@ function buildMessageDisplayItems(parts: AIPart[]): MessageDisplayItem[] {
       i += 1;
       continue;
     }
-    if (isExplorationPart(part)) {
+    if (isEventDisplayPart(part)) {
       const runStart = i;
-      while (i < parts.length && isExplorationPart(parts[i])) i += 1;
-      const runParts = parts.slice(runStart, i);
-      items.push({
-        kind: "exploration-group",
-        key: `exploration-group-${String((runParts[0] as any).id || runStart)}`,
-        parts: runParts,
-      });
-      continue;
-    }
-    if (isCommandToolPart(part)) {
-      const runStart = i;
-      while (i < parts.length && isCommandToolPart(parts[i])) i += 1;
-      const runParts = parts.slice(runStart, i);
-      if (runParts.length > 1) {
-        items.push({
-          kind: "command-run-group",
-          key: `command-run-group-${String((runParts[0] as any).id || runStart)}`,
-          parts: runParts,
-        });
-      } else {
-        items.push({
-          kind: "part",
-          key: String((runParts[0] as any).id || `part-${runStart}`),
-          part: runParts[0],
-        });
+      const runParts: AIPart[] = [];
+      while (i < parts.length) {
+        const current = parts[i];
+        if (isHiddenMetaPart(current)) {
+          i += 1;
+          continue;
+        }
+        if (!isEventDisplayPart(current)) break;
+        runParts.push(current);
+        i += 1;
       }
-      continue;
-    }
-    if (isGroupablePart(part)) {
-      const runStart = i;
-      while (i < parts.length && isGroupablePart(parts[i])) i += 1;
-      const runParts = parts.slice(runStart, i);
       if (runParts.length > 1) {
         items.push({
           kind: "command-group",
@@ -1152,6 +1140,197 @@ function buildMessageDisplayItems(parts: AIPart[]): MessageDisplayItem[] {
     }
   }
   return items;
+}
+
+function previewPartText(value: unknown, maxLength = 80): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function summarizeMessagesForDebug(messages: AIMessage[]) {
+  return messages.map((message) => {
+    const parts = Array.isArray(message.parts) ? message.parts : [];
+    const displayItems = buildMessageDisplayItems(parts);
+    return {
+      id: message.id,
+      role: message.role,
+      partCount: parts.length,
+      displayItems: displayItems.map((item) => (
+        item.kind === "part"
+          ? {
+              kind: "part",
+              id: String((item.part as any).id || ""),
+              type: item.part.type,
+              name: String(item.part.name || item.part.toolName || ""),
+              state: String(item.part.state || ""),
+              text: previewPartText(item.part.text ?? item.part.output ?? item.part.reasoning),
+            }
+          : {
+              kind: item.kind,
+              count: item.parts.length,
+              ids: item.parts.map((part) => String((part as any).id || "")),
+              types: item.parts.map((part) => part.type),
+              names: item.parts.map((part) => String(part.name || part.toolName || "")),
+            }
+      )),
+      parts: parts.map((part, index) => ({
+        index,
+        id: String((part as any).id || ""),
+        type: part.type,
+        name: String(part.name || part.toolName || ""),
+        state: String(part.state || ""),
+        text: previewPartText(part.text),
+        reasoning: previewPartText((part as any).reasoning),
+        output: previewPartText(part.output),
+      })),
+    };
+  });
+}
+
+function logLoadedChatState(source: string, sessionId: string, backend: AiBackend, messages: AIMessage[]) {
+  logger.info("ai-panel", "loaded chat state", {
+    source,
+    sessionId,
+    backend,
+    messageCount: messages.length,
+    partCount: messages.reduce((sum, message) => sum + (message.parts?.length || 0), 0),
+    messages: summarizeMessagesForDebug(messages),
+  });
+}
+
+function logMergedChatState(source: string, backend: AiBackend, originalMessages: AIMessage[], mergedMessages: AIMessage[]) {
+  logger.info("ai-panel", "merged chat state", {
+    source,
+    backend,
+    originalMessageCount: originalMessages.length,
+    originalPartCount: originalMessages.reduce((sum, message) => sum + (message.parts?.length || 0), 0),
+    mergedMessageCount: mergedMessages.length,
+    mergedPartCount: mergedMessages.reduce((sum, message) => sum + (message.parts?.length || 0), 0),
+    originalMessages: summarizeMessagesForDebug(originalMessages),
+    mergedMessages: summarizeMessagesForDebug(mergedMessages),
+  });
+}
+
+function isEventOnlyAssistantPart(part: AIPart): boolean {
+  if (isHiddenMetaPart(part)) return true;
+  if (part.type === "reasoning" || part.type === "plan") return true;
+  if (part.type === "tool" || part.type === "tool-call" || part.type === "tool-result" || part.type === "file-change") {
+    return true;
+  }
+  return false;
+}
+
+function isEventOnlyAssistantMessage(message: AIMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const parts = message.parts || [];
+  if (parts.length === 0) return false;
+  return parts.every((part) => isEventOnlyAssistantPart(part));
+}
+
+function isVisibleAssistantTextPart(part: AIPart): boolean {
+  if (part.type !== "text") return false;
+  const text = typeof part.text === "string" ? part.text : "";
+  return text.trim().length > 0 && !isHiddenAssistantMetaText(text);
+}
+
+function splitLeadingAssistantEventParts(message: AIMessage): { leading: AIPart[]; trailing: AIPart[] } | null {
+  if (message.role !== "assistant") return null;
+  const parts = message.parts || [];
+  const firstVisibleTextIndex = parts.findIndex((part) => isVisibleAssistantTextPart(part));
+  if (firstVisibleTextIndex <= 0) return null;
+
+  const leading = parts.slice(0, firstVisibleTextIndex);
+  const trailing = parts.slice(firstVisibleTextIndex);
+  const hasEventLeadingPart = leading.some((part) => isEventDisplayPart(part));
+  const leadingIsEventOnly = leading.every((part) => isHiddenMetaPart(part) || isEventDisplayPart(part));
+
+  if (!hasEventLeadingPart || !leadingIsEventOnly) return null;
+  return { leading, trailing };
+}
+
+function mergeAssistantActivityMessages(messages: AIMessage[]): AIMessage[] {
+  const merged: AIMessage[] = [];
+  let pendingAssistantCluster: AIMessage | null = null;
+
+  const flushPending = () => {
+    if (!pendingAssistantCluster) return;
+    merged.push(pendingAssistantCluster);
+    pendingAssistantCluster = null;
+  };
+
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      flushPending();
+      merged.push(message);
+      continue;
+    }
+
+    const splitMessage = pendingAssistantCluster ? splitLeadingAssistantEventParts(message) : null;
+    if (splitMessage) {
+      pendingAssistantCluster = {
+        ...pendingAssistantCluster,
+        parts: [...(pendingAssistantCluster.parts || []), ...splitMessage.leading],
+        time: {
+          created: pendingAssistantCluster.time?.created ?? message.time?.created ?? Date.now(),
+          updated: message.time?.updated ?? pendingAssistantCluster.time?.updated ?? pendingAssistantCluster.time?.created ?? Date.now(),
+        },
+        metadata: {
+          ...(pendingAssistantCluster.metadata || {}),
+          mergedMessageIds: [
+            ...(((pendingAssistantCluster.metadata?.mergedMessageIds as string[] | undefined) || [])),
+            `${message.id}:leading-events`,
+          ],
+        },
+      };
+      flushPending();
+      merged.push({
+        ...message,
+        id: `${message.id}:reply`,
+        parts: splitMessage.trailing,
+      });
+      continue;
+    }
+
+    if (!isEventOnlyAssistantMessage(message)) {
+      flushPending();
+      merged.push(message);
+      continue;
+    }
+
+    if (!pendingAssistantCluster) {
+      pendingAssistantCluster = {
+        ...message,
+        id: `merged-${message.id}`,
+        parts: [...(message.parts || [])],
+        metadata: {
+          ...(message.metadata || {}),
+          mergedMessageIds: [message.id],
+        },
+      };
+      continue;
+    }
+
+    pendingAssistantCluster = {
+      ...pendingAssistantCluster,
+      parts: [...(pendingAssistantCluster.parts || []), ...(message.parts || [])],
+      time: {
+        created: pendingAssistantCluster.time?.created ?? message.time?.created ?? Date.now(),
+        updated: message.time?.updated ?? pendingAssistantCluster.time?.updated ?? pendingAssistantCluster.time?.created ?? Date.now(),
+      },
+      metadata: {
+        ...(pendingAssistantCluster.metadata || {}),
+        mergedMessageIds: [
+          ...(((pendingAssistantCluster.metadata?.mergedMessageIds as string[] | undefined) || [])),
+          message.id,
+        ],
+      },
+    };
+  }
+
+  flushPending();
+  return merged;
 }
 
 // ============================================================================
@@ -1789,14 +1968,19 @@ function QuestionDialog({ questionRequest, colors, radius, fonts, onSubmit, onRe
   });
 
   return (
-    <Modal transparent animationType="fade">
-      <View style={styles.modalOverlay}>
-        <View style={[styles.modalContent, { backgroundColor: colors.bg.raised, borderRadius: radius.md, borderColor: colors.bg.raised }]}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <Sparkles size={20} color={colors.accent.default} strokeWidth={2} />
-            <Text style={{ color: colors.fg.default, fontSize: 15, fontFamily: fonts.sans.semibold }}>Input Needed</Text>
-          </View>
-          <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 16, paddingBottom: 8 }}>
+    <Modal transparent animationType="fade" visible onRequestClose={onReject}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.bg.raised, borderRadius: radius.md, borderColor: colors.bg.raised }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <Sparkles size={20} color={colors.accent.default} strokeWidth={2} />
+              <Text style={{ color: colors.fg.default, fontSize: 15, fontFamily: fonts.sans.semibold }}>Input Needed</Text>
+            </View>
+            <ScrollView
+              style={{ maxHeight: 420 }}
+              contentContainerStyle={{ gap: 16, paddingBottom: 8 }}
+              keyboardShouldPersistTaps="handled"
+            >
             {questions.map((question, questionIndex) => {
               const baseOptions = Array.isArray(question?.options) ? question.options : [];
               const options = question?.isOther
@@ -1868,26 +2052,27 @@ function QuestionDialog({ questionRequest, colors, radius, fonts, onSubmit, onRe
                 </View>
               );
             })}
-          </ScrollView>
-          <View style={{ flexDirection: "row", gap: 8, justifyContent: "flex-end" }}>
-            <TouchableOpacity
-              onPress={onReject}
-              style={[styles.permissionBtn, { backgroundColor: colors.bg.raised, borderRadius: radius.sm }]}
-              activeOpacity={0.7}
-            >
-              <Text style={{ color: colors.fg.default, fontSize: 13, fontFamily: fonts.sans.semibold }}>Dismiss</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleSubmit}
-              style={[styles.permissionBtn, { backgroundColor: colors.accent.default, borderRadius: radius.sm, opacity: canSubmit ? 1 : 0.5 }]}
-              activeOpacity={0.7}
-              disabled={!canSubmit}
-            >
-              <Text style={{ color: '#ffffff', fontSize: 13, fontFamily: fonts.sans.semibold }}>Submit</Text>
-            </TouchableOpacity>
+            </ScrollView>
+            <View style={{ flexDirection: "row", gap: 8, justifyContent: "flex-end" }}>
+              <TouchableOpacity
+                onPress={onReject}
+                style={[styles.permissionBtn, { backgroundColor: colors.bg.raised, borderRadius: radius.sm }]}
+                activeOpacity={0.7}
+              >
+                <Text style={{ color: colors.fg.default, fontSize: 13, fontFamily: fonts.sans.semibold }}>Dismiss</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSubmit}
+                style={[styles.permissionBtn, { backgroundColor: colors.accent.default, borderRadius: radius.sm, opacity: canSubmit ? 1 : 0.5 }]}
+                activeOpacity={0.7}
+                disabled={!canSubmit}
+              >
+                <Text style={{ color: '#ffffff', fontSize: 13, fontFamily: fonts.sans.semibold }}>Submit</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -2916,6 +3101,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               setLoadingSessionId(latestTab.sessionId!);
               const msgs = await ai.getMessages(latestTab.sessionId!, latestTab.backend);
               if (Array.isArray(msgs)) {
+                logLoadedChatState("init-latest-session", latestTab.sessionId!, latestTab.backend, msgs as AIMessage[]);
                 setMessagesMap((prev) => ({ ...prev, [latestTab.sessionId!]: msgs as AIMessage[] }));
               }
             } catch {
@@ -2971,6 +3157,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
         fetchedRoles: incoming.map((message) => message.role),
         fetchedPartTypes: incoming.flatMap((message) => (message.parts || []).map((part) => part.type)),
       });
+      logLoadedChatState("refresh-fetch", sessionId, backend, incoming);
       setMessagesMap((prev) => {
         const next = backend === "codex"
           ? incoming.map((msg) => {
@@ -3002,6 +3189,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           previousMessageCount: (prev[sessionId] || []).length,
           previousPartCount: (prev[sessionId] || []).reduce((sum, message) => sum + (message.parts?.length || 0), 0),
         });
+        logLoadedChatState("refresh-apply", sessionId, backend, next);
         return { ...prev, [sessionId]: next };
       });
     } catch {
@@ -3097,6 +3285,15 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     return null;
   }, [activeSessionId, tabs, activeTabId]);
   const currentMessages = activeMessageBucketId ? messagesMap[activeMessageBucketId] || [] : [];
+  const renderedMessages = useMemo(
+    () => {
+      if (activeBackend !== "opencode") return currentMessages;
+      const merged = mergeAssistantActivityMessages(currentMessages);
+      logMergedChatState("render-list", activeBackend, currentMessages, merged);
+      return merged;
+    },
+    [activeBackend, currentMessages],
+  );
   const currentErrors = activeMessageBucketId ? errorMessages[activeMessageBucketId] || [] : [];
 const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
     || (activeBackend === "codex" ? "Auto" : "Select model");
@@ -3301,6 +3498,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
         setLoadingSessionId(tab.sessionId);
         const msgs = await ai.getMessages(tab.sessionId, tab.backend);
         if (Array.isArray(msgs)) {
+          logLoadedChatState("tab-open", tab.sessionId, tab.backend, msgs as AIMessage[]);
           setMessagesMap((prev) => ({ ...prev, [tab.sessionId!]: msgs as AIMessage[] }));
         }
       } catch (err) {
@@ -4036,7 +4234,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       | { type: "error"; data: string; id: string }
       | { type: "thinking"; id: string; label: string }
     > = [];
-    for (const msg of currentMessages) {
+    for (const msg of renderedMessages) {
       items.push({ type: "message", data: msg });
     }
     const shouldShowThinking = isActiveSessionStreaming;
@@ -4047,7 +4245,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       items.push({ type: "error", data: currentErrors[i], id: `err-${i}` });
     }
     return items;
-  }, [currentMessages, currentErrors, isActiveSessionStreaming, activeSessionId, activeSessionActivityLabel]);
+  }, [renderedMessages, currentErrors, isActiveSessionStreaming, activeSessionId, activeSessionActivityLabel]);
 
   // Tab renderer
   const renderAITab = useCallback(
