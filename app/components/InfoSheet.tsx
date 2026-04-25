@@ -98,7 +98,7 @@ export default function InfoSheet({ visible, onClose, title, description, icon, 
                     ]}
                   >
                     {/* Handle */}
-                    <View style={sheetStyles.handle} />
+                    <View style={[sheetStyles.handle, { backgroundColor: colors.fg.default + "26" }]} />
 
                     {/* Header */}
                     <View style={sheetStyles.header}>
@@ -107,7 +107,7 @@ export default function InfoSheet({ visible, onClose, title, description, icon, 
                           width: 42,
                           height: 42,
                           borderRadius: 10,
-                          backgroundColor: 'rgba(255,255,255,0.08)',
+                          backgroundColor: colors.bg.raised,
                           alignItems: 'center',
                           justifyContent: 'center',
                           marginRight: spacing[3],
@@ -116,17 +116,17 @@ export default function InfoSheet({ visible, onClose, title, description, icon, 
                         </View>
                       ) : null}
                       <View style={{ flex: 1 }}>
-                        <Text style={[sheetStyles.title, { fontFamily: fonts.sans.semibold }]} numberOfLines={1}>{title}</Text>
-                        <Text style={[sheetStyles.subtitle, { fontFamily: fonts.sans.regular }]} numberOfLines={1}>{description}</Text>
+                        <Text style={[sheetStyles.title, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]} numberOfLines={1}>{title}</Text>
+                        <Text style={[sheetStyles.subtitle, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]} numberOfLines={1}>{description}</Text>
                       </View>
                       <TouchableOpacity
                         onPress={() => {
                           void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           onClose();
                         }}
-                        style={sheetStyles.closeButton}
+                        style={[sheetStyles.closeButton, { backgroundColor: colors.bg.raised }]}
                       >
-                        <X size={17} color="#FFFFFF" strokeWidth={2.2} style={{ opacity: 0.8 }} />
+                        <X size={17} color={colors.fg.default} strokeWidth={2.2} style={{ opacity: 0.8 }} />
                       </TouchableOpacity>
                     </View>
 

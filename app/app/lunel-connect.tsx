@@ -547,7 +547,7 @@ const LunelConnect = () => {
                   Scan or type the code
                 </Text>
                 <Text style={{ fontSize: 13, fontFamily: fonts.sans.regular, color: colors.fg.muted, lineHeight: 20 }}>
-                  A QR code and a short code appear in your terminal. Scan with your camera or type the code in the input field and you're in
+                  A QR code and a short code appear in your terminal. Scan with your camera or type the code in the input field and you are in
                 </Text>
               </View>
             </View>
@@ -590,39 +590,52 @@ const LunelConnect = () => {
         title="Enter code"
         description="Type the code shown in your terminal"
       >
-        <View style={{ gap: 12, paddingBottom: insets.bottom + 24 }}>
-          <View style={[styles.inputWrapper, { backgroundColor: "rgba(255,255,255,0.08)", borderRadius: 14 }]}>
-            <QrCode size={18} color={WHITE} strokeWidth={2} />
-            <TextInput
-              style={[styles.input, { fontFamily: fonts.sans.regular, color: WHITE }]}
-              placeholder="e.g. abc-123-xyz"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              value={manualCode}
-              onChangeText={(text) => { setManualCode(text); setError(null); }}
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!isConnecting}
-              returnKeyType="go"
-              onSubmitEditing={() => { handleConnect(); setShowCodeInput(false); }}
-            />
-          </View>
+        <View style={[styles.codeSheetContent, { paddingBottom: insets.bottom + 24 }]}>
+          <Text style={{ color: colors.fg.default, fontSize: 13, fontFamily: fonts.sans.semibold }}>
+            Connection code
+          </Text>
+          <TextInput
+            style={[
+              styles.codeSheetInput,
+              {
+                backgroundColor: colors.bg.raised,
+                borderColor: colors.border.secondary,
+                color: colors.fg.default,
+                fontFamily: fonts.sans.regular,
+              },
+            ]}
+            placeholder="e.g. abc-123-xyz"
+            placeholderTextColor={colors.fg.subtle}
+            value={manualCode}
+            onChangeText={(text) => { setManualCode(text); setError(null); }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!isConnecting}
+            autoFocus
+            returnKeyType="go"
+            onSubmitEditing={() => { handleConnect(); setShowCodeInput(false); }}
+          />
+          <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular, lineHeight: 18 }}>
+            Enter the short code shown next to the QR code in your terminal.
+          </Text>
           <TouchableOpacity
             onPress={() => { handleConnect(); setShowCodeInput(false); }}
             disabled={!manualCode.trim() || isConnecting}
             activeOpacity={0.8}
-            style={{
-              backgroundColor: manualCode.trim() ? WHITE : "rgba(255,255,255,0.12)",
-              borderRadius: 14,
-              paddingVertical: 14,
-              alignItems: "center",
-            }}
+            style={[
+              styles.codeSheetButton,
+              {
+                backgroundColor: manualCode.trim() ? colors.fg.default : colors.bg.raised,
+                borderColor: manualCode.trim() ? colors.fg.default : colors.border.secondary,
+              },
+            ]}
           >
             {isConnecting ? (
               <Animated.View style={{ transform: [{ rotate: loaderSpin }] }}>
-                <LoaderCircle size={18} color={manualCode.trim() ? BLACK : "rgba(255,255,255,0.4)"} strokeWidth={2} />
+                <LoaderCircle size={18} color={manualCode.trim() ? colors.bg.base : colors.fg.subtle} strokeWidth={2} />
               </Animated.View>
             ) : (
-              <Text style={{ color: manualCode.trim() ? BLACK : "rgba(255,255,255,0.4)", fontSize: 15, fontFamily: fonts.sans.semibold }}>Connect</Text>
+              <Text style={{ color: manualCode.trim() ? colors.bg.base : colors.fg.subtle, fontSize: 15, fontFamily: fonts.sans.semibold }}>Connect</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -682,6 +695,23 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     color: BLACK,
+  },
+  codeSheetContent: {
+    gap: 12,
+  },
+  codeSheetInput: {
+    height: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    fontSize: 16,
+  },
+  codeSheetButton: {
+    height: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
   },
   header: {
     flexDirection: "row",

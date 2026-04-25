@@ -1450,6 +1450,9 @@ export class CodexProvider implements AIProvider {
       const turnId = this.readString(turnObject.id);
       const turnTime = this.extractUpdatedAt(turnObject) ?? this.extractCreatedAt(turnObject) ?? Date.now();
       const items = this.readArray(turnObject.items);
+      const assistantParts: Record<string, unknown>[] = [];
+      let assistantMessageId: string | undefined;
+      let assistantTimestamp = turnTime;
 
       for (const item of items) {
         const itemObject = this.asRecord(item);
@@ -1472,90 +1475,234 @@ export class CodexProvider implements AIProvider {
         if (type === "agentmessage" || type === "assistantmessage" || (type === "message" && !this.isUserRole(itemObject))) {
           const text = this.decodeItemText(itemObject);
           if (!text) continue;
-          messages.push({
-            id: itemId,
-            role: "assistant",
-            parts: [{ id: `${itemId}:text`, type: "text", text, sessionID: threadId, messageID: itemId }],
-            time: timestamp,
+          assistantMessageId = assistantMessageId ?? itemId;
+          assistantTimestamp = Math.max(assistantTimestamp, timestamp);
+          assistantParts.push({
+            id: `${assistantMessageId}:text:${itemId}`,
+            type: "text",
+            text,
+            sessionID: threadId,
+            messageID: assistantMessageId,
           });
-          if (turnId) this.assistantMessageIdByTurnId.set(turnId, itemId);
           continue;
         }
 
         if (type === "reasoning") {
           const text = this.decodeReasoningItemText(itemObject);
-          messages.push({
-            id: itemId,
-            role: "assistant",
-            parts: [{ id: `${itemId}:reasoning`, type: "reasoning", text, sessionID: threadId, messageID: itemId }],
-            time: timestamp,
+          assistantMessageId = assistantMessageId ?? (turnId ? `assistant:${turnId}` : itemId);
+          assistantTimestamp = Math.max(assistantTimestamp, timestamp);
+          assistantParts.push({
+            id: `${assistantMessageId}:reasoning:${itemId}`,
+            type: "reasoning",
+            text,
+            sessionID: threadId,
+            messageID: assistantMessageId,
           });
           continue;
         }
 
         if (type === "plan") {
           const text = this.decodePlanItemText(itemObject);
-          messages.push({
-            id: itemId,
-            role: "assistant",
-            parts: [{ id: `${itemId}:plan`, type: "plan", text, sessionID: threadId, messageID: itemId }],
-            time: timestamp,
+          assistantMessageId = assistantMessageId ?? (turnId ? `assistant:${turnId}` : itemId);
+          assistantTimestamp = Math.max(assistantTimestamp, timestamp);
+          assistantParts.push({
+            id: `${assistantMessageId}:plan:${itemId}`,
+            type: "plan",
+            text,
+            sessionID: threadId,
+            messageID: assistantMessageId,
           });
           continue;
         }
 
-        if (type === "commandexecution" || type === "enteredreviewmode" || type === "contextcompaction") {
-          const output = this.decodeCommandExecutionItemText(itemObject, type);
-          const input = this.extractCommandExecutionInput(itemObject);
-          messages.push({
-            id: itemId,
-            role: "assistant",
-            parts: [{
-              id: `${itemId}:tool`,
-              type: "tool",
-              name: type === "commandexecution" ? "command" : "system",
-              toolName: type === "commandexecution" ? "command" : "system",
-              ...(input ? { input } : {}),
-              output,
-              state: "completed",
-              sessionID: threadId,
-              messageID: itemId,
-            }],
-            time: timestamp,
-          });
+        if (
+          type === "commandexecution"
+          || type === "enteredreviewmode"
+          || type === "exitedreviewmode"
+          || type === "contextcompaction"
+          || type === "mcptoolcall"
+          || type === "dynamictoolcall"
+          || type === "collabtoolcall"
+          || type === "websearch"
+          || type === "imageview"
+        ) {
+          assistantMessageId = assistantMessageId ?? (turnId ? `assistant:${turnId}` : itemId);
+          assistantTimestamp = Math.max(assistantTimestamp, timestamp);
+          assistantParts.push(this.decodeStoredToolLikePart(type, itemObject, threadId, assistantMessageId, itemId));
           continue;
         }
 
         if (type === "filechange" || type === "toolcall" || type === "diff") {
-          const output = this.decodeFileLikeItemText(itemObject);
-          if (!output) continue;
-          const emittedPartType: PartType = this.isFileChangeStructuredItem(type, itemObject)
-            ? "file-change"
-            : "tool";
-          const patch = emittedPartType === "file-change"
-            ? this.extractCanonicalPatch({}, itemObject)
-            : undefined;
-          messages.push({
-            id: itemId,
-            role: "assistant",
-            parts: [{
-              id: `${itemId}:${emittedPartType}`,
-              type: emittedPartType,
-              name: type,
-              toolName: type,
-              output,
-              state: "completed",
-              ...(patch ? { patch } : {}),
-              sessionID: threadId,
-              messageID: itemId,
-            }],
-            time: timestamp,
-          });
+          assistantMessageId = assistantMessageId ?? (turnId ? `assistant:${turnId}` : itemId);
+          assistantTimestamp = Math.max(assistantTimestamp, timestamp);
+          assistantParts.push(this.decodeStoredToolLikePart(type, itemObject, threadId, assistantMessageId, itemId));
+        }
+      }
+
+      if (assistantParts.length > 0) {
+        const resolvedAssistantMessageId = assistantMessageId ?? (turnId ? `assistant:${turnId}` : crypto.randomUUID());
+        messages.push({
+          id: resolvedAssistantMessageId,
+          role: "assistant",
+          parts: assistantParts.map((part) => ({
+            ...part,
+            sessionID: threadId,
+            messageID: resolvedAssistantMessageId,
+          })),
+          time: assistantTimestamp,
+        });
+        if (turnId) {
+          this.assistantMessageIdByTurnId.set(turnId, resolvedAssistantMessageId);
         }
       }
     }
 
     return messages;
+  }
+
+  private decodeStoredToolLikePart(
+    type: string,
+    itemObject: Record<string, unknown>,
+    threadId: string,
+    messageId: string,
+    itemId: string,
+  ): Record<string, unknown> {
+    if (type === "filechange" || type === "diff" || this.isFileChangeStructuredItem(type, itemObject)) {
+      const output = this.decodeFileLikeItemText(itemObject) ?? this.describeCompletedItemOutput(itemObject, itemObject, type) ?? "File changes";
+      const patch = this.extractCanonicalPatch(itemObject, itemObject);
+      return {
+        id: `${messageId}:file-change:${itemId}`,
+        type: "file-change",
+        name: this.describeToolPart(type, type, itemObject),
+        toolName: this.describeToolPart(type, type, itemObject),
+        output,
+        state: "completed",
+        ...(patch ? { patch } : {}),
+        sessionID: threadId,
+        messageID: messageId,
+      };
+    }
+
+    const name = this.describeStoredToolName(type, itemObject);
+    const input = this.extractStoredToolInput(type, itemObject);
+    const output = this.extractStoredToolOutput(type, itemObject);
+
+    return {
+      id: `${messageId}:tool:${itemId}`,
+      type: "tool",
+      name,
+      toolName: name,
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      state: "completed",
+      sessionID: threadId,
+      messageID: messageId,
+    };
+  }
+
+  private describeStoredToolName(type: string, itemObject: Record<string, unknown>): string {
+    if (type === "commandexecution") {
+      return "command";
+    }
+    if (type === "websearch") {
+      return "web-search";
+    }
+    if (type === "imageview") {
+      return "image-view";
+    }
+    if (type === "enteredreviewmode") {
+      return "review";
+    }
+    if (type === "exitedreviewmode") {
+      return "review";
+    }
+    if (type === "contextcompaction") {
+      return "context";
+    }
+
+    return this.firstString(itemObject, [
+      "name",
+      "toolName",
+      "tool_name",
+      "title",
+      "serverToolName",
+      "server_tool_name",
+      "kind",
+    ]) ?? type;
+  }
+
+  private extractStoredToolInput(type: string, itemObject: Record<string, unknown>): unknown {
+    if (type === "commandexecution") {
+      return this.extractCommandExecutionInput(itemObject, itemObject);
+    }
+
+    return itemObject.input
+      ?? itemObject.arguments
+      ?? itemObject.args
+      ?? itemObject.query
+      ?? itemObject.path
+      ?? itemObject.url
+      ?? itemObject.command
+      ?? itemObject.pattern
+      ?? undefined;
+  }
+
+  private extractStoredToolOutput(type: string, itemObject: Record<string, unknown>): string | undefined {
+    if (type === "commandexecution") {
+      return this.decodeStoredCommandExecutionOutput(itemObject);
+    }
+
+    if (type === "enteredreviewmode") {
+      return `Reviewing ${this.readString(itemObject.review) ?? "changes"}...`;
+    }
+    if (type === "exitedreviewmode") {
+      return this.firstString(itemObject, ["summary", "text", "message"]) ?? "Exited review mode";
+    }
+    if (type === "contextcompaction") {
+      return "Context compacted";
+    }
+    if (type === "imageview") {
+      const path = this.firstString(itemObject, ["path", "file", "filePath", "file_path", "url"]);
+      return path ? `Viewed image ${path}` : "Viewed image";
+    }
+
+    const direct = this.firstString(itemObject, [
+      "aggregatedOutput",
+      "output",
+      "outputText",
+      "output_text",
+      "text",
+      "message",
+      "summary",
+      "result",
+      "content",
+    ]);
+    if (direct?.trim()) {
+      return direct.trim();
+    }
+
+    const flattened = this.flattenTextValue(itemObject.output ?? itemObject.result ?? itemObject.content).trim();
+    return flattened || undefined;
+  }
+
+  private decodeStoredCommandExecutionOutput(itemObject: Record<string, unknown>): string {
+    const aggregatedOutput = this.firstString(itemObject, [
+      "aggregatedOutput",
+      "aggregated_output",
+      "output",
+      "outputText",
+      "output_text",
+      "stdout",
+      "stderr",
+      "text",
+      "message",
+      "summary",
+    ]);
+    if (aggregatedOutput?.trim()) {
+      return aggregatedOutput.trim();
+    }
+
+    return this.decodeCommandExecutionItemText(itemObject, "commandexecution");
   }
 
   private decodeUserMessageParts(
