@@ -166,7 +166,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.55)",
-    paddingBottom: "35%",
   },
   dialog: {
     shadowColor: "#000",

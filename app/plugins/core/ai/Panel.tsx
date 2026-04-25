@@ -95,7 +95,7 @@ const DEFAULT_CODEX_AGENTS: { id: string; name: string; icon?: React.ComponentTy
   { id: "plan", name: "Plan", icon: MapIcon },
 ];
 
-type ComposerSheet = "configure" | null;
+type ComposerSheet = "configure" | "tune" | null;
 
 const BUTTON_LABEL_MAX_CHARS = 12;
 
@@ -2057,6 +2057,178 @@ function ConfigureSheet({
   );
 }
 
+function TuneSheet({
+  visible,
+  onClose,
+  backend,
+  agents,
+  selectedAgent,
+  onAgentChange,
+  reasoningEffort,
+  onReasoningChange,
+  speed,
+  onSpeedChange,
+  permissionMode,
+  onPermissionChange,
+  contextUsage,
+  colors,
+  fonts,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  backend: AiBackend;
+  agents: { id: string; name: string }[];
+  selectedAgent: string;
+  onAgentChange: (id: string) => void;
+  reasoningEffort: NonNullable<CodexPromptOptions["reasoningEffort"]>;
+  onReasoningChange: (v: NonNullable<CodexPromptOptions["reasoningEffort"]>) => void;
+  speed: NonNullable<CodexPromptOptions["speed"]>;
+  onSpeedChange: (v: NonNullable<CodexPromptOptions["speed"]>) => void;
+  permissionMode: NonNullable<CodexPromptOptions["permissionMode"]>;
+  onPermissionChange: (v: NonNullable<CodexPromptOptions["permissionMode"]>) => void;
+  contextUsage?: { used: number; total: number };
+  colors: any;
+  fonts: any;
+}) {
+  const reasoningOptions: Array<{ id: NonNullable<CodexPromptOptions["reasoningEffort"]>; label: string }> = [
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+  ];
+  const speedOptions: Array<{ id: NonNullable<CodexPromptOptions["speed"]>; label: string }> = [
+    { id: "fast", label: "Fast" },
+    { id: "balanced", label: "Balanced" },
+    { id: "quality", label: "Quality" },
+  ];
+  const permissionOptions: Array<{ id: NonNullable<CodexPromptOptions["permissionMode"]>; label: string }> = [
+    { id: "default", label: "Default" },
+    { id: "full-access", label: "Full Access" },
+  ];
+
+  const sectionStyle = { marginBottom: 20 };
+  const sectionLabelStyle = { color: colors.fg.subtle, fontSize: 11, fontFamily: fonts.sans.medium, marginBottom: 8 };
+  const chipRowStyle = { flexDirection: "row" as const, gap: 6 };
+  const chipBase = { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 };
+
+  const contextPercent = contextUsage
+    ? Math.max(0, 100 - Math.round((contextUsage.used / contextUsage.total) * 100))
+    : null;
+
+  return (
+    <InfoSheet visible={visible} onClose={onClose} title="Configure" description="AI parameters">
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 48 }}
+        keyboardDismissMode="on-drag"
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Mode */}
+        <View style={sectionStyle}>
+          <Text style={sectionLabelStyle}>Mode</Text>
+          <View style={chipRowStyle}>
+            {agents.map((agent) => {
+              const active = selectedAgent === agent.id;
+              return (
+                <TouchableOpacity
+                  key={agent.id}
+                  onPress={() => onAgentChange(agent.id)}
+                  activeOpacity={0.7}
+                  style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
+                >
+                  <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{agent.name}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        {backend === "codex" && (
+          <>
+            {/* Reasoning */}
+            <View style={sectionStyle}>
+              <Text style={sectionLabelStyle}>Reasoning</Text>
+              <View style={chipRowStyle}>
+                {reasoningOptions.map((opt) => {
+                  const active = reasoningEffort === opt.id;
+                  return (
+                    <TouchableOpacity
+                      key={opt.id}
+                      onPress={() => onReasoningChange(opt.id)}
+                      activeOpacity={0.7}
+                      style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
+                    >
+                      <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{opt.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Speed */}
+            <View style={sectionStyle}>
+              <Text style={sectionLabelStyle}>Speed</Text>
+              <View style={chipRowStyle}>
+                {speedOptions.map((opt) => {
+                  const active = speed === opt.id;
+                  return (
+                    <TouchableOpacity
+                      key={opt.id}
+                      onPress={() => onSpeedChange(opt.id)}
+                      activeOpacity={0.7}
+                      style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
+                    >
+                      <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{opt.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Permissions */}
+            <View style={sectionStyle}>
+              <Text style={sectionLabelStyle}>Permission</Text>
+              <View style={chipRowStyle}>
+                {permissionOptions.map((opt) => {
+                  const active = permissionMode === opt.id;
+                  return (
+                    <TouchableOpacity
+                      key={opt.id}
+                      onPress={() => onPermissionChange(opt.id)}
+                      activeOpacity={0.7}
+                      style={[chipBase, { backgroundColor: active ? colors.bg.raised : "transparent" }]}
+                    >
+                      <Text style={{ color: active ? colors.fg.default : colors.fg.muted, fontSize: 13, fontFamily: fonts.sans.regular }}>{opt.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Context Window */}
+            <View style={sectionStyle}>
+              <Text style={sectionLabelStyle}>Context Window</Text>
+              {contextUsage ? (
+                <View style={{ gap: 4 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <View style={{ flex: 1, height: 6, backgroundColor: colors.border.secondary, borderRadius: 3, overflow: "hidden" }}>
+                      <View style={{ width: `${Math.min(100, Math.round((contextUsage.used / contextUsage.total) * 100))}%` as any, height: "100%", backgroundColor: contextPercent !== null && contextPercent < 20 ? "#ef4444" : colors.accent?.default ?? "#6366f1", borderRadius: 3 }} />
+                    </View>
+                    <Text style={{ color: colors.fg.subtle, fontSize: 11, fontFamily: fonts.sans.regular }}>{contextPercent}% left</Text>
+                  </View>
+                  <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular }}>
+                    {formatTokens(contextUsage.used)} / {formatTokens(contextUsage.total)} tokens used
+                  </Text>
+                </View>
+              ) : (
+                <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular }}>Usage not available yet</Text>
+              )}
+            </View>
+          </>
+        )}
+      </ScrollView>
+    </InfoSheet>
+  );
+}
+
 const AnimatedAITab = memo(
   ({
     tab,
@@ -2197,17 +2369,6 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [inputText, setInputText] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [showMoreOptions, setShowMoreOptions] = useState(false);
-  const [showModeMenu, setShowModeMenu] = useState(false);
-  const [showCodexReasoningMenu, setShowCodexReasoningMenu] = useState(false);
-  const [showCodexSpeedMenu, setShowCodexSpeedMenu] = useState(false);
-  const [showCodexPermissionMenu, setShowCodexPermissionMenu] = useState(false);
-  const [showCodexContextUsageMenu, setShowCodexContextUsageMenu] = useState(false);
-  const [modeMenuAnchor, setModeMenuAnchor] = useState<{ x: number; width: number } | null>(null);
-  const [codexReasoningAnchor, setCodexReasoningAnchor] = useState<{ x: number; width: number } | null>(null);
-  const [codexSpeedAnchor, setCodexSpeedAnchor] = useState<{ x: number; width: number } | null>(null);
-  const [codexPermissionAnchor, setCodexPermissionAnchor] = useState<{ x: number; width: number } | null>(null);
-  const [codexContextUsageAnchor, setCodexContextUsageAnchor] = useState<{ x: number; width: number } | null>(null);
   const [pendingImage, setPendingImage] = useState<AIFileAttachment | null>(null);
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionQuery, setAtMentionQuery] = useState("");
@@ -2327,7 +2488,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const providers = providersByBackend[activeBackend] || [];
   const needsApiKey = needsApiKeyByBackend[activeBackend] || false;
   const isActiveSessionLoading = !!activeSessionId && loadingSessionId === activeSessionId && !messagesMap[activeSessionId];
-  const composerBottomOffset = composerHeight + (activeBackend === "codex" && showMoreOptions ? 40 : 0);
+  const composerBottomOffset = composerHeight;
 
   useEffect(() => {
     messagesMapRef.current = messagesMap;
@@ -2965,30 +3126,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.name
     || (activeBackend === "codex" ? "Auto" : "Select model");
   const selectedModelName = truncateButtonLabel(selectedModelNameFull);
-  const reasoningOptions: Array<{ id: NonNullable<CodexPromptOptions["reasoningEffort"]>; label: string }> = [
-    { id: "low", label: "Low" },
-    { id: "medium", label: "Medium" },
-    { id: "high", label: "High" },
-  ];
-  const speedOptions: Array<{ id: NonNullable<CodexPromptOptions["speed"]>; label: string }> = [
-    { id: "fast", label: "Fast" },
-    { id: "balanced", label: "Balanced" },
-    { id: "quality", label: "Quality" },
-  ];
-  const permissionOptions: Array<{ id: NonNullable<CodexPromptOptions["permissionMode"]>; label: string }> = [
-    { id: "default", label: "Default permission" },
-    { id: "full-access", label: "Full access" },
-  ];
-  const codexReasoningLabel = truncateButtonLabel(`${codexReasoningEffort[0].toUpperCase()}${codexReasoningEffort.slice(1)}`);
-  const codexSpeedLabel = truncateButtonLabel(`${codexSpeed[0].toUpperCase()}${codexSpeed.slice(1)}`);
-  const codexPermissionLabel = truncateButtonLabel(codexPermissionMode === "full-access" ? "Full access" : "Default permission");
-  const selectedAgentNameFull = activeBackend === "codex" && agents.length === 0
-    ? ""
-    : ((agents.find((a) => a.id === selectedAgent)?.name || selectedAgent) as string);
-  const selectedAgentName = truncateButtonLabel(selectedAgentNameFull || "Mode");
-  const combinedConfigLabel = activeBackend === "opencode" && selectedAgentNameFull
-    ? `${selectedAgentNameFull} · ${selectedModelName}`
-    : selectedModelName;
+  const combinedConfigLabel = selectedModelName;
   const codexContextUsage = useMemo(() => {
     if (!activeSessionId) return undefined;
     const liveUsage = codexUsageBySession[activeSessionId];
@@ -3751,11 +3889,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   const enterVoiceMode = useCallback(async () => {
     if (isVoiceBusy) return;
-    setShowMoreOptions(false);
-    setShowCodexReasoningMenu(false);
-    setShowCodexSpeedMenu(false);
-    setShowCodexPermissionMenu(false);
-    setShowCodexContextUsageMenu(false);
+    setActiveSheet(null);
     setIsVoiceMode(true);
     if (voiceWaveIntervalRef.current) {
       clearInterval(voiceWaveIntervalRef.current);
@@ -4465,70 +4599,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                     onPress={() => setShowAttachMenu(false)}
                   />
                 )}
-                {showModeMenu && (
-                  <Pressable
-                    style={{ position: "absolute", top: -9999, left: -9999, right: -9999, bottom: -9999, zIndex: 998 }}
-                    onPress={() => setShowModeMenu(false)}
-                  />
-                )}
-                {showCodexReasoningMenu && (
-                  <Pressable
-                    style={{ position: "absolute", top: -9999, left: -9999, right: -9999, bottom: -9999, zIndex: 998 }}
-                    onPress={() => setShowCodexReasoningMenu(false)}
-                  />
-                )}
-                {showCodexSpeedMenu && (
-                  <Pressable
-                    style={{ position: "absolute", top: -9999, left: -9999, right: -9999, bottom: -9999, zIndex: 998 }}
-                    onPress={() => setShowCodexSpeedMenu(false)}
-                  />
-                )}
-                {showCodexPermissionMenu && (
-                  <Pressable
-                    style={{ position: "absolute", top: -9999, left: -9999, right: -9999, bottom: -9999, zIndex: 998 }}
-                    onPress={() => setShowCodexPermissionMenu(false)}
-                  />
-                )}
-                {showCodexContextUsageMenu && (
-                  <Pressable
-                    style={{ position: "absolute", top: -9999, left: -9999, right: -9999, bottom: -9999, zIndex: 998 }}
-                    onPress={() => setShowCodexContextUsageMenu(false)}
-                  />
-                )}
-                {showModeMenu && agents.length > 0 && (
-                  <View style={{
-                    position: "absolute",
-                    bottom: "100%",
-                    marginBottom: 8,
-                    backgroundColor: colors.bg.raised,
-                    borderRadius: 8,
-                    borderWidth: 0.5,
-                    borderColor: colors.border.secondary,
-                    paddingVertical: 5,
-                    paddingHorizontal: 5,
-                    minWidth: 130,
-                    zIndex: 999,
-                    ...getDropdownHorizontalPosition(modeMenuAnchor, 130),
-                  }}>
-                    <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.medium, fontSize: 11, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 6 }}>Modes</Text>
-                    {agents.map((agent) => {
-                      const isSelected = selectedAgent === agent.id;
-                      return (
-                        <TouchableOpacity
-                          key={agent.id}
-                          onPress={() => {
-                            setSelectedAgentByBackend((prev) => ({ ...prev, [activeBackend]: agent.id }));
-                            setShowModeMenu(false);
-                          }}
-                          activeOpacity={0.7}
-                          style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 7, backgroundColor: isSelected ? colors.bg.elevated : "transparent", borderRadius: 5 }}
-                        >
-                          <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: typography.list }}>{agent.name}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                )}
                 {showAttachMenu && (
                   <View style={{
                     position: "absolute",
@@ -4582,25 +4652,16 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       <Plus size={18} color={colors.fg.default} strokeWidth={2.4} style={{ opacity: 0.9 }} />
                     </TouchableOpacity>
 
-                    {agents.length > 0 && (
-                      <View
-                        onLayout={(e) => {
-                          const { x, width } = e.nativeEvent.layout;
-                          setModeMenuAnchor({ x, width });
-                        }}
-                      >
-                        <TouchableOpacity
-                          style={[styles.modelButton, { borderColor: colors.border.secondary, flexShrink: 0, flexGrow: 0, backgroundColor: showModeMenu ? colors.bg.elevated : "transparent" }]}
-                          onPress={() => setShowModeMenu(v => !v)}
-                          activeOpacity={0.7}
-                        >
-                          <Text numberOfLines={1} style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}>
-                            {selectedAgentName}
-                          </Text>
-                          <ChevronDown size={13} color={colors.fg.subtle} />
-                        </TouchableOpacity>
-                      </View>
-                    )}
+                    <TouchableOpacity
+                      style={[styles.modelButton, { borderColor: colors.border.secondary, flexShrink: 0, flexGrow: 0, backgroundColor: activeSheet === "tune" ? colors.bg.elevated : "transparent" }]}
+                      onPress={() => setActiveSheet(activeSheet === "tune" ? null : "tune")}
+                      activeOpacity={0.7}
+                    >
+                      <SlidersHorizontal size={13} color={colors.fg.default} style={{ opacity: 0.9 }} />
+                      <Text numberOfLines={1} style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular, marginLeft: 4 }]}>
+                        Configure
+                      </Text>
+                    </TouchableOpacity>
 
                     <TouchableOpacity
                       style={[styles.modelButton, { borderColor: colors.border.secondary, flexShrink: 1, flexGrow: 0, minWidth: 40, maxWidth: 90 }]}
@@ -4616,16 +4677,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       </Text>
                       <ChevronDown size={13} color={colors.fg.subtle} />
                     </TouchableOpacity>
-
-                    {activeBackend === "codex" ? (
-                      <TouchableOpacity
-                        style={[styles.actionButton, { borderRadius: 6, backgroundColor: showMoreOptions ? colors.bg.elevated : "transparent" }]}
-                        onPress={() => setShowMoreOptions(v => !v)}
-                        activeOpacity={0.7}
-                      >
-                        <SlidersHorizontal size={18} color={colors.fg.default} style={{ opacity: 0.9 }} />
-                      </TouchableOpacity>
-                    ) : null}
 
                   </View>
 
@@ -4677,244 +4728,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             </GestureDetector>
             ) : null}
 
-            {!isVoiceMode && activeBackend === "codex" && showMoreOptions && (
-              <View style={{
-                marginHorizontal: 8,
-                marginBottom: 8,
-                borderRadius: 12,
-              }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <View
-                    style={{ position: "relative" }}
-                    onLayout={(e) => {
-                      const { x, width } = e.nativeEvent.layout;
-                      setCodexReasoningAnchor({ x, width });
-                    }}
-                  >
-                    {showCodexReasoningMenu && (
-                      <View style={{
-                        position: "absolute",
-                        bottom: "100%",
-                        marginBottom: 8,
-                        backgroundColor: colors.bg.raised,
-                        borderRadius: 8,
-                        borderWidth: 0.5,
-                        borderColor: colors.border.secondary,
-                        paddingVertical: 5,
-                        paddingHorizontal: 5,
-                        minWidth: 130,
-                        zIndex: 999,
-                        ...getDropdownHorizontalPosition(codexReasoningAnchor, 130),
-                      }}>
-                        <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.medium, fontSize: 11, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 6 }}>Reasoning</Text>
-                        {reasoningOptions.map((option) => {
-                          const isSelected = codexReasoningEffort === option.id;
-                          return (
-                            <TouchableOpacity
-                              key={option.id}
-                              onPress={() => {
-                                setCodexReasoningEffort(option.id);
-                                setShowCodexReasoningMenu(false);
-                              }}
-                              activeOpacity={0.7}
-                              style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 7, backgroundColor: isSelected ? colors.bg.elevated : "transparent", borderRadius: 5 }}
-                            >
-                              <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: typography.list }}>{option.label}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      onPress={() => {
-                        setShowCodexSpeedMenu(false);
-                        setShowCodexPermissionMenu(false);
-                        setShowCodexContextUsageMenu(false);
-                        setShowCodexReasoningMenu((v) => !v);
-                      }}
-                      activeOpacity={0.7}
-                      style={[styles.modelButton, { borderColor: colors.border.secondary, backgroundColor: "transparent", flexShrink: 0, flexGrow: 0 }]}
-                    >
-                      <Text numberOfLines={1} style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}>
-                        {codexReasoningLabel}
-                      </Text>
-                      <ChevronDown size={13} color={colors.fg.subtle} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View
-                    style={{ position: "relative" }}
-                    onLayout={(e) => {
-                      const { x, width } = e.nativeEvent.layout;
-                      setCodexSpeedAnchor({ x, width });
-                    }}
-                  >
-                    {showCodexSpeedMenu && (
-                      <View style={{
-                        position: "absolute",
-                        bottom: "100%",
-                        marginBottom: 8,
-                        backgroundColor: colors.bg.raised,
-                        borderRadius: 8,
-                        borderWidth: 0.5,
-                        borderColor: colors.border.secondary,
-                        paddingVertical: 5,
-                        paddingHorizontal: 5,
-                        minWidth: 130,
-                        zIndex: 999,
-                        ...getDropdownHorizontalPosition(codexSpeedAnchor, 130),
-                      }}>
-                        <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.medium, fontSize: 11, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 6 }}>Speed</Text>
-                        {speedOptions.map((option) => {
-                          const isSelected = codexSpeed === option.id;
-                          return (
-                            <TouchableOpacity
-                              key={option.id}
-                              onPress={() => {
-                                setCodexSpeed(option.id);
-                                setShowCodexSpeedMenu(false);
-                              }}
-                              activeOpacity={0.7}
-                              style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 7, backgroundColor: isSelected ? colors.bg.elevated : "transparent", borderRadius: 5 }}
-                            >
-                              <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: typography.list }}>{option.label}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      onPress={() => {
-                        setShowCodexReasoningMenu(false);
-                        setShowCodexPermissionMenu(false);
-                        setShowCodexContextUsageMenu(false);
-                        setShowCodexSpeedMenu((v) => !v);
-                      }}
-                      activeOpacity={0.7}
-                      style={[styles.modelButton, { borderColor: colors.border.secondary, backgroundColor: "transparent", flexShrink: 0, flexGrow: 0 }]}
-                    >
-                      <Text numberOfLines={1} style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}>
-                        {codexSpeedLabel}
-                      </Text>
-                      <ChevronDown size={13} color={colors.fg.subtle} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View
-                    style={{ position: "relative" }}
-                    onLayout={(e) => {
-                      const { x, width } = e.nativeEvent.layout;
-                      setCodexPermissionAnchor({ x, width });
-                    }}
-                  >
-                    {showCodexPermissionMenu && (
-                      <View style={{
-                        position: "absolute",
-                        bottom: "100%",
-                        marginBottom: 8,
-                        backgroundColor: colors.bg.raised,
-                        borderRadius: 8,
-                        borderWidth: 0.5,
-                        borderColor: colors.border.secondary,
-                        paddingVertical: 5,
-                        paddingHorizontal: 5,
-                        minWidth: 150,
-                        zIndex: 999,
-                        ...getDropdownHorizontalPosition(codexPermissionAnchor, 150),
-                      }}>
-                        <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.medium, fontSize: 11, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 6 }}>Permission</Text>
-                        {permissionOptions.map((option) => {
-                          const isSelected = codexPermissionMode === option.id;
-                          return (
-                            <TouchableOpacity
-                              key={option.id}
-                              onPress={() => {
-                                setCodexPermissionMode(option.id);
-                                setShowCodexPermissionMenu(false);
-                              }}
-                              activeOpacity={0.7}
-                              style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 7, backgroundColor: isSelected ? colors.bg.elevated : "transparent", borderRadius: 5 }}
-                            >
-                              <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: typography.list }}>{option.label}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      onPress={() => {
-                        setShowCodexReasoningMenu(false);
-                        setShowCodexSpeedMenu(false);
-                        setShowCodexContextUsageMenu(false);
-                        setShowCodexPermissionMenu((v) => !v);
-                      }}
-                      activeOpacity={0.7}
-                      style={[styles.modelButton, { borderColor: colors.border.secondary, backgroundColor: "transparent", flexShrink: 0, flexGrow: 0 }]}
-                    >
-                      <Text numberOfLines={1} style={[styles.modelText, { color: colors.fg.default, fontFamily: fonts.sans.regular }]}>
-                        {codexPermissionLabel}
-                      </Text>
-                      <ChevronDown size={13} color={colors.fg.subtle} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View
-                    style={{ position: "relative" }}
-                    onLayout={(e) => {
-                      const { x, width } = e.nativeEvent.layout;
-                      setCodexContextUsageAnchor({ x, width });
-                    }}
-                  >
-                    {showCodexContextUsageMenu && (
-                      <View style={{
-                        position: "absolute",
-                        bottom: "100%",
-                        marginBottom: 8,
-                        backgroundColor: colors.bg.raised,
-                        borderRadius: 8,
-                        borderWidth: 0.5,
-                        borderColor: colors.border.secondary,
-                        paddingVertical: 5,
-                        paddingHorizontal: 5,
-                        minWidth: 190,
-                        zIndex: 999,
-                        ...getDropdownHorizontalPosition(codexContextUsageAnchor, 190),
-                      }}>
-                        <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.medium, fontSize: 11, paddingHorizontal: 10, paddingTop: 4 }}>
-                          Context window:
-                        </Text>
-                        {codexContextUsage ? (
-                          <>
-                            <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.semibold, fontSize: 10, paddingHorizontal: 10, paddingTop: 8 }}>
-                              {`${formatContextPercent(codexContextUsage.used, codexContextUsage.total)} (${Math.max(0, 100 - Math.round((codexContextUsage.used / codexContextUsage.total) * 100))}% left)`}
-                            </Text>
-                            <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: 10, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 8 }}>
-                              {`${formatTokens(codexContextUsage.used)} / ${formatTokens(codexContextUsage.total)} tokens used`}
-                            </Text>
-                          </>
-                        ) : (
-                          <Text style={{ color: colors.fg.default, fontFamily: fonts.sans.regular, fontSize: 10, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 8 }}>
-                            Usage not available yet
-                          </Text>
-                        )}
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      onPress={() => {
-                        setShowCodexReasoningMenu(false);
-                        setShowCodexSpeedMenu(false);
-                        setShowCodexPermissionMenu(false);
-                        setShowCodexContextUsageMenu((v) => !v);
-                      }}
-                      activeOpacity={0.7}
-                      style={[styles.actionButton, { borderRadius: 6, backgroundColor: showCodexContextUsageMenu ? colors.bg.elevated : "transparent" }]}
-                    >
-                      <PieChart size={17} color={colors.fg.default} style={{ opacity: 0.9 }} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            )}
 
             </View>
 
@@ -5061,6 +4874,24 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                 setSelectedModelByBackend((prev) => ({ ...prev, [activeBackend]: id }));
               }}
               onClose={() => setActiveSheet(null)}
+              colors={colors}
+              fonts={fonts}
+            />
+
+            <TuneSheet
+              visible={activeSheet === "tune"}
+              onClose={() => setActiveSheet(null)}
+              backend={activeBackend}
+              agents={agents}
+              selectedAgent={selectedAgent}
+              onAgentChange={(id) => setSelectedAgentByBackend((prev) => ({ ...prev, [activeBackend]: id }))}
+              reasoningEffort={codexReasoningEffort}
+              onReasoningChange={setCodexReasoningEffort}
+              speed={codexSpeed}
+              onSpeedChange={setCodexSpeed}
+              permissionMode={codexPermissionMode}
+              onPermissionChange={setCodexPermissionMode}
+              contextUsage={codexContextUsage}
               colors={colors}
               fonts={fonts}
             />

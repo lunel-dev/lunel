@@ -79,62 +79,62 @@ export default function InfoSheet({ visible, onClose, title, description, icon, 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
           <TouchableWithoutFeedback onPress={onClose}>
             <ReAnimated.View style={[sheetStyles.overlay, backdropStyle]}>
-              <TouchableWithoutFeedback>
-                <GestureDetector gesture={pan}>
-                  <ReAnimated.View
-                    style={[
-                      sheetStyles.sheet,
-                      {
-                        backgroundColor: colors.bg.base,
-                        marginHorizontal: 12,
-                        borderTopLeftRadius: radius["2xl"],
-                        borderTopRightRadius: radius["2xl"],
-                        paddingHorizontal: spacing[4],
-                        paddingTop: 8,
-                        paddingBottom: 32,
-                        maxHeight: "72%",
-                      },
-                      animatedStyle,
-                    ]}
-                  >
-                    {/* Handle */}
-                    <View style={[sheetStyles.handle, { backgroundColor: colors.fg.default + "26" }]} />
+              <GestureDetector gesture={pan}>
+                <ReAnimated.View
+                  onStartShouldSetResponder={() => true}
+                  onTouchEnd={(e) => e.stopPropagation()}
+                  style={[
+                    sheetStyles.sheet,
+                    {
+                      backgroundColor: colors.bg.base,
+                      marginHorizontal: 12,
+                      borderTopLeftRadius: radius["2xl"],
+                      borderTopRightRadius: radius["2xl"],
+                      paddingHorizontal: spacing[4],
+                      paddingTop: 8,
+                      paddingBottom: 32,
+                      maxHeight: "72%",
+                    },
+                    animatedStyle,
+                  ]}
+                >
+                  {/* Handle */}
+                  <View style={[sheetStyles.handle, { backgroundColor: colors.fg.default + "26" }]} />
 
-                    {/* Header */}
-                    <View style={sheetStyles.header}>
-                      {icon ? (
-                        <View style={{
-                          width: 42,
-                          height: 42,
-                          borderRadius: 10,
-                          backgroundColor: colors.bg.raised,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginRight: spacing[3],
-                        }}>
-                          {icon}
-                        </View>
-                      ) : null}
-                      <View style={{ flex: 1 }}>
-                        <Text style={[sheetStyles.title, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]} numberOfLines={1}>{title}</Text>
-                        <Text style={[sheetStyles.subtitle, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]} numberOfLines={1}>{description}</Text>
+                  {/* Header */}
+                  <View style={sheetStyles.header}>
+                    {icon ? (
+                      <View style={{
+                        width: 42,
+                        height: 42,
+                        borderRadius: 10,
+                        backgroundColor: colors.bg.raised,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        marginRight: spacing[3],
+                      }}>
+                        {icon}
                       </View>
-                      <TouchableOpacity
-                        onPress={() => {
-                          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                          onClose();
-                        }}
-                        style={[sheetStyles.closeButton, { backgroundColor: colors.bg.raised }]}
-                      >
-                        <X size={17} color={colors.fg.default} strokeWidth={2.2} style={{ opacity: 0.8 }} />
-                      </TouchableOpacity>
+                    ) : null}
+                    <View style={{ flex: 1 }}>
+                      <Text style={[sheetStyles.title, { color: colors.fg.default, fontFamily: fonts.sans.semibold }]} numberOfLines={1}>{title}</Text>
+                      <Text style={[sheetStyles.subtitle, { color: colors.fg.muted, fontFamily: fonts.sans.regular }]} numberOfLines={1}>{description}</Text>
                     </View>
+                    <TouchableOpacity
+                      onPress={() => {
+                        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        onClose();
+                      }}
+                      style={[sheetStyles.closeButton, { backgroundColor: colors.bg.raised }]}
+                    >
+                      <X size={17} color={colors.fg.default} strokeWidth={2.2} style={{ opacity: 0.8 }} />
+                    </TouchableOpacity>
+                  </View>
 
-                    {/* Content */}
-                    {children}
-                  </ReAnimated.View>
-                </GestureDetector>
-              </TouchableWithoutFeedback>
+                  {/* Content */}
+                  {children}
+                </ReAnimated.View>
+              </GestureDetector>
             </ReAnimated.View>
           </TouchableWithoutFeedback>
         </KeyboardAvoidingView>
