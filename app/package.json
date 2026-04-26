@@ -1,7 +1,7 @@
 {
   "name": "lunel",
   "main": "expo-router/entry",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
@@ -83,6 +83,7 @@
     "expo-linear-gradient": "^55.0.9",
     "expo-linking": "~8.0.9",
     "expo-navigation-bar": "~5.0.10",
+    "expo-notifications": "^0.32.16",
     "expo-router": "~6.0.15",
     "expo-secure-store": "~15.0.8",
     "expo-splash-screen": "~31.0.11",

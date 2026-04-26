@@ -70,6 +70,14 @@ export default function AppSettingsPage() {
               void updateSetting("keepAwakeEnabled", value);
             }}
           />
+          <ToggleRow
+            label="AI Completion Notifications"
+            description="Notify this phone when an AI session finishes while the app is disconnected"
+            value={settings.aiCompletionNotificationsEnabled}
+            onValueChange={(value) => {
+              void updateSetting("aiCompletionNotificationsEnabled", value);
+            }}
+          />
         </View>
 
         <View style={{ height: spacing[8] }} />

@@ -4,6 +4,7 @@ import { EditorProvider } from "@/contexts/EditorContext";
 import { ReviewPromptProvider } from "@/contexts/ReviewPromptContext";
 import { SessionRegistryProvider } from "@/contexts/SessionRegistry";
 import { ThemeProvider, useTheme } from "@/contexts/ThemeContext";
+import PushNotificationSync from "@/components/PushNotificationSync";
 import { PluginProvider } from "@/plugins";
 import "@/plugins/load"; // Load all plugins
 // Sans fonts
@@ -327,6 +328,7 @@ function RootLayout() {
               <EditorProvider>
                 <PluginProvider>
                   <SessionRegistryProvider>
+                    <PushNotificationSync />
                     <RootLayoutContent />
                   </SessionRegistryProvider>
                 </PluginProvider>

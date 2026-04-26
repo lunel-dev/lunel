@@ -112,10 +112,13 @@ let aiManagerInitPromise: Promise<void> | null = null;
 // Proxy tunnel management
 let currentSessionCode: string | null = null;
 let currentSessionPassword: string | null = null;
+let currentManagerSessionId: string | null = null;
 let currentPrimaryGateway: string = DEFAULT_PROXY_URL;
 let activeGatewayUrl: string = DEFAULT_PROXY_URL;
+let appPeerConnected = false;
 let shuttingDown = false;
 let activeV2Transport: V2SessionTransport | null = null;
+const runningAiSessions = new Set<string>();
 const trackedEditorFiles = new Map<string, TrackedEditorFile>();
 const trackedEditorDirectories = new Map<string, TrackedEditorDirectory>();
 const pendingTrackedFileChecks = new Set<string>();
@@ -334,11 +337,21 @@ interface CliConfig {
   sessions?: CliSavedSession[];
 }
 
+interface CliPushDevice {
+  phoneId: string;
+  expoPushToken: string | null;
+  notificationsEnabled: boolean;
+  platform: string | null;
+  updatedAt: number;
+}
+
 interface CliSavedSession {
   rootDir: string;
   sessionCode: string | null;
   sessionPassword: string;
+  managerSessionId: string | null;
   savedAt: number;
+  pushDevices?: CliPushDevice[];
 }
 
 // ============================================================================
@@ -408,7 +421,23 @@ async function readCliConfig(): Promise<CliConfig> {
           rootDir: entry.rootDir,
           sessionCode: typeof entry.sessionCode === "string" ? entry.sessionCode : null,
           sessionPassword: entry.sessionPassword,
+          managerSessionId: typeof entry.managerSessionId === "string" ? entry.managerSessionId : null,
           savedAt: entry.savedAt,
+          pushDevices: Array.isArray(entry.pushDevices)
+            ? entry.pushDevices.filter((device): device is CliPushDevice => (
+              !!device
+              && typeof device.phoneId === "string"
+              && typeof device.notificationsEnabled === "boolean"
+              && typeof device.updatedAt === "number"
+              && (typeof device.expoPushToken === "string" || device.expoPushToken === null)
+            )).map((device) => ({
+              phoneId: device.phoneId,
+              expoPushToken: device.expoPushToken,
+              notificationsEnabled: device.notificationsEnabled,
+              platform: typeof device.platform === "string" ? device.platform : null,
+              updatedAt: device.updatedAt,
+            }))
+            : [],
         }))
         : [],
     };
@@ -423,7 +452,9 @@ async function readCliConfig(): Promise<CliConfig> {
 
 async function writeCliConfig(config: CliConfig): Promise<void> {
   await fs.mkdir(path.dirname(CLI_CONFIG_PATH), { recursive: true });
-  await fs.writeFile(CLI_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  const tmpPath = `${CLI_CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), "utf-8");
+  await fs.rename(tmpPath, CLI_CONFIG_PATH);
   cliConfigPromise = Promise.resolve(config);
 }
 
@@ -441,20 +472,231 @@ function getSavedSessionForRoot(config: CliConfig, rootDir: string): CliSavedSes
   return sessions.find((entry) => entry.rootDir === rootDir) || null;
 }
 
-async function saveSessionForRoot(sessionCode: string | null, sessionPassword: string): Promise<void> {
+async function saveSessionForRoot(
+  sessionCode: string | null,
+  sessionPassword: string,
+  managerSessionId: string | null,
+): Promise<void> {
   const config = await getCliConfig();
   const sessions = Array.isArray(config.sessions) ? [...config.sessions] : [];
+  const previous = sessions.find((entry) => entry.rootDir === ROOT_DIR);
   const nextEntry: CliSavedSession = {
     rootDir: ROOT_DIR,
     sessionCode,
     sessionPassword,
+    managerSessionId,
     savedAt: Date.now(),
+    pushDevices: previous?.pushDevices ?? [],
   };
   const deduped = sessions.filter((entry) => entry.rootDir !== ROOT_DIR);
   deduped.unshift(nextEntry);
   await writeCliConfig({
     ...config,
     sessions: deduped.slice(0, 100),
+  });
+}
+
+async function savePushDeviceForCurrentSession(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!currentSessionPassword) {
+    throw Object.assign(new Error("No active session"), { code: "EUNAVAILABLE" });
+  }
+
+  const phoneId = typeof payload.phoneId === "string" ? payload.phoneId.trim() : "";
+  if (!phoneId) {
+    throw Object.assign(new Error("phoneId is required"), { code: "EINVAL" });
+  }
+
+  const expoPushToken = typeof payload.expoPushToken === "string" && payload.expoPushToken.trim()
+    ? payload.expoPushToken.trim()
+    : null;
+  const notificationsEnabled = payload.notificationsEnabled === true && Boolean(expoPushToken);
+  const platform = typeof payload.platform === "string" && payload.platform.trim()
+    ? payload.platform.trim()
+    : null;
+
+  const config = await getCliConfig();
+  const sessions = Array.isArray(config.sessions) ? [...config.sessions] : [];
+  const now = Date.now();
+  const currentEntry = sessions.find((entry) => entry.rootDir === ROOT_DIR) ?? {
+    rootDir: ROOT_DIR,
+    sessionCode: currentSessionCode,
+    sessionPassword: currentSessionPassword,
+    managerSessionId: currentManagerSessionId,
+    savedAt: now,
+    pushDevices: [],
+  };
+  const nextDevices = (currentEntry.pushDevices ?? []).filter((device) => device.phoneId !== phoneId);
+  nextDevices.unshift({
+    phoneId,
+    expoPushToken,
+    notificationsEnabled,
+    platform,
+    updatedAt: now,
+  });
+
+  const nextEntry: CliSavedSession = {
+    ...currentEntry,
+    sessionCode: currentSessionCode,
+    sessionPassword: currentSessionPassword,
+    managerSessionId: currentManagerSessionId,
+    savedAt: now,
+    pushDevices: nextDevices.slice(0, 10),
+  };
+  const deduped = sessions.filter((entry) => entry.rootDir !== ROOT_DIR);
+  deduped.unshift(nextEntry);
+  await writeCliConfig({
+    ...config,
+    sessions: deduped.slice(0, 100),
+  });
+
+  return { ok: true, notificationsEnabled, tokenStored: Boolean(expoPushToken) };
+}
+
+function readAiEventSessionId(event: { properties?: Record<string, unknown> }): string | null {
+  const properties = event.properties || {};
+  const info = properties.info && typeof properties.info === "object" ? properties.info as Record<string, unknown> : {};
+  return (
+    (typeof properties.sessionID === "string" && properties.sessionID)
+    || (typeof properties.sessionId === "string" && properties.sessionId)
+    || (typeof info.sessionID === "string" && info.sessionID)
+    || (typeof info.sessionId === "string" && info.sessionId)
+    || (typeof info.id === "string" && info.id)
+    || null
+  );
+}
+
+function readAiStatusType(status: unknown): string {
+  if (typeof status === "string") return status.toLowerCase();
+  if (status && typeof status === "object") {
+    const value = (status as Record<string, unknown>).type;
+    if (typeof value === "string") return value.toLowerCase();
+  }
+  return "";
+}
+
+function isRunningAiStatus(status: unknown): boolean {
+  const value = readAiStatusType(status);
+  return value === "running" || value === "busy" || value === "working" || value === "processing" || value === "retry";
+}
+
+function isTerminalAiStatus(status: unknown): boolean {
+  const value = readAiStatusType(status);
+  return (
+    value === "idle"
+    || value === "complete"
+    || value === "completed"
+    || value === "done"
+    || value === "finished"
+    || value === "error"
+    || value === "failed"
+    || value === "cancelled"
+    || value === "canceled"
+  );
+}
+
+async function getCurrentNotificationDevices(): Promise<CliPushDevice[]> {
+  const config = await getCliConfig();
+  const saved = getSavedSessionForRoot(config, ROOT_DIR);
+  if (!saved || saved.sessionPassword !== currentSessionPassword) return [];
+  return (saved.pushDevices ?? []).filter((device) => (
+    device.notificationsEnabled
+    && typeof device.expoPushToken === "string"
+    && device.expoPushToken.length > 0
+  ));
+}
+
+async function clearInvalidNotificationDevices(phoneIds: string[]): Promise<void> {
+  if (phoneIds.length === 0) return;
+
+  const invalidPhoneIds = new Set(phoneIds);
+  const config = await getCliConfig();
+  const sessions = Array.isArray(config.sessions) ? [...config.sessions] : [];
+  const saved = getSavedSessionForRoot(config, ROOT_DIR);
+  if (!saved?.pushDevices?.length) return;
+
+  const nextEntry: CliSavedSession = {
+    ...saved,
+    pushDevices: saved.pushDevices.map((device) => (
+      invalidPhoneIds.has(device.phoneId)
+        ? { ...device, expoPushToken: null, notificationsEnabled: false, updatedAt: Date.now() }
+        : device
+    )),
+  };
+  const deduped = sessions.filter((entry) => entry.rootDir !== ROOT_DIR);
+  deduped.unshift(nextEntry);
+  await writeCliConfig({
+    ...config,
+    sessions: deduped.slice(0, 100),
+  });
+}
+
+async function notifyManagerAiCompletion(backend: AiBackend, aiSessionId: string): Promise<void> {
+  if (appPeerConnected) return;
+  if (!currentManagerSessionId || !currentSessionPassword) return;
+
+  const devices = await getCurrentNotificationDevices();
+  if (devices.length === 0) return;
+
+  const response = await fetch(new URL("/v1/notifications/ai-complete", MANAGER_URL), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify({
+      sessionId: currentManagerSessionId,
+      resumeToken: currentSessionPassword,
+      backend,
+      aiSessionId,
+      devices: devices.map((device) => ({
+        phoneId: device.phoneId,
+        expoPushToken: device.expoPushToken,
+        platform: device.platform,
+      })),
+    }),
+  });
+
+  if (!response.ok) {
+    if (DEBUG_MODE) {
+      console.warn(`[notifications] manager notify failed: ${response.status}`);
+    }
+    return;
+  }
+
+  const body = await response.json().catch(() => ({})) as { invalidPhoneIds?: unknown };
+  const invalidPhoneIds = Array.isArray(body.invalidPhoneIds)
+    ? body.invalidPhoneIds.filter((value): value is string => typeof value === "string")
+    : [];
+  if (invalidPhoneIds.length > 0) {
+    await clearInvalidNotificationDevices(invalidPhoneIds);
+  }
+}
+
+function handleAiNotificationEvent(backend: AiBackend, event: { type: string; properties: Record<string, unknown> }): void {
+  const sessionId = readAiEventSessionId(event);
+  if (!sessionId) return;
+
+  const key = `${backend}:${sessionId}`;
+  if (event.type === "session.status") {
+    if (isRunningAiStatus(event.properties.status)) {
+      runningAiSessions.add(key);
+      return;
+    }
+    if (!isTerminalAiStatus(event.properties.status)) return;
+    if (!runningAiSessions.delete(key)) return;
+    void notifyManagerAiCompletion(backend, sessionId).catch((error) => {
+      if (DEBUG_MODE) {
+        console.warn("[notifications] failed to notify manager:", error instanceof Error ? error.message : String(error));
+      }
+    });
+    return;
+  }
+
+  if (event.type !== "session.idle") return;
+  if (!runningAiSessions.delete(key)) return;
+
+  void notifyManagerAiCompletion(backend, sessionId).catch((error) => {
+    if (DEBUG_MODE) {
+      console.warn("[notifications] failed to notify manager:", error instanceof Error ? error.message : String(error));
+    }
   });
 }
 
@@ -1783,6 +2025,7 @@ function handleSystemCapabilities(): Record<string, unknown> {
     platform: os.platform(),
     rootDir: ROOT_DIR,
     hostname: os.hostname(),
+    managerSessionId: currentManagerSessionId,
   };
 }
 
@@ -2862,6 +3105,9 @@ async function processMessage(message: Message): Promise<Response> {
           case "ping":
             result = handleSystemPing();
             break;
+          case "setPushToken":
+            result = await savePushDeviceForCurrentSession(payload);
+            break;
           case "pairDevice": {
             throw Object.assign(new Error("pairDevice is no longer supported"), { code: "EINVAL" });
           }
@@ -3206,6 +3452,7 @@ interface ManagerQrResponse {
 interface AssembleResult {
   code: string;
   password: string;
+  sessionId: string | null;
 }
 
 interface ManagerProxyResponse {
@@ -3270,7 +3517,7 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
 
     ws.on("message", (data) => {
       try {
-        const parsed = JSON.parse(data.toString()) as { type?: string; code?: string; password?: string };
+        const parsed = JSON.parse(data.toString()) as { type?: string; code?: string; password?: string; sessionId?: string };
         if (parsed.type !== "assembled" || typeof parsed.code !== "string" || typeof parsed.password !== "string") {
           fail(new Error("Invalid assemble payload"));
           return;
@@ -3278,7 +3525,11 @@ async function assembleWithCode(code: string): Promise<AssembleResult> {
         if (settled) return;
         settled = true;
         ws.send(JSON.stringify({ type: "ack" }));
-        resolve({ code: parsed.code, password: parsed.password });
+        resolve({
+          code: parsed.code,
+          password: parsed.password,
+          sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : null,
+        });
       } catch (error) {
         fail(error instanceof Error ? error : new Error(String(error)));
       }
@@ -3547,6 +3798,7 @@ function startAiManagerInBackground(): void {
 
       aiManager = manager;
       aiManager.subscribe((backend, event) => {
+        handleAiNotificationEvent(backend, event);
         emitAppEvent({
           v: 1,
           id: `evt-${Date.now()}`,
@@ -3587,18 +3839,21 @@ async function connectWebSocketV2(): Promise<void> {
         if (message.type === "connected") return;
 
         if (message.type === "peer_connected") {
+          appPeerConnected = true;
           console.log("App connected!\n");
           void publishDiscoveredPorts(true);
           return;
         }
 
         if (message.type === "peer_disconnected") {
+          appPeerConnected = false;
           console.log("App disconnected. Waiting for reconnect window.\n");
           stopPortSync();
           return;
         }
 
         if (message.type === "app_disconnected") {
+          appPeerConnected = false;
           if (message.reconnectDeadline) {
             console.log(`[session] app disconnected, waiting until ${new Date(message.reconnectDeadline).toISOString()}`);
           }
@@ -3710,6 +3965,7 @@ async function main(): Promise<void> {
       displaySavedSessionNotice();
       sessionCodeToUse = savedSession.sessionCode;
       sessionPasswordToUse = savedSession.sessionPassword;
+      currentManagerSessionId = savedSession.managerSessionId ?? null;
       usedSavedSession = true;
     } else {
       if (FORCE_NEW_CODE && savedSession?.sessionPassword) {
@@ -3722,7 +3978,8 @@ async function main(): Promise<void> {
       const assembled = await assembleWithCode(qr.code);
       sessionCodeToUse = assembled.code;
       sessionPasswordToUse = assembled.password;
-      await saveSessionForRoot(sessionCodeToUse, sessionPasswordToUse);
+      currentManagerSessionId = assembled.sessionId;
+      await saveSessionForRoot(sessionCodeToUse, sessionPasswordToUse, currentManagerSessionId);
     }
 
     currentSessionCode = sessionCodeToUse;

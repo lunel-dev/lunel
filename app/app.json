@@ -54,6 +54,7 @@
         {}
       ],
       "expo-document-picker",
+      "expo-notifications",
       [
         "@hot-updater/react-native",
         {

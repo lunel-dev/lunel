@@ -35,6 +35,9 @@ yarn-error.*
 .env*.local
 .env.hotupdater
 
+# Firebase private service account keys for FCM / Admin SDK.
+*-firebase-adminsdk-*.json
+
 # typescript
 *.tsbuildinfo
 

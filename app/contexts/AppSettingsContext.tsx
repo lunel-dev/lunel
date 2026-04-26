@@ -11,6 +11,7 @@ const APP_SETTINGS_STORAGE_KEY = "@lunel_app_settings";
 
 interface AppSettings {
   keepAwakeEnabled: boolean;
+  aiCompletionNotificationsEnabled: boolean;
   brainrotSource: "youtube" | "instagram" | "x" | "tiktok";
   brainrotAiChatIntegration: boolean;
 }
@@ -23,6 +24,7 @@ interface AppSettingsContextType {
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   keepAwakeEnabled: true,
+  aiCompletionNotificationsEnabled: true,
   brainrotSource: "youtube",
   brainrotAiChatIntegration: false,
 };

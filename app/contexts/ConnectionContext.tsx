@@ -57,11 +57,13 @@ interface Capabilities {
   platform: string;
   rootDir: string;
   hostname: string;
+  managerSessionId?: string | null;
 }
 
 interface AssembleResult {
   code: string;
   password: string;
+  sessionId: string | null;
 }
 
 interface ReattachClaimResult {
@@ -89,6 +91,7 @@ interface ManagerHealthProbeResult {
 export interface StoredSession {
   sessionCode: string | null;
   sessionPassword: string;
+  managerSessionId?: string | null;
   gateways: string[];
   savedAt: number;
 }
@@ -344,6 +347,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const sessionCodeRef = useRef<string | null>(null);
   const sessionPasswordRef = useRef<string | null>(null);
+  const managerSessionIdRef = useRef<string | null>(null);
   const gatewaysRef = useRef<string[]>([DEFAULT_GATEWAY]);
   const activeGatewayRef = useRef<string>(DEFAULT_GATEWAY);
   const reattachGenerationRef = useRef<number | null>(null);
@@ -487,6 +491,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     const next: PairedSession = {
       sessionCode: session.sessionCode,
       sessionPassword: session.sessionPassword,
+      managerSessionId: session.managerSessionId ?? null,
       gateways: session.gateways,
       savedAt: session.savedAt,
       hostname: capabilitiesValue.hostname,
@@ -528,6 +533,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       return {
         sessionCode: typeof parsed.sessionCode === 'string' ? parsed.sessionCode : null,
         sessionPassword: parsed.sessionPassword,
+        managerSessionId: typeof parsed.managerSessionId === 'string' ? parsed.managerSessionId : null,
         gateways: Array.isArray(parsed.gateways)
           ? parsed.gateways.filter((gateway): gateway is string => typeof gateway === 'string' && gateway.length > 0)
           : [],
@@ -966,6 +972,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       await saveStoredSession({
         sessionCode: sessionCodeRef.current,
         sessionPassword: sessionPasswordRef.current,
+        managerSessionId: managerSessionIdRef.current,
         gateways: gatewaysRef.current,
         savedAt: Date.now(),
       });
@@ -974,6 +981,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         await savePairedSession({
           sessionCode: sessionCodeRef.current,
           sessionPassword: sessionPasswordRef.current,
+          managerSessionId: managerSessionIdRef.current,
           gateways: gatewaysRef.current,
           savedAt: Date.now(),
         }, {
@@ -1062,7 +1070,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
       ws.onmessage = (event) => {
         try {
-          const parsed = JSON.parse(event.data) as { type?: string; code?: string; password?: string };
+          const parsed = JSON.parse(event.data) as { type?: string; code?: string; password?: string; sessionId?: string };
           logger.info('connection', 'assemble websocket message received', {
             code,
             wsUrl,
@@ -1082,7 +1090,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
             wsUrl,
             assembledCode: parsed.code,
           });
-          resolve({ code: parsed.code, password: parsed.password });
+          resolve({
+            code: parsed.code,
+            password: parsed.password,
+            sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : null,
+          });
         } catch (error) {
           fail(error instanceof Error ? error : new Error(String(error)));
         }
@@ -1378,6 +1390,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       setCacheNamespace(null);
       sessionCodeRef.current = null;
       sessionPasswordRef.current = null;
+      managerSessionIdRef.current = null;
       reattachGenerationRef.current = null;
       gatewaysRef.current = [DEFAULT_GATEWAY];
       activeGatewayRef.current = DEFAULT_GATEWAY;
@@ -1419,6 +1432,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     setCacheNamespace(null);
     setReconnectUiState(null);
     cleanupSockets(false);
+    managerSessionIdRef.current = null;
 
     const parsed = parseConnectPayload(payload);
     if (!parsed.code) {
@@ -1449,6 +1463,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
     sessionCodeRef.current = assembled.code;
     sessionPasswordRef.current = assembled.password;
+    managerSessionIdRef.current = assembled.sessionId;
     setCacheNamespace(getSessionCacheNamespace(assembled.password, assembled.code));
     reattachGenerationRef.current = null;
     try {
@@ -1500,6 +1515,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     setCacheNamespace(null);
     setReconnectUiState(null);
     cleanupSockets(false);
+    managerSessionIdRef.current = null;
 
     if (!stored?.sessionPassword) {
       logger.error('connection', 'resume rejected due to invalid stored session');
@@ -1515,6 +1531,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     try {
       sessionCodeRef.current = stored.sessionCode || null;
       sessionPasswordRef.current = stored.sessionPassword;
+      managerSessionIdRef.current = stored.managerSessionId || null;
       setCacheNamespace(getSessionCacheNamespace(stored.sessionPassword, stored.sessionCode || null));
       const reattach = await claimReattach(stored.sessionPassword);
       gatewaysRef.current = [reattach.proxyUrl];

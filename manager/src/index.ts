@@ -25,6 +25,7 @@ const PROXY_TUNNEL_QUEUE_MAX_FRAMES = 512;
 const PROXY_TUNNEL_GC_MS = 15_000;
 const V2_PASSWORD_LENGTH = 256;
 const V2_CODE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
+const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
 type Role = "cli" | "app";
 type Channel = "control" | "data";
@@ -196,6 +197,7 @@ interface ManagerControlSocketData {
 }
 
 interface AssembleSession {
+  sessionId: string;
   code: string;
   createdAt: number;
   expiresAt: number;
@@ -207,6 +209,7 @@ interface AssembleSession {
 }
 
 interface IssuedPasswordRecord {
+  sessionId: string;
   code: string;
   passwordHash: string;
   proxyUrl: string | null;
@@ -1560,6 +1563,51 @@ function startManager(): void {
   const reattachMutex = new Mutex();
   const hashPassword = (password: string): string => createHash("sha256").update(password).digest("hex");
 
+  const isExpoPushToken = (value: string): boolean => (
+    /^Expo(nent)?PushToken\[[A-Za-z0-9_-]+\]$/.test(value)
+  );
+
+  const sendExpoPushNotifications = async (
+    messages: Array<{
+      to: string;
+      title: string;
+      body: string;
+      data: Record<string, unknown>;
+    }>
+  ): Promise<string[]> => {
+    const invalidTokens: string[] = [];
+
+    for (let i = 0; i < messages.length; i += 100) {
+      const chunk = messages.slice(i, i + 100);
+      const response = await fetch(EXPO_PUSH_URL, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(chunk),
+      });
+      if (!response.ok) {
+        console.warn(`[notifications] Expo push request failed: ${response.status}`);
+        continue;
+      }
+
+      const body = await response.json().catch(() => null) as { data?: Array<Record<string, unknown>> } | null;
+      const receipts = Array.isArray(body?.data) ? body.data : [];
+      for (let index = 0; index < receipts.length; index += 1) {
+        const receipt = receipts[index];
+        const details = receipt?.details && typeof receipt.details === "object"
+          ? receipt.details as Record<string, unknown>
+          : {};
+        if (receipt?.status === "error" && details.error === "DeviceNotRegistered") {
+          invalidTokens.push(chunk[index].to);
+        }
+      }
+    }
+
+    return invalidTokens;
+  };
+
   const makeV2Password = (): string => generatePersistentSecret(V2_PASSWORD_LENGTH);
 
   const getActiveProxyUrls = (): string[] => getHealthyRing();
@@ -1598,6 +1646,7 @@ function startManager(): void {
       return existing;
     }
     const created: AssembleSession = {
+      sessionId: randomUUID(),
       code,
       createdAt: now,
       expiresAt: now + V2_CODE_TTL_MS,
@@ -1636,6 +1685,7 @@ function startManager(): void {
     const passwordHash = hashPassword(password);
     session.password = password;
     issuedPasswordsByHash.set(passwordHash, {
+      sessionId: session.sessionId,
       code: session.code,
       passwordHash,
       proxyUrl: null,
@@ -1646,6 +1696,7 @@ function startManager(): void {
     const payload = JSON.stringify({
       type: "assembled",
       code: session.code,
+      sessionId: session.sessionId,
       password,
     });
     session.appWs.send(payload);
@@ -2895,6 +2946,7 @@ function startManager(): void {
                 proxyUrl: reattach.proxyUrl,
                 generation: reattach.generation,
                 code: record.code,
+                sessionId: record.sessionId,
               }, { headers: corsHeaders });
             }
             if (generation !== Number(reattach.generation || 0)) {
@@ -2904,6 +2956,7 @@ function startManager(): void {
                 proxyUrl: reattach.proxyUrl,
                 generation: reattach.generation,
                 code: record.code,
+                sessionId: record.sessionId,
               }, { headers: corsHeaders });
             }
           }
@@ -2912,9 +2965,117 @@ function startManager(): void {
             proxyUrl: reattach.proxyUrl,
             generation: reattach.generation,
             code: record.code,
+            sessionId: record.sessionId,
           }, { headers: corsHeaders });
         }
-        return Response.json({ valid: true, proxyUrl: record.proxyUrl, code: record.code }, { headers: corsHeaders });
+        return Response.json({ valid: true, proxyUrl: record.proxyUrl, code: record.code, sessionId: record.sessionId }, { headers: corsHeaders });
+      }
+
+      if (path === "/v1/notifications/ai-complete" && req.method === "POST") {
+        const sourceIp = extractClientIp(req);
+        const blocked = enforceRateLimit(req, "manager:notifications-ai-complete", {
+          windowMs: 60_000,
+          perIp: 240,
+          perSubnet: 1200,
+        });
+        if (blocked) return blocked;
+
+        return req
+          .json()
+          .then(async (body: {
+            sessionId?: string;
+            resumeToken?: string;
+            backend?: string;
+            aiSessionId?: string;
+            devices?: Array<{ phoneId?: string; expoPushToken?: string; platform?: string | null }>;
+          }) => {
+            const sessionId = (body.sessionId || "").trim();
+            const resumeToken = (body.resumeToken || "").trim();
+            const backend = body.backend === "codex" ? "codex" : "opencode";
+            const aiSessionId = (body.aiSessionId || "").trim();
+            if (!sessionId || !resumeToken || !aiSessionId) {
+              return Response.json({ error: "sessionId, resumeToken, and aiSessionId are required" }, { status: 400, headers: corsHeaders });
+            }
+
+            const issuedRecord = issuedPasswordsByHash.get(hashPassword(resumeToken));
+            const sessionRow = getSessionByTokenStmt.get(resumeToken) as SessionRow | null;
+            const dbSessionId = typeof sessionRow?.session_id === "string" ? sessionRow.session_id : null;
+            const validSession =
+              (issuedRecord && issuedRecord.expiresAt > Date.now() && issuedRecord.sessionId === sessionId)
+              || dbSessionId === sessionId;
+            if (!validSession) {
+              writeAuditLog({
+                actorType: "cli",
+                actorId: "unknown",
+                action: "notification.ai_complete",
+                targetType: "session",
+                targetId: sessionId,
+                sourceIp,
+                status: "denied",
+                message: "invalid session proof",
+              });
+              return Response.json({ error: "invalid session proof" }, { status: 403, headers: corsHeaders });
+            }
+
+            const rawDevices = Array.isArray(body.devices) ? body.devices.slice(0, 25) : [];
+            const devices = rawDevices
+              .map((device) => ({
+                phoneId: (device.phoneId || "").trim(),
+                expoPushToken: (device.expoPushToken || "").trim(),
+                platform: typeof device.platform === "string" ? device.platform : null,
+              }))
+              .filter((device) => device.phoneId && isExpoPushToken(device.expoPushToken));
+            if (devices.length === 0) {
+              return Response.json({ ok: true, sent: 0, invalidPhoneIds: [] }, { headers: corsHeaders });
+            }
+
+            const backendLabel = backend === "codex" ? "Codex" : "OpenCode";
+            const pushMessages = devices.map((device) => ({
+              to: device.expoPushToken,
+              title: `${backendLabel} finished working`,
+              body: "Open Lunel to view the updated session.",
+              data: {
+                type: "ai_done",
+                backend,
+                aiSessionId,
+                sessionId,
+              },
+            }));
+            const invalidTokens = await sendExpoPushNotifications(pushMessages).catch((error) => {
+              console.warn("[notifications] Expo push relay failed:", error instanceof Error ? error.message : String(error));
+              return null;
+            });
+            if (!invalidTokens) {
+              return Response.json({ error: "push relay failed" }, { status: 502, headers: corsHeaders });
+            }
+            const invalidTokenSet = new Set(invalidTokens);
+            const invalidPhoneIds = devices
+              .filter((device) => invalidTokenSet.has(device.expoPushToken))
+              .map((device) => device.phoneId);
+
+            writeAuditLog({
+              actorType: "cli",
+              actorId: sessionId,
+              action: "notification.ai_complete",
+              targetType: "session",
+              targetId: sessionId,
+              sourceIp,
+              status: "ok",
+              message: "ai completion notification relayed",
+              metadata: {
+                backend,
+                aiSessionId,
+                sent: devices.length - invalidPhoneIds.length,
+                invalid: invalidPhoneIds.length,
+              },
+            });
+            return Response.json({
+              ok: true,
+              sent: devices.length - invalidPhoneIds.length,
+              invalidPhoneIds,
+            }, { headers: corsHeaders });
+          })
+          .catch(() => Response.json({ error: "invalid body" }, { status: 400, headers: corsHeaders }));
       }
 
       if (path === "/health") {
