@@ -38,6 +38,10 @@ export interface FileContent {
   size: number;
 }
 
+export interface FileSearchMatch {
+  path: string;
+}
+
 export interface GrepMatch {
   file: string;
   line: number;
@@ -178,6 +182,15 @@ export function useApi() {
       const response = await sendControl('fs', 'ls', { path });
       const result = handleResponse<{ entries: FileEntry[] }>(response);
       return result.entries;
+    }, [sendControl]),
+
+    /**
+     * Search workspace file paths. The CLI caps results to 10.
+     */
+    searchFiles: useCallback(async (query: string, maxResults: number = 10, path: string = '.'): Promise<FileSearchMatch[]> => {
+      const response = await sendControl('fs', 'searchFiles', { path, query, maxResults });
+      const result = handleResponse<{ files: FileSearchMatch[] }>(response);
+      return result.files;
     }, [sendControl]),
 
     /**

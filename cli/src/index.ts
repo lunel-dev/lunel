@@ -319,6 +319,9 @@ interface GrepMatch {
   line: number;
   content: string;
 }
+interface FileSearchMatch {
+  path: string;
+}
 
 interface GitCommitFile {
   path: string;
@@ -511,6 +514,54 @@ async function handleFsLs(payload: Record<string, unknown>): Promise<Record<stri
   }
 
   return { path: reqPath, entries: result };
+}
+
+async function handleFsSearchFiles(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const reqPath = (payload.path as string) || ".";
+  const query = typeof payload.query === "string" ? payload.query.trim().toLowerCase() : "";
+  const maxResults = Math.max(1, Math.min((payload.maxResults as number) || 10, 10));
+  const safePath = assertSafePath(reqPath);
+  const rootIgnore = await loadGitignore(ROOT_DIR);
+  const matches: FileSearchMatch[] = [];
+
+  async function searchDir(dirPath: string, relativePath: string, ig: IgnoreInstance): Promise<void> {
+    if (matches.length >= maxResults) return;
+
+    const localIgnore = ignore().add(ig);
+    try {
+      const localGitignorePath = path.join(dirPath, ".gitignore");
+      const content = await fs.readFile(localGitignorePath, "utf-8");
+      localIgnore.add(content);
+    } catch {
+      // No local .gitignore
+    }
+
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (matches.length >= maxResults) break;
+
+      const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+      const checkPath = entry.isDirectory() ? `${relPath}/` : relPath;
+      if (localIgnore.ignores(checkPath)) continue;
+
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        await searchDir(fullPath, relPath, localIgnore);
+      } else if (entry.isFile() && relPath.toLowerCase().includes(query)) {
+        matches.push({ path: relPath });
+      }
+    }
+  }
+
+  const stat = await fs.stat(safePath);
+  if (stat.isDirectory()) {
+    await searchDir(safePath, reqPath === "." ? "" : reqPath, rootIgnore);
+  } else if (stat.isFile() && reqPath.toLowerCase().includes(query)) {
+    matches.push({ path: reqPath });
+  }
+
+  return { path: reqPath, query, maxResults, files: matches };
 }
 
 async function handleFsStat(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -2823,6 +2874,9 @@ async function processMessage(message: Message): Promise<Response> {
         switch (action) {
           case "ls":
             result = await handleFsLs(payload);
+            break;
+          case "searchFiles":
+            result = await handleFsSearchFiles(payload);
             break;
           case "stat":
             result = await handleFsStat(payload);

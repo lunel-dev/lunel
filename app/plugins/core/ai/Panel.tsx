@@ -10,7 +10,7 @@ import { typography } from "@/constants/themes";
 import { useConnection } from "@/contexts/ConnectionContext";
 import { useEditorConfig } from "@/contexts/EditorContext";
 import { useAI } from "@/hooks/useAI";
-import { useApi, FileEntry } from "@/hooks/useApi";
+import { useApi } from "@/hooks/useApi";
 import { logger } from "@/lib/logger";
 import type { AIEvent, AISession, AIMessage, AIPart, AIAgent, AIProvider, AIPermission, AIQuestion, AIFileAttachment, ModelRef, PermissionResponse, AiBackend, CodexPromptOptions } from "./types";
 import Markdown from "./Markdown";
@@ -77,6 +77,7 @@ const VOICE_WAVE_DOT_SIZE = 2.5;
 const VOICE_WAVE_MAX_EXTRA_HEIGHT = 34;
 const AI_READING_LINE_HEIGHT = 1.45;
 const AI_READING_LETTER_SPACING = 0.12;
+const FILE_MENTION_RESULT_LIMIT = 10;
 
 // Session tab interface
 interface AITab extends BaseTab {
@@ -2489,6 +2490,8 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const headerHeight = useHeaderHeight();
   const { status, sessionState } = useConnection();
   const { fs } = useApi();
+  const searchWorkspaceFiles = fs.searchFiles;
+  const readWorkspaceFile = fs.read;
   const { register, unregister } = useSessionRegistryActions();
   const drawerStatus = useDrawerStatus();
   const isDrawerOpen = drawerStatus === "open";
@@ -2532,7 +2535,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [pendingImage, setPendingImage] = useState<AIFileAttachment | null>(null);
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionQuery, setAtMentionQuery] = useState("");
-  const [allWorkspaceFiles, setAllWorkspaceFiles] = useState<string[]>([]);
+  const [workspaceFileMatches, setWorkspaceFileMatches] = useState<string[]>([]);
   const [workspaceFilesLoading, setWorkspaceFilesLoading] = useState(false);
   const [taggedFiles, setTaggedFiles] = useState<{ path: string; name: string }[]>([]);
   const [streamingBySession, setStreamingBySession] = useState<Record<string, true>>({});
@@ -3748,10 +3751,15 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       const fileSections: string[] = [];
       for (const match of mentionMatches) {
         const mentionedName = match[1];
-        const filePath = allWorkspaceFiles.find((p) => (p.split("/").pop() ?? p) === mentionedName);
+        const taggedFile = taggedFiles.find((file) => file.name === mentionedName);
+        let filePath = taggedFile?.path;
+        if (!filePath) {
+          const matches = await searchWorkspaceFiles(mentionedName, FILE_MENTION_RESULT_LIMIT);
+          filePath = matches.find((file) => (file.path.split("/").pop() ?? file.path) === mentionedName)?.path;
+        }
         if (!filePath) continue;
         try {
-          const fileContent = await fs.read(filePath);
+          const fileContent = await readWorkspaceFile(filePath);
           if (fileContent.encoding === "utf8") {
             fileSections.push(`<file path="${filePath}">\n${fileContent.content}\n</file>`);
           }
@@ -3766,6 +3774,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
       setInputText("");
       animateInputHeight(52);
       Keyboard.dismiss();
+      setTaggedFiles([]);
     }
 
     // Resolve backend + transient draft context
@@ -3991,37 +4000,33 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     });
   }, [inputHeight, inputHeightSV]);
 
-  const loadWorkspaceFiles = useCallback(async () => {
-    if (workspaceFilesLoading) return;
-    setWorkspaceFilesLoading(true);
-    const IGNORED = new Set(["node_modules", ".git", ".next", "dist", "build", ".expo", "__pycache__", ".DS_Store"]);
-    const paths: string[] = [];
-    const walk = async (dir: string, depth: number) => {
-      if (depth > 5) return;
-      try {
-        const entries = await fs.list(dir);
-        for (const entry of entries) {
-          const fullPath = dir === "." ? entry.name : `${dir}/${entry.name}`;
-          if (IGNORED.has(entry.name)) continue;
-          if (entry.type === "file") {
-            paths.push(fullPath);
-          } else if (entry.type === "directory") {
-            await walk(fullPath, depth + 1);
-          }
-        }
-      } catch {}
-    };
-    await walk(".", 0);
-    setAllWorkspaceFiles(paths);
-    setWorkspaceFilesLoading(false);
-  }, [fs, workspaceFilesLoading]);
-
-  // Pre-load workspace files when connected
   useEffect(() => {
-    if (status === "connected" && allWorkspaceFiles.length === 0 && !workspaceFilesLoading) {
-      loadWorkspaceFiles();
+    if (!atMentionActive || status !== "connected") {
+      setWorkspaceFileMatches([]);
+      setWorkspaceFilesLoading(false);
+      return;
     }
-  }, [status, allWorkspaceFiles.length, workspaceFilesLoading, loadWorkspaceFiles]);
+
+    let cancelled = false;
+    setWorkspaceFilesLoading(true);
+    searchWorkspaceFiles(atMentionQuery, FILE_MENTION_RESULT_LIMIT)
+      .then((matches) => {
+        if (cancelled) return;
+        setWorkspaceFileMatches(matches.map((match) => match.path));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWorkspaceFileMatches([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setWorkspaceFilesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [atMentionActive, atMentionQuery, searchWorkspaceFiles, status]);
 
   const handleInputChange = useCallback((text: string) => {
     setInputText(text);
@@ -4035,7 +4040,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     if (atIdx !== -1) {
       const afterAt = text.slice(atIdx + 1);
       if (!afterAt.includes(" ") && !afterAt.includes("\n")) {
-        if (allWorkspaceFiles.length === 0) loadWorkspaceFiles();
         setAtMentionQuery(afterAt);
         setAtMentionActive(true);
         return;
@@ -4043,10 +4047,14 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     }
     setAtMentionActive(false);
     setAtMentionQuery("");
-  }, [animateInputHeight, allWorkspaceFiles, loadWorkspaceFiles]);
+  }, [animateInputHeight]);
 
   const selectFileMention = useCallback((filePath: string) => {
     const fileName = filePath.split("/").pop() ?? filePath;
+    setTaggedFiles((prev) => {
+      const next = prev.filter((file) => file.path !== filePath && file.name !== fileName);
+      return [...next, { path: filePath, name: fileName }];
+    });
     setInputText((prev) => {
       const atIdx = prev.lastIndexOf("@");
       if (atIdx === -1) return prev;
@@ -4593,9 +4601,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
             />
             {/* @ file mention dropdown */}
             {atMentionActive && (() => {
-              const query = atMentionQuery.toLowerCase();
-              const filtered = allWorkspaceFiles.filter((p) => p.toLowerCase().includes(query));
-              if (!workspaceFilesLoading && filtered.length === 0) return null;
+              if (!workspaceFilesLoading && workspaceFileMatches.length === 0) return null;
               return (
                 <View style={{
                   position: "absolute",
@@ -4614,7 +4620,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                   shadowRadius: 8,
                   shadowOffset: { width: 0, height: -2 },
                 }}>
-                  {workspaceFilesLoading && filtered.length === 0 ? (
+                  {workspaceFilesLoading && workspaceFileMatches.length === 0 ? (
                     <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12, gap: 10 }}>
                       <ActivityIndicator size="small" color={colors.fg.subtle} />
                       <Text style={{ color: colors.fg.subtle, fontFamily: fonts.sans.regular, fontSize: 13 }}>Loading files...</Text>
@@ -4625,7 +4631,7 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       showsVerticalScrollIndicator={true}
                       style={{ borderRadius: 10 }}
                     >
-                      {filtered.map((filePath) => {
+                      {workspaceFileMatches.map((filePath) => {
                         const parts = filePath.split("/");
                         const fileName = parts.pop() ?? filePath;
                         const dir = parts.join("/");
