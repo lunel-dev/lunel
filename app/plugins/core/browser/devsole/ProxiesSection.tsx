@@ -1,7 +1,8 @@
+import InputModal from "@/components/InputModal";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Plus, RefreshCw, Trash2 } from "lucide-react-native";
 import React, { useRef, useMemo, useState } from "react";
-import { Animated, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Animated, Text, TouchableOpacity, View } from "react-native";
 
 function sortPorts(values: number[]): number[] {
   return [...values].sort((a, b) => a - b);
@@ -25,8 +26,7 @@ export default function ProxiesSection({
   onUntrackPort: (port: number) => Promise<void>;
 }) {
   const { colors, fonts, radius } = useTheme();
-  const [draftPort, setDraftPort] = useState("");
-  const [showAddRow, setShowAddRow] = useState(false);
+  const [addPortModalVisible, setAddPortModalVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const spinValue = useRef(new Animated.Value(0)).current;
   const spinAnimation = useRef<Animated.CompositeAnimation | null>(null);
@@ -54,8 +54,8 @@ export default function ProxiesSection({
   const sortedTrackedPorts = useMemo(() => sortPorts(trackedPorts), [trackedPorts]);
   const openPortSet = useMemo(() => new Set(sortPorts(openPorts)), [openPorts]);
 
-  const handleAddPort = async () => {
-    const parsedPort = Number(draftPort.trim());
+  const handleAddPort = async (value: string) => {
+    const parsedPort = Number(value.trim());
     if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
       setLocalError("Enter a valid port between 1 and 65535.");
       return;
@@ -63,8 +63,7 @@ export default function ProxiesSection({
 
     setLocalError(null);
     await onTrackPort(parsedPort);
-    setDraftPort("");
-    setShowAddRow(false);
+    setAddPortModalVisible(false);
   };
 
   const handleDeletePort = async (port: number) => {
@@ -89,7 +88,7 @@ export default function ProxiesSection({
       >
         <TouchableOpacity
           onPress={() => {
-            setShowAddRow((current) => !current);
+            setAddPortModalVisible(true);
             setLocalError(null);
           }}
           activeOpacity={0.85}
@@ -97,18 +96,18 @@ export default function ProxiesSection({
             height: 28,
             paddingHorizontal: 10,
             borderRadius: radius.full,
-            backgroundColor: showAddRow ? colors.accent.default : colors.bg.base,
-            borderWidth: showAddRow ? 0 : 1,
+            backgroundColor: addPortModalVisible ? colors.accent.default : colors.bg.base,
+            borderWidth: addPortModalVisible ? 0 : 1,
             borderColor: colors.bg.raised,
             flexDirection: "row",
             alignItems: "center",
             gap: 6,
           }}
         >
-          <Plus size={13} color={showAddRow ? "#ffffff" : colors.fg.default} strokeWidth={2} />
+          <Plus size={13} color={addPortModalVisible ? "#ffffff" : colors.fg.default} strokeWidth={2} />
           <Text
             style={{
-              color: showAddRow ? "#ffffff" : colors.fg.default,
+              color: addPortModalVisible ? "#ffffff" : colors.fg.default,
               fontSize: 10,
               fontFamily: fonts.sans.semibold,
             }}
@@ -136,72 +135,6 @@ export default function ProxiesSection({
           </Animated.View>
         </TouchableOpacity>
       </View>
-
-      {showAddRow ? (
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginVertical: 4 }}>
-          <View
-            style={{
-              flex: 1,
-              minHeight: 32,
-              paddingHorizontal: 10,
-              backgroundColor: colors.bg.raised,
-              borderRadius: 8,
-              borderWidth: 0.5,
-              borderColor: colors.border.secondary,
-              justifyContent: "center",
-            }}
-          >
-            <TextInput
-              value={draftPort}
-              onChangeText={(value) => {
-                setDraftPort(value.replace(/[^0-9]/g, ""));
-                if (localError) setLocalError(null);
-              }}
-              onSubmitEditing={() => {
-                void handleAddPort();
-              }}
-              placeholder="Port number"
-              placeholderTextColor={colors.fg.subtle}
-              keyboardType="number-pad"
-              autoFocus
-              style={{
-                color: colors.fg.default,
-                fontSize: 11,
-                fontFamily: fonts.mono.regular,
-                paddingVertical: 0,
-              }}
-            />
-          </View>
-
-          <TouchableOpacity
-            onPress={() => {
-              void handleAddPort();
-            }}
-            disabled={isSubmitting || draftPort.trim() === ""}
-            activeOpacity={0.85}
-            style={{
-              height: 32,
-              paddingHorizontal: 12,
-              borderRadius: 8,
-              backgroundColor: isSubmitting || draftPort.trim() === "" ? colors.bg.raised : colors.accent.default,
-              alignItems: "center",
-              justifyContent: "center",
-              borderWidth: 0.5,
-              borderColor: isSubmitting || draftPort.trim() === "" ? colors.border.secondary : "transparent",
-            }}
-          >
-            <Text
-              style={{
-                color: isSubmitting || draftPort.trim() === "" ? colors.fg.muted : "#ffffff",
-                fontSize: 10,
-                fontFamily: fonts.sans.semibold,
-              }}
-            >
-              Save
-            </Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
 
       <Text
         style={{
@@ -336,6 +269,20 @@ export default function ProxiesSection({
           })
         )}
       </View>
+
+      <InputModal
+        visible={addPortModalVisible}
+        onCancel={() => setAddPortModalVisible(false)}
+        onAccept={(value) => {
+          void handleAddPort(value);
+        }}
+        title="Add Port"
+        type="number"
+        description="Track a localhost proxy port"
+        placeholder="Port number"
+        acceptLabel={isSubmitting ? "Adding" : "Add"}
+        cancelLabel="Cancel"
+      />
     </View>
   );
 }

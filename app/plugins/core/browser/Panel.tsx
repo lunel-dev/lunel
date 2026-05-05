@@ -92,7 +92,7 @@ const DEVSOLE_SECTIONS: { id: DevsoleSectionId; label: string; hint: string }[] 
   { id: "elements", label: "Elements", hint: "DOM and inspection primitives" },
   { id: "resources", label: "Resources", hint: "Storage, cookies, and cached state" },
   { id: "info", label: "Info", hint: "Session and page diagnostics" },
-  { id: "proxies", label: "Proxies", hint: "Tracked localhost proxy ports" },
+  { id: "proxies", label: "Proxy", hint: "Tracked localhost proxy ports" },
 ];
 
 const DEVSOLE_STUBS: Record<

@@ -20,6 +20,7 @@ type InputModalProps = {
   onCancel: () => void;
   onAccept: (value: string) => void;
   title: string;
+  type?: "text" | "number";
   description?: string;
   placeholder?: string;
   acceptLabel?: string;
@@ -32,6 +33,7 @@ export default function InputModal({
   onCancel,
   onAccept,
   title,
+  type = "text",
   description,
   placeholder,
   acceptLabel,
@@ -112,11 +114,14 @@ export default function InputModal({
                   <TextInput
                     ref={inputRef}
                     value={value}
-                    onChangeText={setValue}
+                    onChangeText={(nextValue) => {
+                      setValue(type === "number" ? nextValue.replace(/[^0-9]/g, "") : nextValue);
+                    }}
                     placeholder={placeholder}
                     placeholderTextColor={colors.fg.muted}
                     onSubmitEditing={handleAccept}
                     returnKeyType="done"
+                    keyboardType={type === "number" ? "number-pad" : "default"}
                     style={[
                       styles.input,
                       {
