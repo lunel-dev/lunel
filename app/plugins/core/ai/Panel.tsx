@@ -104,33 +104,6 @@ function truncateButtonLabel(value: string, maxChars: number = BUTTON_LABEL_MAX_
   return `${value.slice(0, maxChars)}..`;
 }
 
-function formatContextPercent(used: number, total: number): string {
-  if (!total) return "0% used";
-  return `${Math.round((used / total) * 100)}% used`;
-}
-
-function deriveUsageFromMessages(messages: AIMessage[], totalOverride?: number): { used: number; total: number } | undefined {
-  let used = 0;
-  let total = totalOverride && totalOverride > 0 ? totalOverride : 0;
-
-  for (const message of messages) {
-    for (const part of message.parts || []) {
-      const tokens = part.tokens;
-      if (!tokens) continue;
-      used += (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0);
-      const candidateTotal = typeof part.modelContextWindow === "number"
-        ? part.modelContextWindow
-        : typeof part.contextWindow === "number"
-          ? part.contextWindow
-          : 0;
-      if (candidateTotal > total) total = candidateTotal;
-    }
-  }
-
-  if (used <= 0 || total <= 0) return undefined;
-  return { used, total };
-}
-
 function getDropdownHorizontalPosition(
   anchor: { x: number; width: number } | null,
   menuWidth: number,
@@ -2237,7 +2210,6 @@ function TuneSheet({
   onSpeedChange,
   permissionMode,
   onPermissionChange,
-  contextUsage,
   colors,
   fonts,
 }: {
@@ -2253,7 +2225,6 @@ function TuneSheet({
   onSpeedChange: (v: NonNullable<CodexPromptOptions["speed"]>) => void;
   permissionMode: NonNullable<CodexPromptOptions["permissionMode"]>;
   onPermissionChange: (v: NonNullable<CodexPromptOptions["permissionMode"]>) => void;
-  contextUsage?: { used: number; total: number };
   colors: any;
   fonts: any;
 }) {
@@ -2308,10 +2279,6 @@ function TuneSheet({
     </View>
   );
 
-  const contextPercent = contextUsage
-    ? Math.max(0, 100 - Math.round((contextUsage.used / contextUsage.total) * 100))
-    : null;
-
   return (
     <InfoSheet visible={visible} onClose={onClose} title="Configure" description="AI parameters">
       <ScrollView
@@ -2363,25 +2330,6 @@ function TuneSheet({
                 )}
               </View>
 
-              {/* Context Window */}
-              <View style={sectionStyle}>
-                <Text style={sectionLabelStyle}>Context Window</Text>
-                {contextUsage ? (
-                  <View style={{ gap: 4 }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                      <View style={{ flex: 1, height: 6, backgroundColor: colors.border.secondary, borderRadius: 3, overflow: "hidden" }}>
-                        <View style={{ width: `${Math.min(100, Math.round((contextUsage.used / contextUsage.total) * 100))}%` as any, height: "100%", backgroundColor: contextPercent !== null && contextPercent < 20 ? "#ef4444" : colors.accent?.default ?? "#6366f1", borderRadius: 3 }} />
-                      </View>
-                      <Text style={{ color: colors.fg.subtle, fontSize: 11, fontFamily: fonts.sans.regular }}>{contextPercent}% left</Text>
-                    </View>
-                    <Text style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular }}>
-                      {formatTokens(contextUsage.used)} / {formatTokens(contextUsage.total)} tokens used
-                    </Text>
-                  </View>
-                ) : (
-                  <Text style={{ color: colors.fg.muted, fontSize: 12, fontFamily: fonts.sans.regular }}>Usage not available yet</Text>
-                )}
-              </View>
             </>
           )}
         </View>
@@ -2539,7 +2487,6 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [workspaceFilesLoading, setWorkspaceFilesLoading] = useState(false);
   const [taggedFiles, setTaggedFiles] = useState<{ path: string; name: string }[]>([]);
   const [streamingBySession, setStreamingBySession] = useState<Record<string, true>>({});
-  const [codexUsageBySession, setCodexUsageBySession] = useState<Record<string, { used?: number; total?: number }>>({});
   const [pendingPermission, setPendingPermission] = useState<AIPermission | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<AIQuestion | null>(null);
   const [activeSheet, setActiveSheet] = useState<ComposerSheet>(null);
@@ -2915,23 +2862,6 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           }
           break;
         }
-        case "session.usage": {
-          const sessId = (props.sessionID as string) || (props.sessionId as string);
-          const tokenUsage = props.tokenUsage as Record<string, unknown> | undefined;
-          const totalUsage = tokenUsage?.total as Record<string, unknown> | undefined;
-          const used = typeof totalUsage?.totalTokens === "number" ? totalUsage.totalTokens : null;
-          const total = typeof tokenUsage?.modelContextWindow === "number" ? tokenUsage.modelContextWindow : null;
-          if (sessId && (used !== null || (total !== null && total > 0))) {
-            setCodexUsageBySession((prev) => ({
-              ...prev,
-              [sessId]: {
-                used: used ?? prev[sessId]?.used,
-                total: total && total > 0 ? total : prev[sessId]?.total,
-              },
-            }));
-          }
-          break;
-        }
         case "permission.updated": {
           const sessId = (props.sessionID as string) || (props.sessionId as string);
           if (sessId) {
@@ -3302,14 +3232,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     || (activeBackend === "codex" ? "Auto" : "Select model");
   const selectedModelName = truncateButtonLabel(selectedModelNameFull);
   const combinedConfigLabel = selectedModelName;
-  const codexContextUsage = useMemo(() => {
-    if (!activeSessionId) return undefined;
-    const liveUsage = codexUsageBySession[activeSessionId];
-    if (liveUsage?.used != null && liveUsage?.total != null && liveUsage.total > 0) {
-      return { used: liveUsage.used, total: liveUsage.total };
-    }
-    return deriveUsageFromMessages(currentMessages, liveUsage?.total);
-  }, [activeSessionId, codexUsageBySession, currentMessages]);
   useEffect(() => {
     isNearBottomRef.current = true;
     autoFollowRef.current = isActiveSessionStreaming;
@@ -5067,7 +4989,6 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               onSpeedChange={setCodexSpeed}
               permissionMode={codexPermissionMode}
               onPermissionChange={setCodexPermissionMode}
-              contextUsage={codexContextUsage}
               colors={colors}
               fonts={fonts}
             />
