@@ -34,6 +34,7 @@ yarn-error.*
 # local env files
 .env*.local
 .env.hotupdater
+*-firebase-adminsdk-*.json
 
 # typescript
 *.tsbuildinfo
