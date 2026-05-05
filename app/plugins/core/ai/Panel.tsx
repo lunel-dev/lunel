@@ -78,6 +78,8 @@ const VOICE_WAVE_DOT_SIZE = 2.5;
 const VOICE_WAVE_MAX_EXTRA_HEIGHT = 34;
 const AI_READING_LINE_HEIGHT = 1.45;
 const AI_READING_LETTER_SPACING = 0.12;
+const AI_IMAGE_PREVIEW_MAX_WIDTH = 250;
+const AI_IMAGE_PREVIEW_MAX_HEIGHT = 320;
 const FILE_MENTION_RESULT_LIMIT = 10;
 
 // Session tab interface
@@ -529,28 +531,57 @@ function TextPartView({ part, isUser }: { part: AIPart; isUser: boolean }) {
   return <Markdown>{text}</Markdown>;
 }
 
-function FilePartView({ part }: { part: AIPart }) {
+function FilePartView({ part, enforceBottomSpacing = false }: { part: AIPart; enforceBottomSpacing?: boolean }) {
   const { colors, radius } = useTheme();
   const mime = typeof part.mime === "string" ? part.mime : "";
   const url = typeof part.url === "string" ? part.url : "";
   const filename = typeof part.filename === "string" ? part.filename : "Attachment";
   const isImage = mime.startsWith("image/") && url.length > 0;
   const [fullscreen, setFullscreen] = useState(false);
+  const [imagePreviewSize, setImagePreviewSize] = useState<{ width: number; height: number } | null>(null);
+
+  const updateImagePreviewSize = useCallback((sourceWidth: number, sourceHeight: number) => {
+    if (sourceWidth <= 0 || sourceHeight <= 0) return;
+
+    const scale = Math.min(AI_IMAGE_PREVIEW_MAX_WIDTH / sourceWidth, AI_IMAGE_PREVIEW_MAX_HEIGHT / sourceHeight);
+    setImagePreviewSize({
+      width: Math.round(sourceWidth * scale),
+      height: Math.round(sourceHeight * scale),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isImage) return;
+    setImagePreviewSize(null);
+    Image.getSize(
+      url,
+      (sourceWidth, sourceHeight) => updateImagePreviewSize(sourceWidth, sourceHeight),
+      () => {}
+    );
+  }, [isImage, updateImagePreviewSize, url]);
+
+  const handleImageLoad = useCallback((event: { nativeEvent: { source?: { width?: number; height?: number } } }) => {
+    const source = event.nativeEvent.source;
+    const sourceWidth = source?.width ?? 0;
+    const sourceHeight = source?.height ?? 0;
+    updateImagePreviewSize(sourceWidth, sourceHeight);
+  }, [updateImagePreviewSize]);
 
   if (isImage) {
     return (
       <>
-        <View style={{ marginTop: 4 }}>
+        <View style={{ marginTop: 4, marginBottom: enforceBottomSpacing ? 4 : 0 }}>
           <TouchableOpacity onPress={() => setFullscreen(true)} activeOpacity={0.8}>
             <Image
               source={{ uri: url }}
               style={{
-                width: 180,
-                height: 180,
-                borderRadius: radius.lg,
+                width: imagePreviewSize?.width ?? AI_IMAGE_PREVIEW_MAX_WIDTH,
+                height: imagePreviewSize?.height ?? AI_IMAGE_PREVIEW_MAX_HEIGHT,
+                borderRadius: 4,
                 backgroundColor: colors.bg.raised,
               }}
-              resizeMode="cover"
+              onLoad={handleImageLoad}
+              resizeMode="contain"
             />
           </TouchableOpacity>
         </View>
@@ -578,6 +609,13 @@ function FilePartView({ part }: { part: AIPart }) {
       </Text>
     </View>
   );
+}
+
+function isImageFilePart(part: AIPart | undefined | null) {
+  if (!part || typeof part !== "object" || part.type !== "file") return false;
+  const mime = typeof part.mime === "string" ? part.mime : "";
+  const url = typeof part.url === "string" ? part.url : "";
+  return mime.startsWith("image/") && url.length > 0;
 }
 
 function UserText({ text }: { text: string }) {
@@ -1355,32 +1393,66 @@ function MessageBubble({
         const localStatus = typeof message.metadata?.localStatus === "string" ? message.metadata.localStatus : undefined;
         const isSending = localStatus === "sending" || (localStatus == null && message.id.startsWith("opt-"));
         const safeParts = parts.filter((part): part is AIPart => !!part && typeof part === "object");
+        const userItems: ({ type: "bubble"; parts: AIPart[]; key: string } | { type: "image"; part: AIPart; key: string })[] = [];
+        let bubbleParts: AIPart[] = [];
+        const flushBubbleParts = () => {
+          if (bubbleParts.length === 0) return;
+          userItems.push({
+            type: "bubble",
+            parts: bubbleParts,
+            key: `bubble-${userItems.length}`,
+          });
+          bubbleParts = [];
+        };
+
+        safeParts.forEach((part, index) => {
+          if (isImageFilePart(part)) {
+            flushBubbleParts();
+            userItems.push({
+              type: "image",
+              part,
+              key: String((part as any).id || `image-${index}`),
+            });
+            return;
+          }
+          bubbleParts.push(part);
+        });
+        flushBubbleParts();
+
         return (
-          <View style={{ alignSelf: "flex-end", alignItems: "flex-end", marginVertical: 7 }}>
-        <TouchableOpacity
-          onLongPress={handleCopy}
-          activeOpacity={0.8}
-          style={[
-            styles.userBubble,
-            {
-              backgroundColor: colors.bg.raised,
-              borderRadius: 10,
-            },
-          ]}
-        >
-          {safeParts.map((part, i) => (
-            <View key={i} style={i > 0 ? getMessagePartSpacingStyle(safeParts[i - 1], part, styles) : undefined}>
-              <MessagePartView
-                part={part}
-                isUser={true}
-                colors={colors}
-                fonts={fonts}
-                radius={radius}
-                showDetailedView={showDetailedView}
-              />
-            </View>
-          ))}
-        </TouchableOpacity>
+          <View style={{ alignSelf: "flex-end", alignItems: "flex-end", marginVertical: 7, gap: 4 }}>
+        {userItems.map((item) => (
+          item.type === "image" ? (
+            <FilePartView key={item.key} part={item.part} />
+          ) : (
+            <TouchableOpacity
+              key={item.key}
+              onLongPress={handleCopy}
+              activeOpacity={0.8}
+              style={[
+                styles.userBubble,
+                {
+                  backgroundColor: colors.bg.raised,
+                  borderRadius: 10,
+                },
+              ]}
+            >
+              {item.parts.map((part, i) => (
+                <View key={i} style={i > 0 ? getMessagePartSpacingStyle(item.parts[i - 1], part, styles) : undefined}>
+                  <MessagePartView
+                    part={part}
+                    isUser={true}
+                    colors={colors}
+                    fonts={fonts}
+                    radius={radius}
+                    showDetailedView={showDetailedView}
+                    isOnlyMessagePart={item.parts.length === 1}
+                  />
+                </View>
+              ))}
+            </TouchableOpacity>
+          )
+        ))}
         {isSending ? (
           <PulsingDots color={colors.fg.subtle} />
         ) : null}
@@ -1436,6 +1508,7 @@ function MessageBubble({
               showDetailedView={showDetailedView}
               pendingPermission={pendingPermission}
               onPermissionReply={onPermissionReply}
+              isOnlyMessagePart={displayItems.length === 1}
             />
           )}
         </View>
@@ -1687,6 +1760,7 @@ function MessagePartView({
   pendingPermission,
   onPermissionReply,
   groupedRow = false,
+  isOnlyMessagePart = false,
 }: {
   part: AIPart;
   isUser: boolean;
@@ -1697,12 +1771,13 @@ function MessagePartView({
   pendingPermission?: AIPermission | null;
   onPermissionReply?: (response: PermissionResponse) => void;
   groupedRow?: boolean;
+  isOnlyMessagePart?: boolean;
 }) {
   switch (part.type) {
     case "text":
       return <TextPartView part={part} isUser={isUser} />;
     case "file":
-      return <FilePartView part={part} />;
+      return <FilePartView part={part} enforceBottomSpacing={isOnlyMessagePart} />;
     case "tool":
     case "tool-call":
     case "tool-result":
@@ -2569,6 +2644,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [inputFocused, setInputFocused] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [pendingImage, setPendingImage] = useState<AIFileAttachment | null>(null);
+  const [pendingImageViewerVisible, setPendingImageViewerVisible] = useState(false);
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionQuery, setAtMentionQuery] = useState("");
   const [workspaceFileMatches, setWorkspaceFileMatches] = useState<string[]>([]);
@@ -4215,6 +4291,12 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
     };
   }, [clearScheduledScroll]);
 
+  useEffect(() => {
+    if (!pendingImage) {
+      setPendingImageViewerVisible(false);
+    }
+  }, [pendingImage]);
+
   // Stop streaming
   const handleStop = async () => {
     if (activeSessionId) {
@@ -4735,13 +4817,21 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                   }}
                 >
                   <View style={{ position: "relative" }}>
-                    <Image
-                      source={{ uri: pendingImage.url }}
-                      style={{ width: 88, height: 88, borderRadius: radius.lg, backgroundColor: colors.bg.raised }}
-                      resizeMode="cover"
-                    />
                     <TouchableOpacity
-                      onPress={() => setPendingImage(null)}
+                      onPress={() => setPendingImageViewerVisible(true)}
+                      activeOpacity={0.82}
+                    >
+                      <Image
+                        source={{ uri: pendingImage.url }}
+                        style={{ width: 88, height: 88, borderRadius: 4, backgroundColor: colors.bg.raised }}
+                        resizeMode="cover"
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setPendingImageViewerVisible(false);
+                        setPendingImage(null);
+                      }}
                       activeOpacity={0.7}
                       style={{
                         position: "absolute",
@@ -4758,6 +4848,11 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
                       <X size={14} color={colors.fg.default} strokeWidth={2.2} />
                     </TouchableOpacity>
                   </View>
+                  <MediaViewer
+                    visible={pendingImageViewerVisible}
+                    imageUri={pendingImage.url}
+                    onClose={() => setPendingImageViewerVisible(false)}
+                  />
                 </View>
               ) : null}
 

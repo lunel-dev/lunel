@@ -1,5 +1,7 @@
 import { useTheme } from "@/contexts/ThemeContext";
-import { Image, Modal, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { ArrowLeft } from "lucide-react-native";
+import { Image, Modal, Pressable, View, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type MediaViewerProps = {
   visible: boolean;
@@ -8,23 +10,45 @@ type MediaViewerProps = {
 };
 
 export default function MediaViewer({ visible, imageUri, onClose }: MediaViewerProps) {
-  const { fonts } = useTheme();
+  const { colors } = useTheme();
+  const { top: topInset } = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
   return (
     <Modal visible={visible} transparent={false} animationType="fade" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: "#000", justifyContent: "center", alignItems: "center" }}>
+      <View style={{ flex: 1, backgroundColor: colors.bg.base, justifyContent: "center", alignItems: "center" }}>
+        <View
+          style={{
+            position: "absolute",
+            top: topInset + 8,
+            left: 16,
+            right: 16,
+            zIndex: 10,
+            alignItems: "flex-start",
+          }}
+        >
+          <Pressable
+            onPress={onClose}
+            style={{
+              width: 40,
+              height: 40,
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 20,
+              backgroundColor: colors.bg.elevated,
+            }}
+          >
+            <ArrowLeft size={20} color={colors.fg.default} strokeWidth={2.2} />
+          </Pressable>
+        </View>
         <Image
           source={{ uri: imageUri }}
-          style={{ width, height: height * 0.78 }}
+          style={{
+            width,
+            height: height * 0.78,
+          }}
           resizeMode="contain"
         />
-        <Pressable
-          onPress={onClose}
-          style={{ backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 24, paddingHorizontal: 24, paddingVertical: 10, marginTop: 20 }}
-        >
-          <Text style={{ color: "#fff", fontSize: 15, fontFamily: fonts.sans.medium }}>Close Image</Text>
-        </Pressable>
       </View>
     </Modal>
   );
