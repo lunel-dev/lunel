@@ -400,23 +400,20 @@ export class CodexProvider implements AIProvider {
 
     (async () => {
       try {
-        const effortLevels: Array<NonNullable<CodexPromptOptions["reasoningEffort"]>> = ["low", "medium", "high"];
-        const speedDelta: Record<NonNullable<CodexPromptOptions["speed"]>, number> = {
-          fast: -1,
-          balanced: 0,
-          quality: 1,
-        };
-        const baseEffort = codexOptions?.reasoningEffort ?? "medium";
-        const baseIndex = effortLevels.indexOf(baseEffort);
-        const adjustedIndex = Math.max(
-          0,
-          Math.min(
-            effortLevels.length - 1,
-            baseIndex + (codexOptions?.speed ? speedDelta[codexOptions.speed] : 0),
-          ),
-        );
-        const reasoningEffort = effortLevels[adjustedIndex];
         const modelId = await this.resolveModelId(model);
+        const modelInfo = await this.fetchModelById(modelId);
+        const effortLevels = modelInfo?.supportedReasoningEfforts.map((effort) => effort.reasoningEffort) ?? [];
+        const defaultEffort = modelInfo?.defaultReasoningEffort ?? effortLevels[0] ?? "medium";
+        const requestedEffort = codexOptions?.reasoningEffort;
+        const reasoningEffort = requestedEffort && effortLevels.includes(requestedEffort)
+          ? requestedEffort
+          : defaultEffort;
+        const requestedSpeedTier = codexOptions?.speed && codexOptions.speed !== "default"
+          ? codexOptions.speed
+          : undefined;
+        const serviceTier = requestedSpeedTier && modelInfo?.additionalSpeedTiers.includes(requestedSpeedTier)
+          ? requestedSpeedTier
+          : undefined;
         const collaborationMode = this.buildCollaborationMode(agent, modelId, reasoningEffort);
         // Freshly created sessions already have a live backend thread from
         // thread/start. Forcing thread/resume here can attach stale state to a
@@ -429,7 +426,8 @@ export class CodexProvider implements AIProvider {
               threadId: session.id,
               input: this.makeTurnInputPayload(text, files, imageUrlKey),
               ...(modelId ? { model: modelId } : {}),
-              ...(reasoningEffort ? { reasoningEffort } : {}),
+              ...(reasoningEffort ? { effort: reasoningEffort } : {}),
+              ...(serviceTier ? { serviceTier } : {}),
               ...(collaborationMode ? { collaborationMode } : {}),
             });
             break;
@@ -480,6 +478,9 @@ export class CodexProvider implements AIProvider {
           name: item.displayName || item.model,
           provider: "codex",
           description: item.description,
+          defaultReasoningEffort: item.defaultReasoningEffort,
+          supportedReasoningEfforts: item.supportedReasoningEfforts,
+          additionalSpeedTiers: item.additionalSpeedTiers,
         },
       ])
     );
@@ -1208,6 +1209,12 @@ export class CodexProvider implements AIProvider {
     displayName: string;
     description: string;
     isDefault: boolean;
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts: Array<{
+      reasoningEffort: string;
+      description?: string;
+    }>;
+    additionalSpeedTiers: string[];
   }>> {
     const result = await this.call("model/list", {
       cursor: null,
@@ -1230,12 +1237,35 @@ export class CodexProvider implements AIProvider {
         const displayName = this.readString(obj.displayName)
           ?? this.readString(obj.display_name)
           ?? model;
+        const supportedReasoningEfforts = Array.isArray(obj.supportedReasoningEfforts)
+          ? obj.supportedReasoningEfforts
+            .map<{ reasoningEffort: string; description?: string } | undefined>((effort) => {
+              const effortObj = this.asRecord(effort);
+              const reasoningEffort = this.readString(effortObj.reasoningEffort)
+                ?? this.readString(effortObj.reasoning_effort);
+              if (!reasoningEffort) return undefined;
+              const description = this.readString(effortObj.description);
+              return {
+                reasoningEffort,
+                ...(description ? { description } : {}),
+              };
+            })
+            .filter((effort): effort is { reasoningEffort: string; description?: string } => Boolean(effort))
+          : [];
+        const defaultReasoningEffort = this.readString(obj.defaultReasoningEffort)
+          ?? this.readString(obj.default_reasoning_effort);
+        const additionalSpeedTiers = Array.isArray(obj.additionalSpeedTiers)
+          ? obj.additionalSpeedTiers.filter((tier): tier is string => typeof tier === "string" && tier.length > 0)
+          : [];
         return {
           id: this.readString(obj.id) ?? model,
           model,
           displayName,
           description: this.readString(obj.description) ?? "",
           isDefault: Boolean(obj.isDefault ?? obj.is_default),
+          ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+          supportedReasoningEfforts,
+          additionalSpeedTiers,
         };
       })
       .filter((value): value is {
@@ -1244,7 +1274,35 @@ export class CodexProvider implements AIProvider {
         displayName: string;
         description: string;
         isDefault: boolean;
+        defaultReasoningEffort?: string;
+        supportedReasoningEfforts: Array<{
+          reasoningEffort: string;
+          description?: string;
+        }>;
+        additionalSpeedTiers: string[];
       } => Boolean(value));
+  }
+
+  private async fetchModelById(modelId: string | undefined): Promise<{
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    isDefault: boolean;
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts: Array<{
+      reasoningEffort: string;
+      description?: string;
+    }>;
+    additionalSpeedTiers: string[];
+  } | undefined> {
+    const items = await this.fetchModels();
+    if (!modelId) {
+      return items.find((item) => item.isDefault) ?? items[0];
+    }
+    return items.find((item) => item.model === modelId || item.id === modelId)
+      ?? items.find((item) => item.isDefault)
+      ?? items[0];
   }
 
   private async resolveModelId(model?: ModelSelector): Promise<string | undefined> {
@@ -1259,7 +1317,7 @@ export class CodexProvider implements AIProvider {
   private buildCollaborationMode(
     agent: string | undefined,
     modelId: string | undefined,
-    reasoningEffort: NonNullable<CodexPromptOptions["reasoningEffort"]>,
+    reasoningEffort: string,
   ): Record<string, unknown> | undefined {
     const normalizedAgent = (agent ?? "").trim().toLowerCase();
     const mode = normalizedAgent === "build" ? "default" : normalizedAgent;

@@ -1,11 +1,11 @@
 import Loading from "@/components/Loading";
-import Header, { useHeaderHeight } from "@/components/Header";
+import Header from "@/components/Header";
 import { useConnection } from "@/contexts/ConnectionContext";
 import { useSessionRegistryActions } from "@/contexts/SessionRegistry";
 import { useTheme } from "@/contexts/ThemeContext";
 import { typography } from "@/constants/themes";
 import { logger } from "@/lib/logger";
-import { X, ArrowLeft, ArrowRight, RotateCw, Search, Globe, Plus, Maximize2, Minimize2, Code, LayoutPanelTop, ArrowDown, ArrowUp, SquareMousePointer } from "lucide-react-native";
+import { X, ArrowLeft, ArrowRight, RotateCw, Search, Maximize2, Minimize2, SquareMousePointer } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -13,7 +13,6 @@ import {
   InteractionManager,
   Platform,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
@@ -88,11 +87,11 @@ function getDefaultDevsoleState(): DevsoleTabState {
 
 const DEVSOLE_SECTIONS: { id: DevsoleSectionId; label: string; hint: string }[] = [
   { id: "console", label: "Console", hint: "Runtime logs and JS evaluation" },
+  { id: "proxies", label: "Proxy", hint: "Tracked localhost proxy ports" },
   { id: "network", label: "Network", hint: "Requests, timings, and payload drill-in" },
   { id: "elements", label: "Elements", hint: "DOM and inspection primitives" },
   { id: "resources", label: "Resources", hint: "Storage, cookies, and cached state" },
   { id: "info", label: "Info", hint: "Session and page diagnostics" },
-  { id: "proxies", label: "Proxy", hint: "Tracked localhost proxy ports" },
 ];
 
 const DEVSOLE_STUBS: Record<
@@ -206,7 +205,6 @@ const DEVSOLE_STUBS: Record<
 export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
   const { colors, radius, fonts, isDark } = useTheme();
   const { discoveredProxyPorts, trackedProxyPorts, refreshProxyState, trackProxyPort, untrackProxyPort } = useConnection();
-  const headerHeight = useHeaderHeight();
   const { register, unregister } = useSessionRegistryActions();
   const { height: windowHeight } = useWindowDimensions();
 
@@ -1456,6 +1454,26 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
     true;
   `;
 
+  const colorSchemeBootstrapScript = `
+    (function() {
+      var meta = document.createElement('meta');
+      meta.name = 'color-scheme';
+      meta.content = '${isDark ? 'dark' : 'light'}';
+      document.head.appendChild(meta);
+    })();
+    true;
+  `;
+
+  const webViewBeforeContentLoadedScript = [
+    trustedTypesSetupScript.trim(),
+    colorSchemeBootstrapScript.trim(),
+    devsoleConsoleBootstrapScript.trim(),
+    devsoleNetworkBootstrapScript.trim(),
+    devsoleElementsBootstrapScript.trim(),
+    devsoleResourcesBootstrapScript.trim(),
+    devsoleInfoBootstrapScript.trim(),
+  ].join("\n");
+
   const injectDevsoleConsole = (tabId: string) => {
     webViewRefs.current[tabId]?.injectJavaScript([
       devsoleConsoleBootstrapScript,
@@ -1694,7 +1712,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
     `);
   };
 
-  const createNewTab = () => {
+  const createNewTab = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     const newId = Date.now().toString();
@@ -1705,7 +1723,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
       loading: false,
       ready: false,
     };
-    setTabs([...tabs, newTab]);
+    setTabs((current) => [...current, newTab]);
     setActiveTabId(newId);
     setUrlInput("https://www.google.com");
     setConsoleEntriesByTab((current) => ({ ...current, [newId]: [] }));
@@ -1731,9 +1749,9 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
         prev.map((t) => (t.id === newId ? { ...t, ready: true } : t))
       );
     });
-  };
+  }, []);
 
-  const closeTab = (tabId: string) => {
+  const closeTab = useCallback((tabId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const wasActiveTab = activeTabId === tabId;
@@ -1803,7 +1821,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
       return next;
     });
     delete pageUrlByTabRef.current[tabId];
-  };
+  }, [activeTabId, tabs]);
 
   const handleUrlSubmit = () => {
     let url = urlInput.trim();
@@ -2081,7 +2099,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
         {tabs.length > 0 && (
           <View
             style={{
-              height: 55,
+              height: 47,
               paddingHorizontal: 10,
               paddingTop: 0,
               paddingBottom: 0,
@@ -2104,7 +2122,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
               }}
               disabled={!isFocused && !activeTab?.canGoBack}
               style={{
-                width: 40,
+                width: 32,
                 height: 40,
                 alignItems: "center",
                 justifyContent: "center",
@@ -2120,12 +2138,12 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
             </TouchableOpacity>
 
             {!isFocused && (
-              <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
+              <View style={{ flexDirection: "row", gap: 0, alignItems: "center" }}>
                 <TouchableOpacity
                   onPress={() => webViewRefs.current[activeTabId]?.goForward()}
                   disabled={!activeTab?.canGoForward}
                   style={{
-                    width: 40,
+                    width: 32,
                     height: 40,
                     alignItems: "center",
                     justifyContent: "center",
@@ -2142,7 +2160,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                 <TouchableOpacity
                   onPress={() => webViewRefs.current[activeTabId]?.reload()}
                   style={{
-                    width: 40,
+                    width: 32,
                     height: 40,
                     alignItems: "center",
                     justifyContent: "center",
@@ -2228,24 +2246,30 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
               )}
             </View>
 
-            {!isFocused && <TouchableOpacity
-              onPress={toggleDevsole}
-              activeOpacity={0.85}
-              style={{
-                width: 40,
-                height: 40,
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: 10,
-                backgroundColor: devsoleOpen ? colors.accent.default : colors.bg.raised,
-              }}
-            >
-              <Code
-                size={18}
-                color={devsoleOpen ? colors.fg.default : colors.fg.muted}
-                strokeWidth={2}
-              />
-            </TouchableOpacity>}
+            {!isFocused && (
+              <TouchableOpacity
+                onPress={toggleDevsole}
+                activeOpacity={0.85}
+                style={{
+                  height: 40,
+                  paddingHorizontal: 10,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: 10,
+                  backgroundColor: devsoleOpen ? colors.accent.default : colors.bg.raised,
+                }}
+              >
+                <Text
+                  style={{
+                    color: devsoleOpen ? colors.fg.default : colors.fg.muted,
+                    fontSize: 12,
+                    fontFamily: fonts.sans.semibold,
+                  }}
+                >
+                  DevTools
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -2305,15 +2329,7 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                   source={{ uri: tab.url }}
                   style={{ flex: 1 }}
                   forceDarkOn={isDark}
-                  injectedJavaScriptBeforeContentLoaded={`
-                    (function() {
-                      var meta = document.createElement('meta');
-                      meta.name = 'color-scheme';
-                      meta.content = '${isDark ? 'dark' : 'light'}';
-                      document.head.appendChild(meta);
-                    })();
-                    true;
-                  `}
+                  injectedJavaScriptBeforeContentLoaded={webViewBeforeContentLoadedScript}
                   textZoom={90}
                   cacheEnabled={false}
                   cacheMode="LOAD_NO_CACHE"
@@ -2480,14 +2496,6 @@ export default function BrowserPanel({ bottomBarHeight }: PluginPanelProps) {
                       // Ignore parsing errors
                     }
                   }}
-                  injectedJavaScriptBeforeContentLoaded={[
-                    trustedTypesSetupScript.trim(),
-                    devsoleConsoleBootstrapScript.trim(),
-                    devsoleNetworkBootstrapScript.trim(),
-                    devsoleElementsBootstrapScript.trim(),
-                    devsoleResourcesBootstrapScript.trim(),
-                    devsoleInfoBootstrapScript.trim(),
-                  ].join("\n")}
                   javaScriptEnabled={true}
                   domStorageEnabled={true}
                   allowsInlineMediaPlayback={true}

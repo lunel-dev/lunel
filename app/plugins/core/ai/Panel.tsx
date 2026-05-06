@@ -13,7 +13,7 @@ import { useEditorConfig } from "@/contexts/EditorContext";
 import { useAI } from "@/hooks/useAI";
 import { useApi } from "@/hooks/useApi";
 import { logger } from "@/lib/logger";
-import type { AIEvent, AISession, AIMessage, AIPart, AIAgent, AIProvider, AIPermission, AIQuestion, AIFileAttachment, ModelRef, PermissionResponse, AiBackend, CodexPromptOptions } from "./types";
+import type { AIEvent, AISession, AIMessage, AIPart, AIAgent, AIProvider, AIModel, AIPermission, AIQuestion, AIFileAttachment, ModelRef, PermissionResponse, AiBackend, CodexPromptOptions } from "./types";
 import Markdown from "./Markdown";
 import ToolCall from "./ToolCall";
 import FileChange from "./FileChange";
@@ -2239,7 +2239,7 @@ function ConfigureSheet({
 }: {
   visible: boolean;
   backend: AiBackend;
-  modelOptions: { id: string; name: string }[];
+  modelOptions: { id: string; name: string; badges?: string[]; detail?: string }[];
   selectedModelId: string;
   onSelectModel: (id: string) => void;
   onClose: () => void;
@@ -2267,7 +2267,23 @@ function ConfigureSheet({
                   <Text numberOfLines={1} style={{ color: colors.fg.default, fontSize: 14, fontFamily: fonts.sans.regular }}>
                     {option.name}
                   </Text>
+                  {!!option.detail && (
+                    <Text numberOfLines={1} style={{ color: colors.fg.muted, fontSize: 11, fontFamily: fonts.sans.regular, marginTop: 2 }}>
+                      {option.detail}
+                    </Text>
+                  )}
                 </View>
+                {!!option.badges?.length && (
+                  <View style={{ flexDirection: "row", gap: 6, flexShrink: 0 }}>
+                    {option.badges.slice(0, 3).map((badge) => (
+                      <View key={badge} style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.bg.default }}>
+                        <Text style={{ color: colors.fg.muted, fontSize: 10, fontFamily: fonts.sans.medium }}>
+                          {badge}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </TouchableOpacity>
             );
           }) : (
@@ -2281,6 +2297,43 @@ function ConfigureSheet({
       </ScrollView>
     </InfoSheet>
   );
+}
+
+function formatCount(value: unknown): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value >= 1000000) return `${Math.round(value / 100000) / 10}M`;
+  if (value >= 1000) return `${Math.round(value / 1000)}K`;
+  return String(value);
+}
+
+function modelBadges(model: AIModel, isDefault: boolean): string[] {
+  const badges: string[] = [];
+  if (isDefault) badges.push("Default");
+  if (model.capabilities?.reasoning || model.supportedReasoningEfforts?.length || model.variants) badges.push("Reasoning");
+  if (model.capabilities?.attachment) badges.push("Files");
+  if (model.options?.serviceTier || model.id.toLowerCase().includes("fast")) badges.push("Fast");
+  return badges;
+}
+
+function modelDetail(model: AIModel): string | undefined {
+  const parts: string[] = [];
+  const context = formatCount(model.limit?.context);
+  const output = formatCount(model.limit?.output);
+  const variants = model.supportedReasoningEfforts?.map((effort) => effort.reasoningEffort)
+    ?? (model.variants ? Object.keys(model.variants) : []);
+  if (context) parts.push(`${context} ctx`);
+  if (output) parts.push(`${output} out`);
+  if (variants.length > 0) parts.push(variants.join(", "));
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function parseModelOptionId(optionId: string): { providerID: string; modelID: string } | undefined {
+  const separator = optionId.indexOf(":");
+  if (separator <= 0) return undefined;
+  return {
+    providerID: optionId.slice(0, separator),
+    modelID: optionId.slice(separator + 1),
+  };
 }
 
 function AttachmentSheet({
@@ -2369,8 +2422,10 @@ function TuneSheet({
   onAgentChange,
   reasoningEffort,
   onReasoningChange,
+  reasoningOptions,
   speed,
   onSpeedChange,
+  speedOptions,
   permissionMode,
   onPermissionChange,
   colors,
@@ -2382,25 +2437,17 @@ function TuneSheet({
   agents: { id: string; name: string }[];
   selectedAgent: string;
   onAgentChange: (id: string) => void;
-  reasoningEffort: NonNullable<CodexPromptOptions["reasoningEffort"]>;
-  onReasoningChange: (v: NonNullable<CodexPromptOptions["reasoningEffort"]>) => void;
-  speed: NonNullable<CodexPromptOptions["speed"]>;
-  onSpeedChange: (v: NonNullable<CodexPromptOptions["speed"]>) => void;
+  reasoningEffort: string;
+  onReasoningChange: (v: string) => void;
+  reasoningOptions: Array<{ id: string; label: string; description?: string }>;
+  speed: string;
+  onSpeedChange: (v: string) => void;
+  speedOptions: Array<{ id: string; label: string; description?: string }>;
   permissionMode: NonNullable<CodexPromptOptions["permissionMode"]>;
   onPermissionChange: (v: NonNullable<CodexPromptOptions["permissionMode"]>) => void;
   colors: any;
   fonts: any;
 }) {
-  const reasoningOptions: Array<{ id: NonNullable<CodexPromptOptions["reasoningEffort"]>; label: string }> = [
-    { id: "low", label: "Low" },
-    { id: "medium", label: "Medium" },
-    { id: "high", label: "High" },
-  ];
-  const speedOptions: Array<{ id: NonNullable<CodexPromptOptions["speed"]>; label: string }> = [
-    { id: "fast", label: "Fast" },
-    { id: "balanced", label: "Balanced" },
-    { id: "quality", label: "Quality" },
-  ];
   const permissionOptions: Array<{ id: NonNullable<CodexPromptOptions["permissionMode"]>; label: string }> = [
     { id: "default", label: "Default" },
     { id: "full-access", label: "Full Access" },
@@ -2461,37 +2508,43 @@ function TuneSheet({
             )}
           </View>
 
-          {backend === "codex" && (
+          {(backend === "codex" || backend === "opencode") && (
             <>
               {/* Reasoning */}
-              <View style={sectionStyle}>
-                <Text style={sectionLabelStyle}>Reasoning</Text>
-                {renderOptionGroup(
-                  reasoningOptions.map((opt) => ({ id: opt.id, label: opt.label })),
-                  reasoningEffort,
-                  onReasoningChange,
-                )}
-              </View>
+              {reasoningOptions.length > 0 && (
+                <View style={sectionStyle}>
+                  <Text style={sectionLabelStyle}>Reasoning</Text>
+                  {renderOptionGroup(
+                    reasoningOptions.map((opt) => ({ id: opt.id, label: opt.label })),
+                    reasoningEffort,
+                    onReasoningChange,
+                  )}
+                </View>
+              )}
 
               {/* Speed */}
-              <View style={sectionStyle}>
-                <Text style={sectionLabelStyle}>Speed</Text>
-                {renderOptionGroup(
-                  speedOptions.map((opt) => ({ id: opt.id, label: opt.label })),
-                  speed,
-                  onSpeedChange,
-                )}
-              </View>
+              {backend === "codex" && speedOptions.length > 1 && (
+                <View style={sectionStyle}>
+                  <Text style={sectionLabelStyle}>Speed</Text>
+                  {renderOptionGroup(
+                    speedOptions.map((opt) => ({ id: opt.id, label: opt.label })),
+                    speed,
+                    onSpeedChange,
+                  )}
+                </View>
+              )}
 
               {/* Permissions */}
-              <View style={sectionStyle}>
-                <Text style={sectionLabelStyle}>Permission</Text>
-                {renderOptionGroup(
-                  permissionOptions.map((opt) => ({ id: opt.id, label: opt.label })),
-                  permissionMode,
-                  onPermissionChange,
-                )}
-              </View>
+              {backend === "codex" && (
+                <View style={sectionStyle}>
+                  <Text style={sectionLabelStyle}>Permission</Text>
+                  {renderOptionGroup(
+                    permissionOptions.map((opt) => ({ id: opt.id, label: opt.label })),
+                    permissionMode,
+                    onPermissionChange,
+                  )}
+                </View>
+              )}
 
             </>
           )}
@@ -2619,7 +2672,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     opencode: DEFAULT_OPENCODE_AGENTS,
     codex: DEFAULT_CODEX_AGENTS,
   });
-  const [modelOptionsByBackend, setModelOptionsByBackend] = useState<Record<AiBackend, { id: string; name: string }[]>>({
+  const [modelOptionsByBackend, setModelOptionsByBackend] = useState<Record<AiBackend, { id: string; name: string; badges?: string[]; detail?: string }[]>>({
     opencode: [],
     codex: [],
   });
@@ -2632,7 +2685,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     codex: "",
   });
   const [codexReasoningEffort, setCodexReasoningEffort] = useState<NonNullable<CodexPromptOptions["reasoningEffort"]>>("medium");
-  const [codexSpeed, setCodexSpeed] = useState<NonNullable<CodexPromptOptions["speed"]>>("balanced");
+  const [codexSpeed, setCodexSpeed] = useState<string>("default");
   const [codexPermissionMode, setCodexPermissionMode] = useState<NonNullable<CodexPromptOptions["permissionMode"]>>("default");
   const [providersByBackend, setProvidersByBackend] = useState<Record<AiBackend, AIProvider[]>>({
     opencode: [],
@@ -2760,9 +2813,61 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const selectedAgent = selectedAgentByBackend[activeBackend] || "";
   const selectedModel = selectedModelByBackend[activeBackend] || "";
   const providers = providersByBackend[activeBackend] || [];
+  const selectedModelInfo = useMemo(() => {
+    const parsed = parseModelOptionId(selectedModel);
+    if (!parsed) return undefined;
+    const provider = providers.find((p) => p.id === parsed.providerID);
+    return provider?.models?.[parsed.modelID];
+  }, [providers, selectedModel]);
+  const reasoningOptions = useMemo(() => {
+    if (activeBackend === "opencode") {
+      return Object.keys(selectedModelInfo?.variants ?? {}).map((variant) => ({
+        id: variant,
+        label: variant.charAt(0).toUpperCase() + variant.slice(1),
+      }));
+    }
+    const efforts = selectedModelInfo?.supportedReasoningEfforts ?? [];
+    if (efforts.length === 0) {
+      const current = codexReasoningEffort || selectedModelInfo?.defaultReasoningEffort;
+      return current
+        ? [{ id: current, label: current.charAt(0).toUpperCase() + current.slice(1) }]
+        : [];
+    }
+    return efforts.map((effort) => ({
+      id: effort.reasoningEffort,
+      label: effort.reasoningEffort.charAt(0).toUpperCase() + effort.reasoningEffort.slice(1),
+      description: effort.description,
+    }));
+  }, [activeBackend, codexReasoningEffort, selectedModelInfo]);
+  const codexSpeedOptions = useMemo(() => {
+    if (activeBackend !== "codex") return [];
+    const tiers = selectedModelInfo?.additionalSpeedTiers ?? [];
+    return [
+      { id: "default", label: "Default" },
+      ...tiers.map((tier) => ({
+        id: tier,
+        label: tier.charAt(0).toUpperCase() + tier.slice(1),
+      })),
+    ];
+  }, [activeBackend, selectedModelInfo]);
   const needsApiKey = needsApiKeyByBackend[activeBackend] || false;
   const isActiveSessionLoading = !!activeSessionId && loadingSessionId === activeSessionId && !messagesMap[activeSessionId];
   const composerBottomOffset = composerHeight;
+
+  useEffect(() => {
+    if ((activeBackend !== "codex" && activeBackend !== "opencode") || reasoningOptions.length === 0) return;
+    const supported = reasoningOptions.map((option) => option.id);
+    if (supported.includes(codexReasoningEffort)) return;
+    const defaultEffort = selectedModelInfo?.defaultReasoningEffort;
+    setCodexReasoningEffort(defaultEffort && supported.includes(defaultEffort) ? defaultEffort : supported[0]);
+  }, [activeBackend, codexReasoningEffort, reasoningOptions, selectedModelInfo]);
+
+  useEffect(() => {
+    if (activeBackend !== "codex" || codexSpeedOptions.length === 0) return;
+    const supported = codexSpeedOptions.map((option) => option.id);
+    if (supported.includes(codexSpeed)) return;
+    setCodexSpeed("default");
+  }, [activeBackend, codexSpeed, codexSpeedOptions]);
 
   useEffect(() => {
     messagesMapRef.current = messagesMap;
@@ -3144,7 +3249,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
             const defaults = result.defaults || {};
             if (Array.isArray(providersList)) {
               setProvidersByBackend((prev) => ({ ...prev, [backend]: providersList as AIProvider[] }));
-              const models: { id: string; name: string }[] = [];
+              const models: { id: string; name: string; badges?: string[]; detail?: string }[] = [];
               let hasConfiguredKey = false;
               let defaultModelId = "";
 
@@ -3155,12 +3260,16 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
                 if (p.models) {
                   const defaultForProvider = defaults[p.id];
                   for (const [modelId, model] of Object.entries(p.models)) {
+                    const typedModel = model as AIModel;
+                    const isDefault = Boolean(defaultForProvider && modelId === defaultForProvider);
                     const optionId = `${p.id}:${modelId}`;
                     models.push({
                       id: optionId,
-                      name: (model as any).name || modelId,
+                      name: typedModel.name || modelId,
+                      badges: modelBadges(typedModel, isDefault),
+                      detail: modelDetail(typedModel),
                     });
-                    if (defaultForProvider && modelId === defaultForProvider && ((p as any).key || (p as any).source === "env")) {
+                    if (isDefault) {
                       defaultModelId = optionId;
                     }
                   }
@@ -3617,19 +3726,23 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   // Get selected model ref
   const getModelRef = useCallback((): ModelRef | undefined => {
-    if (!selectedModel || !selectedModel.includes(":")) return undefined;
-    const [providerID, modelID] = selectedModel.split(":");
-    return { providerID, modelID };
+    return parseModelOptionId(selectedModel);
   }, [selectedModel]);
 
   const getCodexPromptOptions = useCallback((): CodexPromptOptions | undefined => {
+    if (activeBackend === "opencode") {
+      const supported = reasoningOptions.map((option) => option.id);
+      return supported.includes(codexReasoningEffort)
+        ? { reasoningEffort: codexReasoningEffort }
+        : undefined;
+    }
     if (activeBackend !== "codex") return undefined;
     return {
       reasoningEffort: codexReasoningEffort,
       speed: codexSpeed,
       permissionMode: codexPermissionMode,
     };
-  }, [activeBackend, codexPermissionMode, codexReasoningEffort, codexSpeed]);
+  }, [activeBackend, codexPermissionMode, codexReasoningEffort, codexSpeed, reasoningOptions]);
 
   // Permission reply
   const handlePermissionReply = async (response: PermissionResponse) => {
@@ -5117,8 +5230,10 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
               onAgentChange={(id) => setSelectedAgentByBackend((prev) => ({ ...prev, [activeBackend]: id }))}
               reasoningEffort={codexReasoningEffort}
               onReasoningChange={setCodexReasoningEffort}
+              reasoningOptions={reasoningOptions}
               speed={codexSpeed}
               onSpeedChange={setCodexSpeed}
+              speedOptions={codexSpeedOptions}
               permissionMode={codexPermissionMode}
               onPermissionChange={setCodexPermissionMode}
               colors={colors}

@@ -15,8 +15,8 @@ export interface ModelSelector {
 }
 
 export interface CodexPromptOptions {
-  reasoningEffort?: "low" | "medium" | "high";
-  speed?: "fast" | "balanced" | "quality";
+  reasoningEffort?: string;
+  speed?: string;
   permissionMode?: "default" | "full-access";
 }
 

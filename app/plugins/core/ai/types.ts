@@ -21,8 +21,8 @@ export interface ModelRef {
 }
 
 export interface CodexPromptOptions {
-  reasoningEffort?: "low" | "medium" | "high";
-  speed?: "fast" | "balanced" | "quality";
+  reasoningEffort?: string;
+  speed?: string;
   permissionMode?: "default" | "full-access";
 }
 
@@ -43,6 +43,27 @@ export interface AIModel {
   id: string;
   name: string;
   provider: string;
+  capabilities?: {
+    reasoning?: boolean;
+    attachment?: boolean;
+    toolcall?: boolean;
+    input?: Record<string, boolean>;
+    output?: Record<string, boolean>;
+    [key: string]: unknown;
+  };
+  limit?: {
+    context?: number;
+    input?: number;
+    output?: number;
+  };
+  options?: Record<string, unknown>;
+  variants?: Record<string, Record<string, unknown>>;
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts?: Array<{
+    reasoningEffort: string;
+    description?: string;
+  }>;
+  additionalSpeedTiers?: string[];
 }
 
 export interface AIProvider {

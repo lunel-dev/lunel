@@ -466,7 +466,6 @@ export class OpenCodeProvider implements AIProvider {
     files: FileAttachment[] = [],
     codexOptions?: CodexPromptOptions,
   ): Promise<{ ack: true }> {
-    void codexOptions;
     if (sessionId) this.lastActiveSessionId = sessionId;
 
     if (VERBOSE_AI_LOGS) {
@@ -481,7 +480,7 @@ export class OpenCodeProvider implements AIProvider {
     // Fire-and-forget — results come back through the SSE event stream.
     // Prefer the async prompt endpoint so long-running turns do not get tied
     // to the request lifecycle the way the basic prompt route can be.
-    this.sendPromptAsync(sessionId, text, model, agent, files).catch((err: unknown) => {
+    this.sendPromptAsync(sessionId, text, model, agent, files, codexOptions).catch((err: unknown) => {
       console.error("[ai] prompt error:", (err as Error).message);
       this.emitter?.({
         type: "prompt_error",
@@ -717,6 +716,7 @@ export class OpenCodeProvider implements AIProvider {
     model?: ModelSelector,
     agent?: string,
     files: FileAttachment[] = [],
+    promptOptions?: CodexPromptOptions,
   ): Promise<void> {
     const server = this.server;
     const authHeader = this.authHeader;
@@ -739,6 +739,7 @@ export class OpenCodeProvider implements AIProvider {
         ],
         ...(model ? { model } : {}),
         ...(agent ? { agent } : {}),
+        ...(promptOptions?.reasoningEffort ? { variant: promptOptions.reasoningEffort } : {}),
       }),
     });
 
