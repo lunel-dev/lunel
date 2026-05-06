@@ -2,7 +2,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { typography } from "@/constants/themes";
 import * as Haptics from "expo-haptics";
 import { X } from "lucide-react-native";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dimensions,
   KeyboardAvoidingView,
@@ -22,31 +22,43 @@ const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 type InfoSheetProps = {
   visible: boolean;
   onClose: () => void;
+  onAfterClose?: () => void;
   title: string;
   description: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
 };
 
-export default function InfoSheet({ visible, onClose, title, description, icon, children }: InfoSheetProps) {
+export default function InfoSheet({ visible, onClose, onAfterClose, title, description, icon, children }: InfoSheetProps) {
   const { fonts, colors, spacing, radius } = useTheme();
   const [modalVisible, setModalVisible] = useState(false);
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const backdropOpacity = useSharedValue(0);
-  const hideModal = useCallback(() => setModalVisible(false), []);
+  const wasVisibleRef = useRef(false);
+  const hideModal = useCallback(() => {
+    setModalVisible(false);
+    wasVisibleRef.current = false;
+    onAfterClose?.();
+  }, [onAfterClose]);
 
   useEffect(() => {
     if (visible) {
+      wasVisibleRef.current = true;
       setModalVisible(true);
       translateY.value = SCREEN_HEIGHT;
       translateY.value = withTiming(0, { duration: 200 });
       backdropOpacity.value = withTiming(1, { duration: 200 });
-    } else {
-      backdropOpacity.value = withTiming(0, { duration: 200 });
-      translateY.value = withTiming(SCREEN_HEIGHT, { duration: 200 }, () => {
-        runOnJS(hideModal)();
-      });
+      return;
     }
+
+    if (!wasVisibleRef.current) {
+      return;
+    }
+
+    backdropOpacity.value = withTiming(0, { duration: 200 });
+    translateY.value = withTiming(SCREEN_HEIGHT, { duration: 200 }, () => {
+      runOnJS(hideModal)();
+    });
   }, [visible, hideModal, translateY, backdropOpacity]);
 
   const pan = Gesture.Pan()

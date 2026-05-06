@@ -2,7 +2,7 @@
   "expo": {
     "name": "lunel",
     "slug": "lunel",
-    "version": "1.0.2",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "lunel",
@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "dev.lunel.app",
+      "buildNumber": "2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "This app uses the camera to scan a QR code to securely connect the app to your development environment or codebase. You can also manually enter the code if you prefer not to use the camera.",
@@ -29,7 +30,7 @@
         "RECORD_AUDIO"
       ],
       "package": "dev.lunel.app",
-      "versionCode": 1
+      "versionCode": 2
     },
     "web": {
       "output": "static",

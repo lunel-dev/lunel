@@ -1,7 +1,7 @@
 {
   "name": "lunel",
   "main": "expo-router/entry",
-  "version": "1.0.1",
+  "version": "1.0.7",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",

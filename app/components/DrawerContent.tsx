@@ -200,6 +200,7 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
   const [editorTreeError, setEditorTreeError] = useState<string | null>(null);
   const [selectedSessionAction, setSelectedSessionAction] = useState<SessionItem | null>(null);
   const [renameSessionTarget, setRenameSessionTarget] = useState<SessionItem | null>(null);
+  const [pendingRenameSessionTarget, setPendingRenameSessionTarget] = useState<SessionItem | null>(null);
   const inputRef = useRef<TextInput>(null);
   const pendingNavigationRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const interactionHandleRef = useRef<{ cancel?: () => void } | null>(null);
@@ -782,7 +783,15 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
 
         <InfoSheet
           visible={selectedSessionAction !== null}
-          onClose={() => setSelectedSessionAction(null)}
+          onClose={() => {
+            setSelectedSessionAction(null);
+            setPendingRenameSessionTarget(null);
+          }}
+          onAfterClose={() => {
+            if (!pendingRenameSessionTarget) return;
+            handleSessionRenameStart(pendingRenameSessionTarget.id, pendingRenameSessionTarget.title);
+            setPendingRenameSessionTarget(null);
+          }}
           title={selectedSessionAction?.title ?? "Session"}
           description="Session actions"
         >
@@ -791,8 +800,8 @@ export default function DrawerContent(props: DrawerContentComponentProps) {
               <TouchableOpacity
                 onPress={() => {
                   if (!selectedSessionAction) return;
+                  setPendingRenameSessionTarget(selectedSessionAction);
                   setSelectedSessionAction(null);
-                  handleSessionRenameStart(selectedSessionAction.id, selectedSessionAction.title);
                 }}
                 activeOpacity={0.7}
                 style={[styles.sheetRow, { backgroundColor: colors.bg.raised, borderRadius: 10, marginBottom: 0 }]}
