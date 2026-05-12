@@ -3,7 +3,8 @@
 
 export type ThemeId =
   | 'light'
-  | 'dark';
+  | 'dark'
+  | 'oled';
 export type ThemeOption = ThemeId | 'system';
 
 // =============================================================================
@@ -421,6 +422,37 @@ export interface ThemeColors {
     info: string;        // blue — hashes, pull
   };
 
+  // Code Editor colors
+  editor: {
+    bg: string;
+    fg: string;
+    lineNumbers: string;
+    selection: string;
+  };
+
+  // Syntax highlighting
+  syntax: {
+    keyword: string;
+    string: string;
+    comment: string;
+    function: string;
+    number: string;
+    operator: string;
+    punctuation: string;
+    class: string;
+    boolean: string;
+    constant: string;
+    property: string;
+    variable: string;
+    parameter: string;
+    type: string;
+    tag: string;
+    attribute: string;
+    deleted: string;
+    inserted: string;
+    regex: string;
+  };
+
   // Terminal colors
   terminal: {
     bg: string;
@@ -477,6 +509,33 @@ const lightTheme: ThemeColors = {
     deleted: '#ef4444',
     info: '#3b82f6',
   },
+  editor: {
+    bg: '#ffffff',
+    fg: '#0a0a0a',
+    lineNumbers: '#cccccc',
+    selection: '#6366f120',
+  },
+  syntax: {
+    keyword: '#d948cc',
+    string: '#1c8a43',
+    comment: '#8e8e8e',
+    function: '#2563eb',
+    number: '#ea580c',
+    operator: '#0a0a0a',
+    punctuation: '#666666',
+    class: '#ca8a04',
+    boolean: '#ea580c',
+    constant: '#ea580c',
+    property: '#7c3aed',
+    variable: '#0a0a0a',
+    parameter: '#7c3aed',
+    type: '#ca8a04',
+    tag: '#dc2626',
+    attribute: '#9333ea',
+    deleted: '#dc2626',
+    inserted: '#16a34a',
+    regex: '#ea580c',
+  },
   terminal: {
     bg: '#ffffff',
     fg: '#0a0a0a',
@@ -528,6 +587,33 @@ const darkTheme: ThemeColors = {
     deleted: '#f87171',
     info: '#60a5fa',
   },
+  editor: {
+    bg: '#161616',
+    fg: '#d4d4d4',
+    lineNumbers: '#454545',
+    selection: '#818cf820',
+  },
+  syntax: {
+    keyword: '#c678dd',
+    string: '#98c379',
+    comment: '#7f848e',
+    function: '#61afef',
+    number: '#d19a66',
+    operator: '#56b6c2',
+    punctuation: '#abb2bf',
+    class: '#e5c07b',
+    boolean: '#d19a66',
+    constant: '#d19a66',
+    property: '#98c379',
+    variable: '#e06c75',
+    parameter: '#d19a66',
+    type: '#e5c07b',
+    tag: '#e06c75',
+    attribute: '#d19a66',
+    deleted: '#e06c75',
+    inserted: '#98c379',
+    regex: '#56b6c2',
+  },
   terminal: {
     bg: '#161616',
     fg: '#d4d4d4',
@@ -552,6 +638,25 @@ const darkTheme: ThemeColors = {
   },
 };
 
+const oledTheme: ThemeColors = {
+  ...darkTheme,
+  bg: {
+    base: '#000000',
+    raised: '#0a0a0a',
+    elevated: '#121212',
+  },
+  editor: {
+    bg: '#000000',
+    fg: '#d4d4d4',
+    lineNumbers: '#3a3a3a',
+    selection: '#818cf830',
+  },
+  terminal: {
+    ...darkTheme.terminal,
+    bg: '#000000',
+  },
+};
+
 // =============================================================================
 // Theme Registry
 // =============================================================================
@@ -559,18 +664,21 @@ const darkTheme: ThemeColors = {
 export const themes: Record<ThemeId, ThemeColors> = {
   'light': lightTheme,
   'dark': darkTheme,
+  'oled': oledTheme,
 };
 
 export const themeLabels: Record<ThemeOption, string> = {
   'system': 'System Default',
   'light': 'Light',
   'dark': 'Dark',
+  'oled': 'OLED Black',
 };
 
 export const themeDescriptions: Record<ThemeOption, string> = {
   'system': 'Follows your device appearance setting',
   'light': 'Light theme',
   'dark': 'Dark theme',
+  'oled': 'Pitch black for battery saving',
 };
 
 // =============================================================================
