@@ -871,6 +871,16 @@ async function handleFsCreate(payload: Record<string, unknown>): Promise<Record<
 // Git Handlers
 // ============================================================================
 
+function assertRefArg(value: string | undefined, name: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw Object.assign(new Error(`${name} is required`), { code: "EINVAL" });
+  }
+  if (value.startsWith("-")) {
+    throw Object.assign(new Error(`${name} must not start with "-"`), { code: "EINVAL" });
+  }
+  return value;
+}
+
 async function runGit(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     const proc = spawn("git", args, { cwd: ROOT_DIR });
@@ -1024,8 +1034,7 @@ async function handleGitLog(payload: Record<string, unknown>): Promise<Record<st
 }
 
 async function handleGitCommitDetails(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const hash = (payload.hash as string)?.trim();
-  if (!hash) throw Object.assign(new Error("hash is required"), { code: "EINVAL" });
+  const hash = assertRefArg((payload.hash as string | undefined)?.trim(), "hash");
 
   try {
     const commitResult = await runGit(["show", "-s", "--format=%H%n%s%n%an%n%at", hash]);
@@ -1101,7 +1110,7 @@ async function handleGitDiff(payload: Record<string, unknown>): Promise<Record<s
 
   const args = ["diff"];
   if (staged) args.push("--staged");
-  if (filepath) args.push(filepath);
+  if (filepath) args.push("--", filepath);
 
   const result = await runGit(args);
 
@@ -1132,9 +1141,8 @@ async function handleGitBranches(): Promise<Record<string, unknown>> {
 }
 
 async function handleGitCheckout(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const branch = payload.branch as string;
+  const branch = assertRefArg(payload.branch as string | undefined, "branch");
   const create = payload.create === true;
-  if (!branch) throw Object.assign(new Error("branch is required"), { code: "EINVAL" });
 
   const args = create ? ["checkout", "-b", branch] : ["checkout", branch];
   const result = await runGit(args);
@@ -1146,8 +1154,7 @@ async function handleGitCheckout(payload: Record<string, unknown>): Promise<Reco
 }
 
 async function handleGitDeleteBranch(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const branch = payload.branch as string;
-  if (!branch) throw Object.assign(new Error("branch is required"), { code: "EINVAL" });
+  const branch = assertRefArg(payload.branch as string | undefined, "branch");
 
   const result = await runGit(["branch", "-d", branch]);
   if (result.code !== 0) {
