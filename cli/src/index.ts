@@ -112,6 +112,7 @@ let aiManagerInitPromise: Promise<void> | null = null;
 // Proxy tunnel management
 let currentSessionCode: string | null = null;
 let currentSessionPassword: string | null = null;
+let currentPairingSecret: string | null = null;
 let currentPrimaryGateway: string = DEFAULT_PROXY_URL;
 let activeGatewayUrl: string = DEFAULT_PROXY_URL;
 let shuttingDown = false;
@@ -338,6 +339,7 @@ interface CliSavedSession {
   rootDir: string;
   sessionCode: string | null;
   sessionPassword: string;
+  pairingSecret?: string | null;
   savedAt: number;
 }
 
@@ -408,6 +410,7 @@ async function readCliConfig(): Promise<CliConfig> {
           rootDir: entry.rootDir,
           sessionCode: typeof entry.sessionCode === "string" ? entry.sessionCode : null,
           sessionPassword: entry.sessionPassword,
+          pairingSecret: typeof entry.pairingSecret === "string" && entry.pairingSecret ? entry.pairingSecret : null,
           savedAt: entry.savedAt,
         }))
         : [],
@@ -441,13 +444,18 @@ function getSavedSessionForRoot(config: CliConfig, rootDir: string): CliSavedSes
   return sessions.find((entry) => entry.rootDir === rootDir) || null;
 }
 
-async function saveSessionForRoot(sessionCode: string | null, sessionPassword: string): Promise<void> {
+async function saveSessionForRoot(
+  sessionCode: string | null,
+  sessionPassword: string,
+  pairingSecret: string | null = null,
+): Promise<void> {
   const config = await getCliConfig();
   const sessions = Array.isArray(config.sessions) ? [...config.sessions] : [];
   const nextEntry: CliSavedSession = {
     rootDir: ROOT_DIR,
     sessionCode,
     sessionPassword,
+    pairingSecret,
     savedAt: Date.now(),
   };
   const deduped = sessions.filter((entry) => entry.rootDir !== ROOT_DIR);
@@ -3571,7 +3579,7 @@ async function connectWebSocketV2(): Promise<void> {
   const transport = new V2SessionTransport({
     gatewayUrl,
     password: currentSessionPassword,
-    sessionSecret: currentSessionPassword,
+    sessionSecret: currentPairingSecret ?? currentSessionPassword,
     generation: currentReattachGeneration,
     role: "cli",
     debugLog: DEBUG_MODE ? debugLog : undefined,
@@ -3703,6 +3711,7 @@ async function main(): Promise<void> {
       displaySavedSessionNotice();
       sessionCodeToUse = savedSession.sessionCode;
       sessionPasswordToUse = savedSession.sessionPassword;
+      currentPairingSecret = savedSession.pairingSecret ?? null;
       usedSavedSession = true;
     } else {
       if (FORCE_NEW_CODE && savedSession?.sessionPassword) {
@@ -3711,11 +3720,13 @@ async function main(): Promise<void> {
       }
       const qr = await createQrCode();
       currentSessionCode = qr.code;
-      displayQR(qr.code);
+      const pairingSecret = randomBytes(32).toString("base64url");
+      currentPairingSecret = pairingSecret;
+      displayQR(`lunel://connect?code=${encodeURIComponent(qr.code)}&ps=${pairingSecret}`);
       const assembled = await assembleWithCode(qr.code);
       sessionCodeToUse = assembled.code;
       sessionPasswordToUse = assembled.password;
-      await saveSessionForRoot(sessionCodeToUse, sessionPasswordToUse);
+      await saveSessionForRoot(sessionCodeToUse, sessionPasswordToUse, pairingSecret);
     }
 
     currentSessionCode = sessionCodeToUse;

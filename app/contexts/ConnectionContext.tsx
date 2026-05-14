@@ -88,6 +88,7 @@ interface ManagerHealthProbeResult {
 export interface StoredSession {
   sessionCode: string | null;
   sessionPassword: string;
+  pairingSecret?: string | null;
   gateways: string[];
   savedAt: number;
 }
@@ -239,24 +240,25 @@ function normalizeGateway(input: string): string {
   }
 }
 
-function parseConnectPayload(value: string): { code: string } {
+function parseConnectPayload(value: string): { code: string; pairingSecret: string | null } {
   const raw = value.trim();
-  if (!raw) return { code: '' };
+  if (!raw) return { code: '', pairingSecret: null };
 
   const parts = raw.split(',').map((x) => x.trim()).filter(Boolean);
   if (parts.length >= 2) {
     const code = parts[parts.length - 1];
-    return { code };
+    return { code, pairingSecret: null };
   }
 
-  // Support URL payloads, e.g. lunel://connect?code=ABC or https://.../ABC
+  // Support URL payloads, e.g. lunel://connect?code=ABC or lunel://connect?code=ABC&ps=...
   try {
     const url = new URL(raw);
     const queryCode = url.searchParams.get('code')?.trim();
-    if (queryCode) return { code: queryCode };
+    const queryPs = url.searchParams.get('ps')?.trim() || null;
+    if (queryCode) return { code: queryCode, pairingSecret: queryPs };
 
     const pathCode = url.pathname.split('/').filter(Boolean).pop()?.trim();
-    if (pathCode) return { code: pathCode };
+    if (pathCode) return { code: pathCode, pairingSecret: queryPs };
   } catch {
     // ignore URL parsing failures and continue with fallback parsing
   }
@@ -264,10 +266,10 @@ function parseConnectPayload(value: string): { code: string } {
   // Support plain text containing "...code=ABC..."
   const queryMatch = raw.match(/(?:^|[?&#,\s])code=([^&#,\s]+)/i);
   if (queryMatch?.[1]) {
-    return { code: decodeURIComponent(queryMatch[1]).trim() };
+    return { code: decodeURIComponent(queryMatch[1]).trim(), pairingSecret: null };
   }
 
-  return { code: raw };
+  return { code: raw, pairingSecret: null };
 }
 
 function toTerminalSessionState(state?: string, reason?: string): SessionState {
@@ -316,6 +318,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const sessionCodeRef = useRef<string | null>(null);
   const sessionPasswordRef = useRef<string | null>(null);
+  const pairingSecretRef = useRef<string | null>(null);
   const gatewaysRef = useRef<string[]>([DEFAULT_GATEWAY]);
   const activeGatewayRef = useRef<string>(DEFAULT_GATEWAY);
   const reattachGenerationRef = useRef<number | null>(null);
@@ -453,6 +456,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     const next: PairedSession = {
       sessionCode: session.sessionCode,
       sessionPassword: session.sessionPassword,
+      pairingSecret: session.pairingSecret ?? previous?.pairingSecret ?? null,
       gateways: session.gateways,
       savedAt: session.savedAt,
       hostname: capabilitiesValue.hostname,
@@ -700,7 +704,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     const transport = new V2SessionTransport({
       gatewayUrl: gateway,
       password: wsPassword,
-      sessionSecret: wsPassword,
+      sessionSecret: pairingSecretRef.current ?? wsPassword,
       generation: options?.generation ?? reattachGenerationRef.current,
       role: 'app',
       debugLog: (message, ...args) => logger.info('connection', message, {
@@ -893,6 +897,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         await savePairedSession({
           sessionCode: sessionCodeRef.current,
           sessionPassword: sessionPasswordRef.current,
+          pairingSecret: pairingSecretRef.current,
           gateways: gatewaysRef.current,
           savedAt: Date.now(),
         }, {
@@ -1269,6 +1274,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       setSessionCode(null);
       sessionCodeRef.current = null;
       sessionPasswordRef.current = null;
+      pairingSecretRef.current = null;
       reattachGenerationRef.current = null;
       gatewaysRef.current = [DEFAULT_GATEWAY];
       activeGatewayRef.current = DEFAULT_GATEWAY;
@@ -1338,6 +1344,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
     sessionCodeRef.current = assembled.code;
     sessionPasswordRef.current = assembled.password;
+    pairingSecretRef.current = parsed.pairingSecret;
     reattachGenerationRef.current = null;
     try {
       gatewaysRef.current = [await getAssignedProxyUrl(assembled.password)];
@@ -1401,6 +1408,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     try {
       sessionCodeRef.current = stored.sessionCode || null;
       sessionPasswordRef.current = stored.sessionPassword;
+      pairingSecretRef.current = stored.pairingSecret ?? null;
       const reattach = await claimReattach(stored.sessionPassword);
       gatewaysRef.current = [reattach.proxyUrl];
       reattachGenerationRef.current = reattach.generation;
