@@ -73,6 +73,11 @@ import { innerApi } from "../../innerApi";
 import { PluginPanelProps } from "../../types";
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
 const AI_DETAILED_VIEW_STORAGE_KEY = "ai-detailed-view-enabled";
+const AI_SELECTED_MODEL_STORAGE_PREFIX = "ai-selected-model";
+const AI_SELECTED_AGENT_STORAGE_PREFIX = "ai-selected-agent";
+const AI_CODEX_REASONING_STORAGE_KEY = "ai-codex-reasoning";
+const AI_CODEX_SPEED_STORAGE_KEY = "ai-codex-speed";
+const AI_CODEX_PERMISSION_STORAGE_KEY = "ai-codex-permission";
 const TRANSCRIBE_ENDPOINT = "https://internal-api.lunel.dev/api/transcribe";
 const VOICE_WAVE_BAR_COUNT = Math.round(42 * (SCREEN_WIDTH / 390));
 const VOICE_WAVE_IDLE_LEVEL = 0.08;
@@ -103,6 +108,33 @@ const DEFAULT_CODEX_AGENTS: { id: string; name: string; icon?: React.ComponentTy
 type ComposerSheet = "configure" | "tune" | null;
 
 const BUTTON_LABEL_MAX_CHARS = 12;
+
+const AI_BACKENDS: AiBackend[] = ["opencode", "codex"];
+
+function aiSelectedModelStorageKey(backend: AiBackend): string {
+  return `${AI_SELECTED_MODEL_STORAGE_PREFIX}:${backend}`;
+}
+
+function aiSelectedAgentStorageKey(backend: AiBackend): string {
+  return `${AI_SELECTED_AGENT_STORAGE_PREFIX}:${backend}`;
+}
+
+function isCodexPermissionMode(value: string | null): value is NonNullable<CodexPromptOptions["permissionMode"]> {
+  return value === "default" || value === "full-access";
+}
+
+function firstValidSelection<T extends { id: string }>(
+  options: T[],
+  preferredId: string,
+  fallbackId: string = options[0]?.id || "",
+): string {
+  if (preferredId && options.some((option) => option.id === preferredId)) {
+    return preferredId;
+  }
+  return fallbackId && options.some((option) => option.id === fallbackId)
+    ? fallbackId
+    : options[0]?.id || "";
+}
 
 function truncateButtonLabel(value: string, maxChars: number = BUTTON_LABEL_MAX_CHARS): string {
   if (value.length <= maxChars) return value;
@@ -2727,6 +2759,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const [codexReasoningEffort, setCodexReasoningEffort] = useState<NonNullable<CodexPromptOptions["reasoningEffort"]>>("medium");
   const [codexSpeed, setCodexSpeed] = useState<string>("default");
   const [codexPermissionMode, setCodexPermissionMode] = useState<NonNullable<CodexPromptOptions["permissionMode"]>>("default");
+  const [isAiSelectionHydrated, setIsAiSelectionHydrated] = useState(false);
   const [providersByBackend, setProvidersByBackend] = useState<Record<AiBackend, AIProvider[]>>({
     opencode: [],
     codex: [],
@@ -2796,6 +2829,8 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
   const messagesListRef = useRef<FlashList<any>>(null);
   const messagesMapRef = useRef<Record<string, AIMessage[]>>({});
   const streamingBySessionRef = useRef<Record<string, true>>({});
+  const selectedModelByBackendRef = useRef<Record<AiBackend, string>>(selectedModelByBackend);
+  const selectedAgentByBackendRef = useRef<Record<AiBackend, string>>(selectedAgentByBackend);
   const stoppingSessionIdsRef = useRef<Set<string>>(new Set());
   const codexFinalSyncInFlightRef = useRef<Set<string>>(new Set());
   const isNearBottomRef = useRef(true);
@@ -2911,6 +2946,93 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     if (supported.includes(codexSpeed)) return;
     setCodexSpeed("default");
   }, [activeBackend, codexSpeed, codexSpeedOptions]);
+
+  useEffect(() => {
+    const hydrateAiSelections = async () => {
+      try {
+        const entries = await AsyncStorage.multiGet([
+          ...AI_BACKENDS.map(aiSelectedModelStorageKey),
+          ...AI_BACKENDS.map(aiSelectedAgentStorageKey),
+          AI_CODEX_REASONING_STORAGE_KEY,
+          AI_CODEX_SPEED_STORAGE_KEY,
+          AI_CODEX_PERMISSION_STORAGE_KEY,
+        ]);
+        const stored = Object.fromEntries(entries);
+
+        setSelectedModelByBackend((prev) => ({
+          opencode: stored[aiSelectedModelStorageKey("opencode")] || prev.opencode,
+          codex: stored[aiSelectedModelStorageKey("codex")] || prev.codex,
+        }));
+        setSelectedAgentByBackend((prev) => ({
+          opencode: stored[aiSelectedAgentStorageKey("opencode")] || prev.opencode,
+          codex: stored[aiSelectedAgentStorageKey("codex")] || prev.codex,
+        }));
+
+        const savedReasoning = stored[AI_CODEX_REASONING_STORAGE_KEY];
+        if (savedReasoning) {
+          setCodexReasoningEffort(savedReasoning);
+        }
+
+        const savedSpeed = stored[AI_CODEX_SPEED_STORAGE_KEY];
+        if (savedSpeed) {
+          setCodexSpeed(savedSpeed);
+        }
+
+        const savedPermission = stored[AI_CODEX_PERMISSION_STORAGE_KEY];
+        if (isCodexPermissionMode(savedPermission)) {
+          setCodexPermissionMode(savedPermission);
+        }
+      } catch (error) {
+        console.error("Failed to hydrate AI selections:", error);
+      } finally {
+        setIsAiSelectionHydrated(true);
+      }
+    };
+
+    void hydrateAiSelections();
+  }, []);
+
+  useEffect(() => {
+    selectedModelByBackendRef.current = selectedModelByBackend;
+  }, [selectedModelByBackend]);
+
+  useEffect(() => {
+    selectedAgentByBackendRef.current = selectedAgentByBackend;
+  }, [selectedAgentByBackend]);
+
+  useEffect(() => {
+    if (!isAiSelectionHydrated) return;
+
+    void AsyncStorage.multiSet([
+      [aiSelectedModelStorageKey("opencode"), selectedModelByBackend.opencode],
+      [aiSelectedModelStorageKey("codex"), selectedModelByBackend.codex],
+    ]).catch((error) => {
+      console.error("Failed to persist selected AI model:", error);
+    });
+  }, [isAiSelectionHydrated, selectedModelByBackend]);
+
+  useEffect(() => {
+    if (!isAiSelectionHydrated) return;
+
+    void AsyncStorage.multiSet([
+      [aiSelectedAgentStorageKey("opencode"), selectedAgentByBackend.opencode],
+      [aiSelectedAgentStorageKey("codex"), selectedAgentByBackend.codex],
+    ]).catch((error) => {
+      console.error("Failed to persist selected AI agent:", error);
+    });
+  }, [isAiSelectionHydrated, selectedAgentByBackend]);
+
+  useEffect(() => {
+    if (!isAiSelectionHydrated) return;
+
+    void AsyncStorage.multiSet([
+      [AI_CODEX_REASONING_STORAGE_KEY, codexReasoningEffort],
+      [AI_CODEX_SPEED_STORAGE_KEY, codexSpeed],
+      [AI_CODEX_PERMISSION_STORAGE_KEY, codexPermissionMode],
+    ]).catch((error) => {
+      console.error("Failed to persist Codex AI selections:", error);
+    });
+  }, [isAiSelectionHydrated, codexReasoningEffort, codexSpeed, codexPermissionMode]);
 
   useEffect(() => {
     messagesMapRef.current = messagesMap;
@@ -3264,7 +3386,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
 
   // Initialize on connection
   useEffect(() => {
-    if (status !== "connected" || isInitialized) return;
+    if (status !== "connected" || isInitialized || !isAiSelectionHydrated) return;
 
     const init = async () => {
       setIsInitialized(true);
@@ -3293,15 +3415,24 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
                 ? (backend === "codex" ? DEFAULT_CODEX_AGENTS : DEFAULT_OPENCODE_AGENTS)
                 : mapped;
               setAgentsByBackend((prev) => ({ ...prev, [backend]: resolvedAgents }));
-              setSelectedAgentByBackend((prev) => ({ ...prev, [backend]: resolvedAgents[0]?.id || "" }));
+              setSelectedAgentByBackend((prev) => {
+                const currentSelection = prev[backend] || selectedAgentByBackendRef.current[backend];
+                return { ...prev, [backend]: firstValidSelection(resolvedAgents, currentSelection) };
+              });
             } else if (backend === "codex") {
               setAgentsByBackend((prev) => ({ ...prev, codex: DEFAULT_CODEX_AGENTS }));
-              setSelectedAgentByBackend((prev) => ({ ...prev, codex: "default" }));
+              setSelectedAgentByBackend((prev) => {
+                const currentSelection = prev.codex || selectedAgentByBackendRef.current.codex;
+                return { ...prev, codex: firstValidSelection(DEFAULT_CODEX_AGENTS, currentSelection, "default") };
+              });
             }
           } catch {
             if (backend === "codex") {
               setAgentsByBackend((prev) => ({ ...prev, codex: DEFAULT_CODEX_AGENTS }));
-              setSelectedAgentByBackend((prev) => ({ ...prev, codex: "default" }));
+              setSelectedAgentByBackend((prev) => {
+                const currentSelection = prev.codex || selectedAgentByBackendRef.current.codex;
+                return { ...prev, codex: firstValidSelection(DEFAULT_CODEX_AGENTS, currentSelection, "default") };
+              });
             }
           }
 
@@ -3339,10 +3470,11 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
               }
 
               setModelOptionsByBackend((prev) => ({ ...prev, [backend]: models }));
-              setSelectedModelByBackend((prev) => ({
-                ...prev,
-                [backend]: models.length > 0 ? (defaultModelId || models[0].id) : "",
-              }));
+              setSelectedModelByBackend((prev) => {
+                const currentSelection = prev[backend] || selectedModelByBackendRef.current[backend];
+                const nextSelection = firstValidSelection(models, currentSelection, defaultModelId);
+                return { ...prev, [backend]: nextSelection };
+              });
               setNeedsApiKeyByBackend((prev) => ({
                 ...prev,
                 [backend]: !hasConfiguredKey && models.length === 0,
@@ -3351,7 +3483,6 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
           } catch {
             setProvidersByBackend((prev) => ({ ...prev, [backend]: [] }));
             setModelOptionsByBackend((prev) => ({ ...prev, [backend]: [] }));
-            setSelectedModelByBackend((prev) => ({ ...prev, [backend]: "" }));
             setNeedsApiKeyByBackend((prev) => ({ ...prev, [backend]: false }));
           }
         }));
@@ -3390,7 +3521,7 @@ export default function AIPanel({ instanceId, isActive, bottomBarHeight }: Plugi
     };
 
     init();
-  }, [status, isInitialized, ai]);
+  }, [status, isInitialized, isAiSelectionHydrated, ai]);
 
   // Reset on disconnect
   useEffect(() => {
@@ -3892,8 +4023,11 @@ const selectedModelNameFull = modelOptions.find((m) => m.id === selectedModel)?.
 
   // Get selected model ref
   const getModelRef = useCallback((): ModelRef | undefined => {
+    if (!modelOptions.some((model) => model.id === selectedModel)) {
+      return undefined;
+    }
     return parseModelOptionId(selectedModel);
-  }, [selectedModel]);
+  }, [modelOptions, selectedModel]);
 
   const getCodexPromptOptions = useCallback((): CodexPromptOptions | undefined => {
     if (activeBackend === "opencode") {
