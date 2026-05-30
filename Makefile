@@ -55,7 +55,7 @@ help:
 
 # ─── Top-level ─────────────────────────────────────────────────────
 
-install: app-install cli-install manager-install proxy-install sandman-tidy
+install: app-install cli-install manager-install proxy-install pty-dev
 
 ## Runs proxy + app dev servers in parallel.
 ## Ctrl-C kills both.
