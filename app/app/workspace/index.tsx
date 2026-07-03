@@ -19,10 +19,8 @@ export default function WorkspaceScreen() {
   const { registry } = useSessionRegistry();
   const {
     status,
-    sessionState,
     error,
     isReconnecting,
-    interactionBlockReason,
     disconnect,
   } = useConnection();
   const router = useRouter();
@@ -30,7 +28,7 @@ export default function WorkspaceScreen() {
   const { t } = useTranslation();
 
   const [bottomBarHeight, setBottomBarHeight] = useState(0);
-  const prevSessionStateRef = useRef(sessionState);
+  const prevStatusRef = useRef(status);
   const reconnectAttemptVisibleRef = useRef(false);
   const reconnectFailureAlertVisibleRef = useRef(false);
   const reconnectRefreshRunningRef = useRef(false);
@@ -39,7 +37,7 @@ export default function WorkspaceScreen() {
   const showConnectionNotice =
     status === "connecting" ||
     isReconnecting ||
-    interactionBlockReason !== null;
+    status === "disconnected";
 
   const handleGoHome = useCallback(() => {
     logger.info("workspace", "navigating back to auth after disconnect");
@@ -48,24 +46,20 @@ export default function WorkspaceScreen() {
   }, [disconnect, router]);
 
   useEffect(() => {
-    const prev = prevSessionStateRef.current;
-    prevSessionStateRef.current = sessionState;
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
 
     logger.info("workspace", "screen state updated", {
-      prevSessionState: prev,
+      prevStatus: prev,
       status,
-      sessionState,
       error,
       isLoading,
       drawerStatus,
     });
 
-    if (
-      prev !== sessionState &&
-      (sessionState === "ended" ||
-        sessionState === "expired" ||
-        sessionState === "cli_offline_grace")
-    ) {
+    const lostConnection =
+      status === "disconnected" && (prev === "connected" || prev === "connecting");
+    if (lostConnection) {
       Alert.alert(
         t("workspace.connectionLostTitle"),
         t("workspace.connectionLostDesc"),
@@ -79,7 +73,7 @@ export default function WorkspaceScreen() {
         { cancelable: false },
       );
     }
-  }, [drawerStatus, error, handleGoHome, isLoading, sessionState, status]);
+  }, [drawerStatus, error, handleGoHome, isLoading, status]);
 
   useEffect(() => {
     if (isLoading) {
@@ -94,7 +88,7 @@ export default function WorkspaceScreen() {
     const isReconnectingNow =
       status === "connecting" ||
       isReconnecting ||
-      interactionBlockReason !== null;
+      status === "disconnected";
     if (isReconnectingNow) {
       if (hasConnectedOnceRef.current) {
         shouldRefreshAfterReconnectRef.current = true;
@@ -132,7 +126,7 @@ export default function WorkspaceScreen() {
     if (!isReconnectingNow) {
       reconnectAttemptVisibleRef.current = false;
     }
-  }, [error, handleGoHome, interactionBlockReason, isReconnecting, status]);
+  }, [error, handleGoHome, isReconnecting, status]);
 
   useEffect(() => {
     if (
@@ -279,7 +273,7 @@ export default function WorkspaceScreen() {
               textAlign: "center",
             }}
           >
-            {interactionBlockReason === "offline"
+            {status === "disconnected"
               ? t("workspace.offline")
               : t("workspace.reconnecting")}
           </Text>
@@ -290,7 +284,7 @@ export default function WorkspaceScreen() {
               textAlign: "center",
             }}
           >
-            {interactionBlockReason === "offline"
+            {status === "disconnected"
               ? t("workspace.waitingConnection")
               : t("workspace.restoringSession")}
           </Text>

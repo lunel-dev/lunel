@@ -3845,7 +3845,7 @@ export default function AIPanel({
   const { colors, radius, fonts } = useTheme();
   const { settings } = useAppSettings();
   const headerHeight = useHeaderHeight();
-  const { status, sessionState } = useConnection();
+  const { status } = useConnection();
   const { fs } = useApi();
   const searchWorkspaceFiles = fs.searchFiles;
   const readWorkspaceFile = fs.read;
@@ -4804,18 +4804,13 @@ export default function AIPanel({
     init();
   }, [status, isInitialized, ai]);
 
-  // Reset on disconnect
   useEffect(() => {
-    if (
-      status === "disconnected" ||
-      sessionState === "ended" ||
-      sessionState === "expired"
-    ) {
+    if (status === "disconnected") {
       setIsInitialized(false);
       setIsInitialSessionsLoading(false);
       setLoadingSessionId(null);
     }
-  }, [status, sessionState]);
+  }, [status]);
 
   const refreshSessionMessages = useCallback(
     async (sessionId: string, backend: AiBackend, force = false) => {

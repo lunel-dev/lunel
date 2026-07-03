@@ -495,3 +495,319 @@ export class V2SessionTransport {
     }
   }
 }
+
+// ============================================================================
+// V2SessionServer — Server-side handshake acceptor (used by CLI WS server)
+// ============================================================================
+
+export class V2SessionServer {
+  private readonly options: {
+    sessionSecret: string;
+    handlers: V2TransportHandlers;
+    debugLog?: (message: string, ...args: unknown[]) => void;
+  };
+  private ws: WebSocket | null = null;
+  private state: TransportState = "idle";
+  private keyPair: KeyPair | null = null;
+  private remotePublicKey: Uint8Array | null = null;
+  private sessionKeys: SessionKeys | null = null;
+  private secureReadyResolve: (() => void) | null = null;
+  private secureReadyReject: ((error: Error) => void) | null = null;
+  private secureReadyPromise: Promise<void> | null = null;
+  private closed = false;
+
+  constructor(
+    ws: WebSocket,
+    sessionSecret: string,
+    handlers: V2TransportHandlers,
+    debugLog?: (message: string, ...args: unknown[]) => void,
+  ) {
+    this.ws = ws;
+    this.options = { sessionSecret, handlers, debugLog };
+  }
+
+  async accept(): Promise<void> {
+    await sodium.ready;
+    this.secureReadyPromise = new Promise<void>((resolve, reject) => {
+      this.secureReadyResolve = resolve;
+      this.secureReadyReject = reject;
+    });
+
+    this.state = "open";
+    this.closed = false;
+
+    this.ws!.on("message", async (data: WebSocket.RawData, isBinary: boolean) => {
+      try {
+        await this.handleMessage(data, isBinary);
+      } catch (error) {
+        this.options.debugLog?.("[v2:server] message handling failed", error);
+        this.failSecure(new Error(error instanceof Error ? error.message : String(error)));
+        this.close();
+      }
+    });
+
+    this.ws!.on("close", (code, reason) => {
+      this.ws = null;
+      this.state = "closed";
+      if (!this.closed) {
+        this.closed = true;
+        this.failSecure(new Error(`v2 server socket closed (${code}: ${reason.toString()})`));
+        this.options.handlers.onClose(`v2 server socket closed (${code}: ${reason.toString()})`);
+      }
+    });
+
+    this.ws!.on("error", (error) => {
+      this.options.debugLog?.("[v2:server] websocket error", error.message);
+    });
+
+    if (!this.secureReadyPromise) {
+      throw new Error("secure readiness promise missing");
+    }
+    await this.secureReadyPromise;
+  }
+
+  async sendMessage(message: Message): Promise<void> {
+    const ciphertext = this.encryptEnvelope({ kind: "request", message });
+    this.sendBinaryFrame(ciphertext);
+  }
+
+  async sendResponse(response: Response): Promise<void> {
+    const ciphertext = this.encryptEnvelope({ kind: "response", message: response });
+    this.sendBinaryFrame(ciphertext);
+  }
+
+  async sendEvent(message: EventMessage): Promise<void> {
+    const ciphertext = this.encryptEnvelope({ kind: "event", message });
+    this.sendBinaryFrame(ciphertext);
+  }
+
+  close(): void {
+    this.closed = true;
+    this.state = "closed";
+    if (!this.ws) return;
+    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+      this.ws.close();
+    }
+    this.ws = null;
+  }
+
+  isSecure(): boolean {
+    return this.state === "secure";
+  }
+
+  private async handleMessage(data: WebSocket.RawData, isBinary: boolean): Promise<void> {
+    if (!isBinary) {
+      const text = typeof data === "string" ? data : Buffer.from(data as ArrayBufferLike).toString("utf-8");
+      const raw = JSON.parse(text);
+
+      if ("type" in raw) {
+        await this.options.handlers.onSystemMessage(raw);
+        return;
+      }
+
+      if (isV2HandshakeFrame(raw)) {
+        await this.handleHandshakeFrame(raw);
+        return;
+      }
+
+      throw new Error(
+        this.state === "secure"
+          ? "received plaintext app message after secure transport"
+          : "received plaintext app message before secure transport",
+      );
+    }
+
+    const bytes = toUint8Array(data);
+    const frame = decodeV2BinaryFrame(bytes);
+    if (!frame) {
+      throw new Error("invalid binary v2 frame");
+    }
+    if (frame.type !== V2_FRAME_ENCRYPTED_MESSAGE) {
+      throw new Error(`unsupported v2 frame type ${frame.type}`);
+    }
+    if (this.state !== "secure" || !this.sessionKeys) {
+      throw new Error("received encrypted frame before secure transport");
+    }
+    if (frame.payload.length < sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES) {
+      throw new Error("encrypted frame missing nonce");
+    }
+
+    const nonce = frame.payload.subarray(0, sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    const ciphertext = frame.payload.subarray(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    const plaintext = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+      null,
+      ciphertext,
+      null,
+      nonce,
+      this.sessionKeys.rx,
+    ) as Uint8Array;
+
+    const parsed = JSON.parse(decodeUtf8(plaintext)) as EncryptedProtocolEnvelope;
+    if (!isEncryptedProtocolEnvelope(parsed)) {
+      throw new Error("invalid decrypted protocol envelope");
+    }
+    if (parsed.kind === "response") {
+      await this.options.handlers.onProtocolResponse?.(parsed.message);
+      return;
+    }
+    if (parsed.kind === "event") {
+      await this.options.handlers.onProtocolEvent?.(parsed.message);
+      return;
+    }
+    if (parsed.kind === "request") {
+      const response = await this.options.handlers.onProtocolRequest(parsed.message);
+      await this.sendResponse(response);
+      return;
+    }
+    throw new Error("invalid decrypted protocol envelope");
+  }
+
+  private async handleHandshakeFrame(frame: V2HandshakeFrame): Promise<void> {
+    this.state = "handshaking";
+
+    if (frame.kind === "client_hello") {
+      this.remotePublicKey = sodium.from_base64(frame.pubkey, sodium.base64_variants.URLSAFE_NO_PADDING);
+      const keyPair = this.ensureKeyPair();
+      this.sendJsonFrame({
+        t: "jukto_v2",
+        kind: "server_hello",
+        pubkey: sodium.to_base64(keyPair.publicKey, sodium.base64_variants.URLSAFE_NO_PADDING),
+      });
+      return;
+    }
+
+    if (frame.kind === "client_key") {
+      if (!this.remotePublicKey) {
+        throw new Error("missing client public key before client_key");
+      }
+
+      const keyPair = this.ensureKeyPair();
+      const nonce = sodium.from_base64(frame.nonce, sodium.base64_variants.URLSAFE_NO_PADDING);
+      const boxed = sodium.from_base64(frame.box, sodium.base64_variants.URLSAFE_NO_PADDING);
+      const expectedAuth = this.computeHandshakeAuth(
+        "client_key",
+        "app",
+        sodium.to_base64(this.remotePublicKey, sodium.base64_variants.URLSAFE_NO_PADDING),
+        nonce,
+        boxed,
+      );
+      if (frame.auth !== expectedAuth) {
+        throw new Error("client_key authentication failed");
+      }
+      const opened = sodium.crypto_box_open_easy(
+        boxed,
+        nonce,
+        this.remotePublicKey,
+        keyPair.privateKey,
+      ) as Uint8Array;
+      const payload = JSON.parse(decodeUtf8(opened)) as SessionBootstrapPayload;
+      this.sessionKeys = {
+        rx: sodium.from_base64(payload.c2s, sodium.base64_variants.URLSAFE_NO_PADDING),
+        tx: sodium.from_base64(payload.s2c, sodium.base64_variants.URLSAFE_NO_PADDING),
+      };
+      const auth = this.computeHandshakeAuth(
+        "server_ready",
+        "cli",
+        sodium.to_base64(keyPair.publicKey, sodium.base64_variants.URLSAFE_NO_PADDING),
+      );
+      this.sendJsonFrame({
+        t: "jukto_v2",
+        kind: "server_ready",
+        auth,
+      });
+      this.markSecure();
+      return;
+    }
+
+    if (frame.kind === "server_ready") {
+      throw new Error("unexpected server_ready on server transport");
+    }
+  }
+
+  private encryptEnvelope(envelope: EncryptedProtocolEnvelope): Uint8Array {
+    if (this.state !== "secure" || !this.sessionKeys) {
+      throw new Error("secure transport is not active");
+    }
+
+    const nonceVal = sodium.randombytes_buf(
+      sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
+    ) as Uint8Array;
+    const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+      encodeUtf8(JSON.stringify(envelope)),
+      null,
+      null,
+      nonceVal,
+      this.sessionKeys.tx,
+    ) as Uint8Array;
+
+    const payload = new Uint8Array(nonceVal.length + ciphertext.length);
+    payload.set(nonceVal, 0);
+    payload.set(ciphertext, nonceVal.length);
+    return payload;
+  }
+
+  private ensureKeyPair(): KeyPair {
+    if (this.keyPair) return this.keyPair;
+    const pair = sodium.crypto_box_keypair() as { publicKey: Uint8Array; privateKey: Uint8Array };
+    this.keyPair = {
+      publicKey: pair.publicKey,
+      privateKey: pair.privateKey,
+    };
+    return this.keyPair;
+  }
+
+  private computeHandshakeAuth(
+    phase: "client_key" | "server_ready",
+    senderRole: "cli" | "app",
+    peerPubkeyB64: string,
+    nonce?: Uint8Array,
+    boxed?: Uint8Array,
+  ): string {
+    const authKey = sodium.crypto_generichash(
+      sodium.crypto_auth_KEYBYTES,
+      encodeUtf8(this.options.sessionSecret),
+      undefined,
+    ) as Uint8Array;
+    const parts = [
+      phase,
+      senderRole,
+      peerPubkeyB64,
+      nonce ? sodium.to_base64(nonce, sodium.base64_variants.URLSAFE_NO_PADDING) : "",
+      boxed ? sodium.to_base64(boxed, sodium.base64_variants.URLSAFE_NO_PADDING) : "",
+    ];
+    const tag = sodium.crypto_auth(parts.join(":"), authKey) as Uint8Array;
+    return sodium.to_base64(tag, sodium.base64_variants.URLSAFE_NO_PADDING);
+  }
+
+  private sendJsonFrame(frame: V2HandshakeFrame): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("v2 server transport is not connected");
+    }
+    this.ws.send(JSON.stringify(frame));
+  }
+
+  private sendBinaryFrame(ciphertext: Uint8Array): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("v2 server transport is not connected");
+    }
+    const framed = encodeV2EncryptedFrame(ciphertext);
+    this.ws.send(framed);
+  }
+
+  private markSecure(): void {
+    this.state = "secure";
+    if (this.secureReadyResolve) {
+      this.secureReadyResolve();
+      this.secureReadyResolve = null;
+      this.secureReadyReject = null;
+    }
+  }
+
+  private failSecure(error: Error): void {
+    if (this.secureReadyReject) {
+      this.secureReadyReject(error);
+      this.secureReadyResolve = null;
+      this.secureReadyReject = null;
+    }
+  }
+}

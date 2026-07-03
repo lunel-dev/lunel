@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import qrcode from "qrcode-terminal";
 import shell from "shelljs";
 import { createAiManager } from "./ai/index.js";
 import type { AiManager, AiBackend } from "./ai/index.js";
 import type { Message, Response } from "./transport/protocol.js";
-import { V2SessionTransport } from "./transport/v2.js";
+import { V2SessionServer, V2SessionTransport } from "./transport/v2.js";
 import Ignore from "ignore";
 const ignore = Ignore.default;
 type IgnoreInstance = ReturnType<typeof ignore>;
@@ -19,18 +19,25 @@ import { spawn, spawnSync, ChildProcess, execSync } from "child_process";
 import { createServer, createConnection, Socket } from "net";
 import { createInterface } from "readline";
 
-const DEFAULT_PROXY_URL = normalizeGatewayUrl(
-  process.env.JUKTO_PROXY_URL || "https://proxy.jukto.pw", // TODO: check if it's proxy of gateway
-);
-const MANAGER_URL = normalizeGatewayUrl(
-  process.env.JUKTO_MANAGER_URL || "https://manager.jukto.pw",
-);
 const CLI_ARGS = process.argv.slice(2);
 function hasAnyFlag(args: string[], ...flags: string[]): boolean {
   return flags.some((flag) => args.includes(flag));
 }
+function getFlagValue(args: string[], ...flags: string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    if (flags.includes(args[i]) && i + 1 < args.length) {
+      return args[i + 1];
+    }
+  }
+  return null;
+}
 const SHOW_HELP = hasAnyFlag(CLI_ARGS, "--help", "-h");
 const DEBUG_MODE = hasAnyFlag(CLI_ARGS, "--debug", "-d");
+const PORT_FLAG = getFlagValue(CLI_ARGS, "--port", "-p");
+const INTERFACE_FLAG = getFlagValue(CLI_ARGS, "--interface", "-i");
+const LOCAL_FLAG = hasAnyFlag(CLI_ARGS, "--local");
+const TUNNEL_FLAG = hasAnyFlag(CLI_ARGS, "--tunnel");
+const TUNNEL_URL_FLAG = getFlagValue(CLI_ARGS, "--tunnel-url");
 if (DEBUG_MODE) {
   process.env.JUKTO_DEBUG = "1";
   process.env.JUKTO_DEBUG_AI = "1";
@@ -125,13 +132,12 @@ let lastCpuInfo: { idle: number; total: number }[] | null = null;
 // AI manager — runs OpenCode and Codex simultaneously, routes by backend
 let aiManager: AiManager | null = null;
 let aiManagerInitPromise: Promise<void> | null = null;
-// Proxy tunnel management
-let currentSessionCode: string | null = null;
-let currentSessionPassword: string | null = null;
-let currentPrimaryGateway: string = DEFAULT_PROXY_URL;
-let activeGatewayUrl: string = DEFAULT_PROXY_URL;
+// WebSocket server
+let wss: WebSocketServer | null = null;
+let currentSessionSecret: string | null = null;
+let activeV2Server: V2SessionServer | null = null;
+let ngrokProcess: ChildProcess | null = null;
 let shuttingDown = false;
-let activeV2Transport: V2SessionTransport | null = null;
 const trackedEditorFiles = new Map<string, TrackedEditorFile>();
 const trackedEditorDirectories = new Map<string, TrackedEditorDirectory>();
 const pendingTrackedFileChecks = new Set<string>();
@@ -164,22 +170,27 @@ Usage:
   npx jukto-cli [options]
 
 Options:
-  -h, --help         Show help
-  -n, --new          Create a new session code
-  -d, --debug        Show verbose debug logs
-      --extra-ports  Extra local ports to expose, comma-separated (e.g. 3000,8080)
+  -h, --help                  Show help
+  -p, --port <port>           WebSocket server port (default: 8443)
+  -i, --interface <address>   Network interface to bind (default: 0.0.0.0)
+  -d, --debug                 Show verbose debug logs
+      --extra-ports           Extra local ports to expose, comma-separated (e.g. 3000,8080)
+      --local                 Connect over local network (default is ngrok tunnel)
+      --tunnel-url <url>      Manual tunnel URL for QR (e.g. wss://abc.ngrok-free.app)
 `);
 }
 interface ActiveTunnel {
   tunnelId: string;
   port: number;
   tcpSocket: Socket;
-  proxyWs: WebSocket;
+  proxyWs: WebSocket | null;
   localEnded: boolean;
   remoteEnded: boolean;
   finSent: boolean;
   finalizeTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
+  remoteFinPending?: boolean;
+  pendingWriteCount?: number;
 }
 const activeTunnels = new Map<string, ActiveTunnel>();
 const PORT_SYNC_INTERVAL_MS = 30_000;
@@ -219,7 +230,7 @@ function redactSensitive(input: unknown): string {
 }
 
 function parseProxyControlFrame(
-  raw: WebSocket.RawData,
+  raw: string | WebSocket.RawData,
 ): ProxyControlFrame | null {
   const text =
     typeof raw === "string"
@@ -248,9 +259,30 @@ function sendProxyControl(
   action: ProxyControlAction,
   reason?: string,
 ): void {
-  if (tunnel.proxyWs.readyState !== WebSocket.OPEN) return;
+  if (!tunnel.proxyWs || tunnel.proxyWs.readyState !== WebSocket.OPEN) return;
   const frame: ProxyControlFrame = { v: 1, t: "proxy_ctrl", action, reason };
   tunnel.proxyWs.send(JSON.stringify(frame));
+}
+
+function closeTunnel(tunnelId: string): void {
+  const tunnel = activeTunnels.get(tunnelId);
+  if (!tunnel) return;
+  tunnel.closing = true;
+  if (tunnel.finalizeTimer) {
+    clearTimeout(tunnel.finalizeTimer);
+    tunnel.finalizeTimer = null;
+  }
+  activeTunnels.delete(tunnelId);
+  if (!tunnel.tcpSocket.destroyed) {
+    tunnel.tcpSocket.destroy();
+  }
+  if (
+    tunnel.proxyWs &&
+    (tunnel.proxyWs.readyState === WebSocket.OPEN ||
+      tunnel.proxyWs.readyState === WebSocket.CONNECTING)
+  ) {
+    tunnel.proxyWs.close();
+  }
 }
 
 function maybeFinalizeTunnel(tunnelId: string): void {
@@ -260,19 +292,7 @@ function maybeFinalizeTunnel(tunnelId: string): void {
   if (tunnel.finalizeTimer) return;
 
   tunnel.finalizeTimer = setTimeout(() => {
-    const current = activeTunnels.get(tunnelId);
-    if (!current || current.closing) return;
-    current.closing = true;
-    activeTunnels.delete(tunnelId);
-    if (!current.tcpSocket.destroyed) {
-      current.tcpSocket.destroy();
-    }
-    if (
-      current.proxyWs.readyState === WebSocket.OPEN ||
-      current.proxyWs.readyState === WebSocket.CONNECTING
-    ) {
-      current.proxyWs.close();
-    }
+    closeTunnel(tunnelId);
   }, PROXY_TUNNEL_LINGER_MS);
 }
 
@@ -307,7 +327,6 @@ function parseExtraPortsFromArgs(args: string[]): number[] {
 }
 
 const EXTRA_PORTS = parseExtraPortsFromArgs(CLI_ARGS);
-const FORCE_NEW_CODE = hasAnyFlag(CLI_ARGS, "--new", "-n");
 const trackedProxyPorts = new Set<number>(EXTRA_PORTS);
 function samePortSet(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false;
@@ -371,14 +390,7 @@ interface GitCommitFile {
 interface CliConfig {
   version: 1;
   deviceId: string;
-  sessions?: CliSavedSession[];
-}
-
-interface CliSavedSession {
-  rootDir: string;
-  sessionCode: string | null;
-  sessionPassword: string;
-  savedAt: number;
+  lastWSEndpoint?: string;
 }
 
 // ============================================================================
@@ -449,31 +461,15 @@ async function readCliConfig(): Promise<CliConfig> {
         typeof parsed.deviceId === "string" && parsed.deviceId
           ? parsed.deviceId
           : generatePersistentSecret(32),
-      sessions: Array.isArray(parsed.sessions)
-        ? parsed.sessions
-            .filter(
-              (entry): entry is CliSavedSession =>
-                !!entry &&
-                typeof entry.rootDir === "string" &&
-                typeof entry.sessionPassword === "string" &&
-                typeof entry.savedAt === "number",
-            )
-            .map((entry) => ({
-              rootDir: entry.rootDir,
-              sessionCode:
-                typeof entry.sessionCode === "string"
-                  ? entry.sessionCode
-                  : null,
-              sessionPassword: entry.sessionPassword,
-              savedAt: entry.savedAt,
-            }))
-        : [],
+      lastWSEndpoint:
+        typeof parsed.lastWSEndpoint === "string"
+          ? parsed.lastWSEndpoint
+          : undefined,
     };
   } catch {
     return {
       version: 1,
       deviceId: generatePersistentSecret(32),
-      sessions: [],
     };
   }
 }
@@ -493,42 +489,7 @@ async function getCliConfig(): Promise<CliConfig> {
   return await cliConfigPromise;
 }
 
-function getSavedSessionForRoot(
-  config: CliConfig,
-  rootDir: string,
-): CliSavedSession | null {
-  const sessions = Array.isArray(config.sessions) ? config.sessions : [];
-  return sessions.find((entry) => entry.rootDir === rootDir) || null;
-}
 
-async function saveSessionForRoot(
-  sessionCode: string | null,
-  sessionPassword: string,
-): Promise<void> {
-  const config = await getCliConfig();
-  const sessions = Array.isArray(config.sessions) ? [...config.sessions] : [];
-  const nextEntry: CliSavedSession = {
-    rootDir: ROOT_DIR,
-    sessionCode,
-    sessionPassword,
-    savedAt: Date.now(),
-  };
-  const deduped = sessions.filter((entry) => entry.rootDir !== ROOT_DIR);
-  deduped.unshift(nextEntry);
-  await writeCliConfig({
-    ...config,
-    sessions: deduped.slice(0, 100),
-  });
-}
-
-async function clearSavedSessionForRoot(): Promise<void> {
-  const config = await getCliConfig();
-  const sessions = Array.isArray(config.sessions) ? config.sessions : [];
-  await writeCliConfig({
-    ...config,
-    sessions: sessions.filter((entry) => entry.rootDir !== ROOT_DIR),
-  });
-}
 
 // ============================================================================
 // File System Handlers
@@ -1470,8 +1431,8 @@ async function handleGitDiscard(
 }
 
 function emitAppEvent(msg: Message): void {
-  if (activeV2Transport) {
-    if (!activeV2Transport.isSecure()) {
+  if (activeV2Server) {
+    if (!activeV2Server.isSecure()) {
       if (DEBUG_MODE) {
         console.error(
           "[transport:v2] dropped event before secure session:",
@@ -1480,7 +1441,7 @@ function emitAppEvent(msg: Message): void {
       }
       return;
     }
-    void activeV2Transport.sendEvent(msg).catch((error) => {
+    void activeV2Server.sendEvent(msg).catch((error) => {
       if (DEBUG_MODE)
         console.error(
           "[transport:v2] failed to send event:",
@@ -2888,7 +2849,7 @@ function getTrackedProxyPorts(): number[] {
 
 async function publishDiscoveredPorts(force = false): Promise<void> {
   if (portScanInFlight) return;
-  if (!activeV2Transport) return;
+  if (!activeV2Server) return;
 
   portScanInFlight = true;
   try {
@@ -2996,20 +2957,11 @@ async function handleProxyConnect(
   const setupStartedAt = Date.now();
   const getRemainingSetupMs = () =>
     TUNNEL_SETUP_BUDGET_MS - (Date.now() - setupStartedAt);
-  debugLog("[proxy] handleProxyConnect received", {
-    tunnelId,
-    port,
-    hasSessionCode: Boolean(currentSessionCode),
-    hasSessionPassword: Boolean(currentSessionPassword),
-    activeGatewayUrl,
-  });
 
   if (!tunnelId)
     throw Object.assign(new Error("tunnelId is required"), { code: "EINVAL" });
   if (!port)
     throw Object.assign(new Error("port is required"), { code: "EINVAL" });
-  if (!currentSessionCode && !currentSessionPassword)
-    throw Object.assign(new Error("no active session"), { code: "ENOENT" });
   if (getRemainingSetupMs() <= 0) {
     throw Object.assign(new Error("Tunnel setup timeout before start"), {
       code: "ETIMEOUT",
@@ -3072,11 +3024,6 @@ async function handleProxyConnect(
     }
   }
   if (!tcpSocket) {
-    debugLog("[proxy] local tcp connect failed", {
-      tunnelId,
-      port,
-      error: tcpConnectError?.message ?? null,
-    });
     throw (
       tcpConnectError ||
       Object.assign(new Error(`TCP connect failed to localhost:${port}`), {
@@ -3084,254 +3031,30 @@ async function handleProxyConnect(
       })
     );
   }
-  debugLog("[proxy] local tcp connected", { tunnelId, port });
 
-  // 2. Open proxy WebSocket to gateway
-  const wsBase = activeGatewayUrl.replace(/^https:/, "wss:");
-  if (!wsBase.startsWith("wss://")) {
-    throw Object.assign(new Error("Gateway URL must use https://"), {
-      code: "EPROTO",
-    });
-  }
-  const authQuery = currentSessionPassword
-    ? `password=${encodeURIComponent(currentSessionPassword)}`
-    : `code=${encodeURIComponent(currentSessionCode as string)}`;
-  const proxyWsUrl = `${wsBase}/v1/ws/proxy?${authQuery}&tunnelId=${encodeURIComponent(tunnelId)}&role=cli`;
-  debugLog("[proxy] connecting cli proxy websocket", {
-    tunnelId,
-    port,
-    authMode: currentSessionPassword ? "password" : "code",
-    wsBase,
-  });
-  let proxyWs: WebSocket | null = null;
-  let lastProxyError: Error | null = null;
+  // 2. Pause TCP socket until app proxy WS connects
+  tcpSocket.pause();
 
-  for (let attempt = 0; attempt <= PROXY_WS_CONNECT_RETRY_ATTEMPTS; attempt++) {
-    const remainingMs = getRemainingSetupMs();
-    if (remainingMs <= 0) {
-      tcpSocket.destroy();
-      throw Object.assign(
-        new Error("Tunnel setup timeout while connecting proxy WS"),
-        { code: "ETIMEOUT" },
-      );
-    }
-
-    const wsConnectTimeoutMs = Math.min(
-      PROXY_WS_CONNECT_TIMEOUT_MS,
-      Math.max(250, remainingMs),
-    );
-    const candidateWs = new WebSocket(proxyWsUrl);
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          candidateWs.close();
-          reject(
-            Object.assign(new Error("Proxy WS connect timeout"), {
-              code: "ETIMEOUT",
-            }),
-          );
-        }, wsConnectTimeoutMs);
-
-        candidateWs.on("open", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-
-        candidateWs.on("error", (err) => {
-          clearTimeout(timeout);
-          reject(
-            Object.assign(new Error(`Proxy WS failed: ${err.message}`), {
-              code: "ECONNREFUSED",
-            }),
-          );
-        });
-
-        candidateWs.on("close", () => {
-          clearTimeout(timeout);
-          reject(
-            Object.assign(new Error("Proxy WS closed during connect"), {
-              code: "ECONNRESET",
-            }),
-          );
-        });
-      });
-
-      proxyWs = candidateWs;
-      break;
-    } catch (error) {
-      lastProxyError = error as Error;
-      try {
-        candidateWs.close();
-      } catch {
-        // ignore
-      }
-
-      if (attempt >= PROXY_WS_CONNECT_RETRY_ATTEMPTS) {
-        break;
-      }
-
-      const jitterSpan =
-        PROXY_WS_RETRY_JITTER_MAX_MS - PROXY_WS_RETRY_JITTER_MIN_MS;
-      const jitterMs =
-        PROXY_WS_RETRY_JITTER_MIN_MS +
-        Math.floor(Math.random() * (jitterSpan + 1));
-      if (getRemainingSetupMs() <= jitterMs) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, jitterMs));
-    }
-  }
-
-  if (!proxyWs) {
-    tcpSocket.destroy();
-    const err =
-      lastProxyError ||
-      Object.assign(new Error("Proxy WS connect failed"), {
-        code: "ECONNREFUSED",
-      });
-    debugLog("[proxy] cli proxy websocket connect failed", {
-      tunnelId,
-      port,
-      error: err.message,
-    });
-    throw err;
-  }
-  debugLog("[proxy] cli proxy websocket connected", { tunnelId, port });
-
-  // 3. Store the tunnel
+  // 3. Store tunnel (proxyWs set later by handleAppTunnelConnection)
   activeTunnels.set(tunnelId, {
     tunnelId,
     port,
     tcpSocket,
-    proxyWs,
+    proxyWs: null,
     localEnded: false,
     remoteEnded: false,
     finSent: false,
     finalizeTimer: null,
     closing: false,
+    remoteFinPending: false,
+    pendingWriteCount: 0,
   });
 
-  // 4. Pipe: TCP data -> proxy WS (as binary)
-  tcpSocket.on("data", (chunk: Buffer) => {
-    if (proxyWs.readyState === WebSocket.OPEN) {
-      proxyWs.send(chunk);
-    }
-  });
-
-  // 5. Pipe: proxy WS -> TCP socket (as binary)
-  proxyWs.on("message", (data: WebSocket.RawData) => {
-    const control = parseProxyControlFrame(data);
-    if (control) {
-      const tunnel = activeTunnels.get(tunnelId);
-      if (!tunnel || tunnel.closing) return;
-      if (control.action === "fin") {
-        tunnel.remoteEnded = true;
-        if (!tcpSocket.destroyed) {
-          tcpSocket.end();
-        }
-        maybeFinalizeTunnel(tunnelId);
-      } else {
-        tunnel.closing = true;
-        activeTunnels.delete(tunnelId);
-        if (!tcpSocket.destroyed) {
-          tcpSocket.destroy();
-        }
-        if (
-          proxyWs.readyState === WebSocket.OPEN ||
-          proxyWs.readyState === WebSocket.CONNECTING
-        ) {
-          proxyWs.close();
-        }
-      }
-      return;
-    }
-
-    if (!tcpSocket.destroyed) {
-      const chunk = Buffer.isBuffer(data)
-        ? data
-        : typeof data === "string"
-          ? Buffer.from(data)
-          : Array.isArray(data)
-            ? Buffer.concat(data)
-            : Buffer.from(data as ArrayBuffer);
-      tcpSocket.write(chunk);
-    }
-  });
-
-  const markLocalEnded = () => {
-    const tunnel = activeTunnels.get(tunnelId);
-    if (!tunnel || tunnel.closing) return;
-    tunnel.localEnded = true;
-    if (!tunnel.finSent) {
-      tunnel.finSent = true;
-      sendProxyControl(tunnel, "fin");
-    }
-    maybeFinalizeTunnel(tunnelId);
+  return {
+    ok: true,
+    tunnelId,
+    port,
   };
-
-  // 6. Half-close handling
-  tcpSocket.on("end", () => {
-    markLocalEnded();
-  });
-
-  tcpSocket.on("close", () => {
-    markLocalEnded();
-  });
-
-  tcpSocket.on("error", () => {
-    debugLog("[proxy] local tcp socket error", { tunnelId, port });
-    const tunnel = activeTunnels.get(tunnelId);
-    if (tunnel && !tunnel.finSent) {
-      sendProxyControl(tunnel, "rst", "tcp_error");
-    }
-    if (tunnel) {
-      tunnel.closing = true;
-      if (tunnel.finalizeTimer) {
-        clearTimeout(tunnel.finalizeTimer);
-      }
-    }
-    activeTunnels.delete(tunnelId);
-    if (
-      proxyWs.readyState === WebSocket.OPEN ||
-      proxyWs.readyState === WebSocket.CONNECTING
-    ) {
-      proxyWs.close();
-    }
-  });
-
-  // 7. Close cascade: WS closes -> close TCP
-  proxyWs.on("close", () => {
-    debugLog("[proxy] cli proxy websocket closed", { tunnelId, port });
-    const tunnel = activeTunnels.get(tunnelId);
-    if (tunnel) {
-      tunnel.closing = true;
-      if (tunnel.finalizeTimer) {
-        clearTimeout(tunnel.finalizeTimer);
-      }
-    }
-    activeTunnels.delete(tunnelId);
-    if (!tcpSocket.destroyed) {
-      tcpSocket.destroy();
-    }
-  });
-
-  proxyWs.on("error", () => {
-    debugLog("[proxy] cli proxy websocket error", { tunnelId, port });
-    const tunnel = activeTunnels.get(tunnelId);
-    if (tunnel) {
-      tunnel.closing = true;
-      if (tunnel.finalizeTimer) {
-        clearTimeout(tunnel.finalizeTimer);
-      }
-    }
-    activeTunnels.delete(tunnelId);
-    if (!tcpSocket.destroyed) {
-      tcpSocket.destroy();
-    }
-  });
-
-  return { tunnelId, port };
 }
 
 function cleanupAllTunnels(): void {
@@ -3340,7 +3063,7 @@ function cleanupAllTunnels(): void {
       clearTimeout(tunnel.finalizeTimer);
     }
     tunnel.tcpSocket.destroy();
-    if (tunnel.proxyWs.readyState === WebSocket.OPEN) {
+    if (tunnel.proxyWs?.readyState === WebSocket.OPEN) {
       tunnel.proxyWs.close();
     }
   }
@@ -3863,241 +3586,285 @@ async function processMessage(message: Message): Promise<Response> {
 }
 
 // ============================================================================
-// WebSocket Connection
+// Local WebSocket Server
 // ============================================================================
 
-interface ManagerQrResponse {
-  code: string;
-  expiresInMs: number;
-}
-
-interface AssembleResult {
-  code: string;
-  password: string;
-}
-
-interface ManagerProxyResponse {
-  proxyUrl: string;
-}
-
-interface ReattachClaimResponse {
-  proxyUrl: string;
-  generation: number;
-  expiresAt: number;
-}
-
-let currentReattachGeneration: number | null = null;
-
-function normalizeGatewayUrl(input: string): string {
-  const raw = input.trim();
-  if (!raw) {
-    throw new Error("Gateway URL is required");
-  }
-  if (
-    raw.toLowerCase().startsWith("http://") ||
-    raw.toLowerCase().startsWith("ws://")
-  ) {
-    throw new Error("Insecure gateway protocol is not allowed; use https://");
-  }
-
-  const withScheme = /^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`;
-  let parsed: URL;
-  try {
-    parsed = new URL(withScheme);
-  } catch {
-    throw new Error(`Invalid gateway URL: ${input}`);
-  }
-  if (parsed.protocol !== "https:") {
-    throw new Error("Gateway URL must use https://");
-  }
-  const path =
-    parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
-  return `${parsed.protocol}//${parsed.host}${path}`;
-}
-
-async function createQrCode(): Promise<ManagerQrResponse> {
-  const response = await fetch(`${MANAGER_URL}/v2/qr`);
-  if (!response.ok) {
-    throw new Error(
-      `Failed to create QR code from manager: ${response.status}`,
-    );
-  }
-  return (await response.json()) as ManagerQrResponse;
-}
-
-async function assembleWithCode(code: string): Promise<AssembleResult> {
-  const wsUrl = `${MANAGER_URL.replace(/^https:/, "wss:")}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
-  return await new Promise<AssembleResult>((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    let settled = false;
-
-    const fail = (error: Error): void => {
-      if (settled) return;
-      settled = true;
-      try {
-        ws.close();
-      } catch {
-        // ignore
+function findLocalIPv4Addresses(): string[] {
+  const interfaces = os.networkInterfaces();
+  const addresses: string[] = [];
+  for (const name of Object.keys(interfaces)) {
+    const iface = interfaces[name];
+    if (!iface) continue;
+    for (const entry of iface) {
+      if (entry.family === "IPv4" && !entry.internal) {
+        addresses.push(entry.address);
       }
-      reject(error);
-    };
+    }
+  }
+  return addresses.length > 0 ? addresses : ["127.0.0.1"];
+}
 
-    ws.on("message", (data) => {
-      try {
-        const parsed = JSON.parse(data.toString()) as {
-          type?: string;
-          code?: string;
-          password?: string;
-        };
-        if (
-          parsed.type !== "assembled" ||
-          typeof parsed.code !== "string" ||
-          typeof parsed.password !== "string"
-        ) {
-          fail(new Error("Invalid assemble payload"));
-          return;
-        }
-        if (settled) return;
-        settled = true;
-        ws.send(JSON.stringify({ type: "ack" }));
-        resolve({ code: parsed.code, password: parsed.password });
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)));
-      }
+async function isPortAvailable(port: number): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close();
+      resolve(true);
     });
-
-    ws.on("close", (codeValue, reason) => {
-      if (settled) return;
-      fail(
-        new Error(
-          `Assemble socket closed (${codeValue}: ${reason.toString()})`,
-        ),
-      );
-    });
-
-    ws.on("error", (error) => {
-      fail(new Error(`Assemble socket error: ${error.message}`));
-    });
+    server.listen(port, "0.0.0.0");
   });
 }
 
-async function getAssignedProxyUrl(password: string): Promise<string> {
-  const url = new URL("/v2/proxy", MANAGER_URL);
-  url.searchParams.set("password", password);
-  const response = await fetch(url);
-  if (!response.ok) {
-    let message = `Failed to get proxy from manager: ${response.status}`;
+async function findAvailablePort(preferred: number): Promise<number> {
+  for (let port = preferred; port < preferred + 100; port++) {
+    const available = await isPortAvailable(port);
+    if (available) return port;
+  }
+  throw new Error("No available port found");
+}
+
+function generateSessionSecret(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function displayLocalQR(wsUrl: string): void {
+  console.log("\n");
+  console.log("  Scan this QR code with the Jukto app:\n");
+  qrcode.generate(wsUrl, { small: true }, (qr) => {
+    console.log(qr);
+    console.log(`  URL: ${wsUrl}\n`);
+    console.log(`  Root directory: ${ROOT_DIR}\n`);
+    console.log("  Press Ctrl+C to exit.\n");
+  });
+}
+
+async function startNgrokTunnel(port: number): Promise<string> {
+  const ngrokBin = process.platform === "win32" ? "ngrok.exe" : "ngrok";
+  const ngrokPath = path.join(os.homedir(), "ngrok", ngrokBin);
+
+  // Try common locations
+  const candidates = [ngrokBin, ngrokPath, `./${ngrokBin}`];
+  let resolvedBin = null;
+  for (const candidate of candidates) {
     try {
-      const payload = (await response.json()) as {
-        error?: string;
-        reason?: string;
-      };
-      if (payload.error) {
-        message = payload.error;
-      } else if (payload.reason) {
-        message = payload.reason;
+      await fs.access(candidate);
+      resolvedBin = candidate;
+      break;
+    } catch {
+      // not found
+    }
+  }
+  // Also check PATH via which/where
+  if (!resolvedBin) {
+    try {
+      const which = process.platform === "win32" ? "where" : "which";
+      execSync(`${which} ${ngrokBin}`, { stdio: "ignore" });
+      resolvedBin = ngrokBin;
+    } catch {
+      // not found in PATH either
+    }
+  }
+
+  if (!resolvedBin) {
+    console.log("\n  ngrok not found. Install it from https://ngrok.com/download\n");
+    console.log("  Or use --tunnel-url to specify a tunnel URL manually.\n");
+    throw new Error("ngrok not found. Install ngrok or use --tunnel-url.");
+  }
+
+  console.log(`\n  Starting ngrok tunnel on port ${port}...\n`);
+
+  const proc = spawn(resolvedBin, ["http", String(port)], {
+    stdio: DEBUG_MODE ? "inherit" : "ignore",
+  });
+  ngrokProcess = proc;
+
+  proc.on("exit", (code) => {
+    if (ngrokProcess === proc) ngrokProcess = null;
+    if (code !== 0 && !shuttingDown) {
+      console.error(`\n  ngrok exited with code ${code}\n`);
+    }
+  });
+
+  // Poll ngrok API until it's ready
+  const apiUrl = "http://127.0.0.1:4040/api/tunnels";
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const res = await fetch(apiUrl);
+      if (!res.ok) continue;
+      const data = (await res.json()) as { tunnels: { public_url: string }[] };
+      const tunnel = data.tunnels?.[0];
+      if (tunnel?.public_url) {
+        const url = tunnel.public_url.replace(/^https:/, "wss:");
+        console.log(`  ngrok tunnel ready: ${tunnel.public_url}`);
+        console.log(`  QR will use: ${url}\n`);
+        return url;
       }
     } catch {
-      // ignore parse failures and use the fallback message
+      // API not ready yet
     }
-    throw new Error(message);
   }
-  const payload = (await response.json()) as Partial<ManagerProxyResponse>;
-  if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
-    throw new Error("Manager returned invalid proxy assignment");
-  }
-  return normalizeGatewayUrl(payload.proxyUrl);
+
+  throw new Error("ngrok failed to start. Check that the ngrok agent is authenticated.");
 }
 
-async function claimReattach(password: string): Promise<ReattachClaimResponse> {
-  const response = await fetch(new URL("/v2/reattach/claim", MANAGER_URL), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      password,
-      role: "cli",
-    }),
-  });
-  if (!response.ok) {
-    let message = `Failed to claim reattach from manager: ${response.status}`;
-    try {
-      const payload = (await response.json()) as {
-        error?: string;
-        reason?: string;
-      };
-      if (payload.error) {
-        message = payload.error;
-      } else if (payload.reason) {
-        message = payload.reason;
+function handleSessionConnection(ws: WebSocket, secret: string): void {
+  const server = new V2SessionServer(ws, secret, {
+    onSystemMessage: async (message) => {
+      if (message.type === "peer_connected") {
+        console.log("App connected!\n");
+        void publishDiscoveredPorts(true);
+        return;
       }
-    } catch {
-      // ignore parse failures and use the fallback message
-    }
-    throw new Error(message);
-  }
-  const payload = (await response.json()) as Partial<ReattachClaimResponse>;
-  if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
-    throw new Error("Manager returned invalid reattach proxy assignment");
-  }
-  if (
-    typeof payload.generation !== "number" ||
-    !Number.isFinite(payload.generation) ||
-    payload.generation < 1
-  ) {
-    throw new Error("Manager returned invalid reattach generation");
-  }
-  if (
-    typeof payload.expiresAt !== "number" ||
-    !Number.isFinite(payload.expiresAt)
-  ) {
-    throw new Error("Manager returned invalid reattach expiry");
-  }
-  return {
-    proxyUrl: normalizeGatewayUrl(payload.proxyUrl),
-    generation: payload.generation,
-    expiresAt: payload.expiresAt,
-  };
+      if (message.type === "peer_disconnected") {
+        console.log("App disconnected. Press Ctrl+C to stop.\n");
+        stopPortSync();
+        return;
+      }
+    },
+    onProtocolRequest: async (message) => {
+      return await processMessage(message);
+    },
+    onProtocolResponse: async () => {},
+    onProtocolEvent: async (message) => {
+      await processMessage(message);
+    },
+    onClose: (reason) => {
+      if (shuttingDown) return;
+      stopPortSync();
+      cleanupAllTunnels();
+      activeV2Server = null;
+      console.log(`App disconnected: ${reason}\n`);
+    },
+  });
+
+  activeV2Server = server;
+
+  // Signal the app to start the V2 handshake
+  ws.send(JSON.stringify({ type: "peer_connected" }));
+
+  void server.accept().then(() => {
+    startPortSync();
+  }).catch(() => {
+    // accept rejects if the WS closes before handshake completes — handled by onClose
+  });
 }
 
-async function revokePassword(
-  password: string,
-  reason = "revoked by cli --new",
-): Promise<void> {
-  const response = await fetch(new URL("/v2/revoke", MANAGER_URL), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password, reason }),
-  });
-  if (response.ok || response.status === 404) {
+function handleAppTunnelConnection(ws: WebSocket, tunnelId: string): void {
+  const tunnel = activeTunnels.get(tunnelId);
+  if (!tunnel) {
+    ws.close(4004, "tunnel not found");
     return;
   }
 
-  let message = `Failed to revoke previous session: ${response.status}`;
-  try {
-    const payload = (await response.json()) as {
-      error?: string;
-      reason?: string;
-    };
-    if (payload.error) {
-      message = payload.error;
-    } else if (payload.reason) {
-      message = payload.reason;
+  tunnel.proxyWs = ws;
+  const tcpSocket = tunnel.tcpSocket;
+
+  const markLocalEnded = () => {
+    if (tunnel.closing) return;
+    if (!tunnel.localEnded) {
+      tunnel.localEnded = true;
     }
-  } catch {
-    // ignore parse failures and use the fallback message
-  }
-  throw new Error(message);
+    if (!tunnel.finSent) {
+      tunnel.finSent = true;
+      sendProxyControl(tunnel, "fin");
+    }
+    maybeFinalizeTunnel(tunnelId);
+  };
+
+  const maybeEndLocalSocketAfterFlush = () => {
+    if (tunnel.closing) return;
+    if (!tunnel.remoteFinPending || tunnel.remoteEnded) return;
+    if ((tunnel.pendingWriteCount ?? 0) > 0) return;
+    tunnel.remoteEnded = true;
+    tunnel.remoteFinPending = false;
+    try {
+      if (!tcpSocket.destroyed && typeof tcpSocket.end === "function") {
+        tcpSocket.end();
+      }
+    } catch {}
+    maybeFinalizeTunnel(tunnelId);
+  };
+
+  tcpSocket.on("data", (data: Buffer) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  });
+
+  ws.on("message", (rawData, isBinary) => {
+    if (!isBinary) {
+      const text = typeof rawData === "string" ? rawData : Buffer.from(rawData as ArrayBufferLike).toString("utf-8");
+      const control = parseProxyControlFrame(text);
+      if (control) {
+        if (control.action === "fin") {
+          if (!tunnel.remoteEnded) {
+            tunnel.remoteFinPending = true;
+            maybeEndLocalSocketAfterFlush();
+          }
+        } else {
+          closeTunnel(tunnelId);
+        }
+        return;
+      }
+    }
+    if (!tcpSocket.destroyed) {
+      const bytes = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData as ArrayBufferLike);
+      tunnel.pendingWriteCount = (tunnel.pendingWriteCount ?? 0) + 1;
+      tcpSocket.write(bytes, () => {
+        tunnel.pendingWriteCount = Math.max(0, (tunnel.pendingWriteCount ?? 0) - 1);
+        maybeEndLocalSocketAfterFlush();
+      });
+    }
+  });
+
+  tcpSocket.on("end", markLocalEnded);
+  tcpSocket.on("close", markLocalEnded);
+  tcpSocket.on("error", () => {
+    if (!tunnel.finSent) {
+      sendProxyControl(tunnel, "rst", "tcp_error");
+    }
+    closeTunnel(tunnelId);
+  });
+
+  ws.on("close", () => closeTunnel(tunnelId));
+  ws.on("error", () => closeTunnel(tunnelId));
+  tcpSocket.resume();
 }
 
-function displayQR(code: string): void {
-  console.log("\n");
-  qrcode.generate(code, { small: true }, (qr) => {
-    console.log(qr);
-    console.log(`\n  Session code: ${code}\n`);
-    console.log(`  Root directory: ${ROOT_DIR}\n`);
-    console.log("  Scan the QR code with the Jukto app to connect.");
-    console.log("  Press Ctrl+C to exit.\n");
+function createWsServer(port: number, bindAddress: string, secret: string): WebSocketServer {
+  const server = new WebSocketServer({ port, host: bindAddress });
+
+  server.on("connection", (ws, req) => {
+    const url = new URL(req.url || "/", "http://localhost");
+    const path = url.pathname;
+    const reqSecret = url.searchParams.get("secret");
+
+    if (!reqSecret || reqSecret !== secret) {
+      if (DEBUG_MODE) {
+        console.error(`[ws] secret mismatch: expected="${secret}", got="${reqSecret}"`);
+      }
+      ws.close(4001, "invalid secret");
+      return;
+    }
+
+    if (path === "/v2/ws/app") {
+      handleSessionConnection(ws, secret);
+    } else if (path === "/v1/ws/proxy") {
+      const tunnelId = url.searchParams.get("tunnelId");
+      const role = url.searchParams.get("role");
+      if (tunnelId && role === "app") {
+        handleAppTunnelConnection(ws, tunnelId);
+      } else {
+        ws.close(4004, "invalid proxy params");
+      }
+    } else {
+      ws.close(4004, "unknown path");
+    }
   });
+
+  return server;
 }
 
 function supportsAnsiStyles(): boolean {
@@ -4113,30 +3880,6 @@ function supportsAnsiStyles(): boolean {
     process.env.TERM_PROGRAM ||
     process.env.TERM === "xterm-256color",
   );
-}
-
-function displaySavedSessionNotice(): void {
-  const useAnsiStyles = supportsAnsiStyles();
-  const red = useAnsiStyles ? "\x1b[31m" : "";
-  const bold = useAnsiStyles ? "\x1b[1m" : "";
-  const reset = useAnsiStyles ? "\x1b[0m" : "";
-  const lines = [
-    "NOTE: You're using an existing session.",
-    "You can open it from the app via Past Sessions and select this session.",
-    "If you want a new QR code for pairing, run: npx jukto-cli -n",
-  ];
-  const width = Math.max(...lines.map((line) => line.length));
-  const border = `+${"-".repeat(width + 2)}+`;
-
-  console.log("");
-  console.log(`${red}${border}${reset}`);
-  for (const line of lines) {
-    console.log(
-      `${red}|${reset} ${bold}${line.padEnd(width, " ")}${reset} ${red}|${reset}`,
-    );
-  }
-  console.log(`${red}${border}${reset}`);
-  console.log("");
 }
 
 function isCommandAvailable(command: string): boolean {
@@ -4236,13 +3979,19 @@ function gracefulShutdown(): void {
   trackedEditorDirectories.clear();
   trackedEditorFiles.clear();
   pendingTrackedFileChecks.clear();
-  activeV2Transport?.close();
-  activeV2Transport = null;
+  activeV2Server?.close();
+  activeV2Server = null;
+  wss?.close();
+  wss = null;
   if (ptyProcess) {
     ptyProcess.kill();
     ptyProcess = null;
   }
   terminals.clear();
+  if (ngrokProcess) {
+    ngrokProcess.kill();
+    ngrokProcess = null;
+  }
   for (const [pid, managedProc] of processes) {
     managedProc.proc.kill();
   }
@@ -4284,119 +4033,6 @@ function startAiManagerInBackground(): void {
   })();
 }
 
-async function connectWebSocketV2(): Promise<void> {
-  const gatewayUrl = currentPrimaryGateway;
-  if (!currentSessionPassword) {
-    throw new Error("missing password for websocket connect");
-  }
-
-  console.log(`Connecting to gateway ${gatewayUrl}...`);
-  activeGatewayUrl = gatewayUrl;
-
-  const transport = new V2SessionTransport({
-    gatewayUrl,
-    password: currentSessionPassword,
-    sessionSecret: currentSessionPassword,
-    generation: currentReattachGeneration,
-    role: "cli",
-    debugLog: DEBUG_MODE ? debugLog : undefined,
-    handlers: {
-      onSystemMessage: async (message) => {
-        if (message.type === "connected") return;
-
-        if (message.type === "peer_connected") {
-          console.log("App connected!\n");
-          void publishDiscoveredPorts(true);
-          return;
-        }
-
-        if (message.type === "peer_disconnected") {
-          console.log("App disconnected. Waiting for reconnect window.\n");
-          stopPortSync();
-          return;
-        }
-
-        if (message.type === "app_disconnected") {
-          if (message.reconnectDeadline) {
-            console.log(
-              `[session] app disconnected, waiting until ${new Date(message.reconnectDeadline).toISOString()}`,
-            );
-          }
-          return;
-        }
-
-        if (message.type === "close_connection") {
-          const reason = message.reason || "expired";
-          console.log(`[session] closed by gateway: ${reason}`);
-          if (reason === "session ended from app") {
-            console.log(
-              "[session] Run `npx jukto-cli` again and scan the new QR code to reconnect.",
-            );
-          }
-          gracefulShutdown();
-        }
-      },
-      onProtocolRequest: async (message) => {
-        return await processMessage(message);
-      },
-      onProtocolResponse: async () => {
-        // CLI does not currently await app responses outside request/reply routing.
-      },
-      onProtocolEvent: async (message) => {
-        await processMessage(message);
-      },
-      onClose: (reason) => {
-        if (shuttingDown) return;
-        stopPortSync();
-        cleanupAllTunnels();
-        activeV2Transport = null;
-        setTimeout(() => {
-          if (shuttingDown) return;
-          void handleConnectionDrop(reason);
-        }, 50);
-      },
-    },
-  });
-
-  activeV2Transport = transport;
-  await transport.connect();
-  startPortSync();
-  console.log("Connected to gateway (single secure session).\n");
-}
-
-async function handleConnectionDrop(reason: string): Promise<void> {
-  if (shuttingDown) return;
-  console.log(`\nDisconnected: ${reason}`);
-
-  if (!currentSessionPassword) {
-    console.error("No reconnect password available. Exiting.");
-    gracefulShutdown();
-    return;
-  }
-
-  let attempt = 0;
-  while (!shuttingDown) {
-    attempt += 1;
-    const base = Math.min(250 * 2 ** (attempt - 1), 30_000);
-    const delayMs = Math.round(base * (0.8 + Math.random() * 0.4));
-
-    try {
-      const reattach = await claimReattach(currentSessionPassword);
-      currentPrimaryGateway = reattach.proxyUrl;
-      currentReattachGeneration = reattach.generation;
-      await connectWebSocketV2();
-      debugLog(`[reconnect] connected via ${activeGatewayUrl}`);
-      return;
-    } catch (err) {
-      if (DEBUG_MODE)
-        console.error(
-          `[reconnect] attempt ${attempt} failed: ${(err as Error).message}`,
-        );
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-}
-
 async function main(): Promise<void> {
   if (SHOW_HELP) {
     printHelp();
@@ -4409,10 +4045,7 @@ async function main(): Promise<void> {
     console.log(`Extra ports enabled: ${EXTRA_PORTS.join(", ")}`);
   }
 
-  let usedSavedSession = false;
   try {
-    const cliConfig = await getCliConfig();
-    const savedSession = getSavedSessionForRoot(cliConfig, ROOT_DIR);
     debugLog("Checking PTY runtime...");
     const ptyBinaryPath = await ensurePtyBinaryReady();
     if (ptyBinaryPath) {
@@ -4424,57 +4057,51 @@ async function main(): Promise<void> {
     }
 
     await ensureAiCliRuntimes();
-
-    // Start AI backends in the background so missing or slow AI runtimes never
-    // block QR/session startup for the rest of the CLI.
     startAiManagerInBackground();
 
-    let sessionCodeToUse: string | null = null;
-    let sessionPasswordToUse: string;
+    const localIps = findLocalIPv4Addresses();
+    const preferredPort = PORT_FLAG ? parseInt(PORT_FLAG, 10) : 8443;
+    const port = await findAvailablePort(preferredPort);
+    const bindAddress = INTERFACE_FLAG || "0.0.0.0";
+    const secret = generateSessionSecret();
 
-    if (!FORCE_NEW_CODE && savedSession) {
-      console.log(`Using saved session for ${ROOT_DIR}`);
-      displaySavedSessionNotice();
-      sessionCodeToUse = savedSession.sessionCode;
-      sessionPasswordToUse = savedSession.sessionPassword;
-      usedSavedSession = true;
-    } else {
-      if (FORCE_NEW_CODE && savedSession?.sessionPassword) {
-        await revokePassword(savedSession.sessionPassword);
-        await clearSavedSessionForRoot();
+    currentSessionSecret = secret;
+
+    wss = createWsServer(port, bindAddress, secret);
+
+    console.log(`WebSocket server listening on ${bindAddress}:${port}\n`);
+
+    if (TUNNEL_URL_FLAG) {
+      const tunnelBase = TUNNEL_URL_FLAG.replace(/^https:/, "wss:").replace(/\/+$/, "");
+      const wsUrl = `${tunnelBase}/${secret}`;
+      console.log(`  ${wsUrl}\n`);
+      displayLocalQR(wsUrl);
+    } else if (LOCAL_FLAG) {
+      for (const ip of localIps) {
+        const wsUrl = `ws://${ip}:${port}/${secret}`;
+        console.log(`  ${wsUrl}`);
       }
-      const qr = await createQrCode();
-      currentSessionCode = qr.code;
-      displayQR(qr.code);
-      const assembled = await assembleWithCode(qr.code);
-      sessionCodeToUse = assembled.code;
-      sessionPasswordToUse = assembled.password;
-      await saveSessionForRoot(sessionCodeToUse, sessionPasswordToUse);
-    }
-
-    currentSessionCode = sessionCodeToUse;
-    currentSessionPassword = sessionPasswordToUse;
-    if (usedSavedSession) {
-      const reattach = await claimReattach(sessionPasswordToUse);
-      currentPrimaryGateway = reattach.proxyUrl;
-      currentReattachGeneration = reattach.generation;
+      displayLocalQR(`ws://${localIps[0]}:${port}/${secret}`);
     } else {
-      currentPrimaryGateway = await getAssignedProxyUrl(sessionPasswordToUse);
-      currentReattachGeneration = null;
+      const tunnelUrl = await startNgrokTunnel(port);
+      const wsUrl = `${tunnelUrl}/${secret}`;
+      console.log(`  ${wsUrl}\n`);
+      displayLocalQR(wsUrl);
     }
-    activeGatewayUrl = currentPrimaryGateway;
 
-    await connectWebSocketV2();
+    if (localIps.length === 0) {
+      console.log("\n  No network interfaces found. Check your network connection.");
+    }
+
+    console.log(
+      "\n  Note: You may see a firewall warning on first launch.",
+    );
+    console.log("  Allow the connection when prompted.\n");
+
+    // Wait indefinitely until SIGINT/SIGTERM
+    await new Promise<void>(() => {});
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (
-      usedSavedSession &&
-      /invalid|revoked|not found|expired|password invalid|password revoked/i.test(
-        message,
-      )
-    ) {
-      await clearSavedSessionForRoot().catch(() => {});
-    }
     if (error instanceof Error) {
       console.error(`Error: ${error.message}`);
       if (DEBUG_MODE && error.stack) console.error(error.stack);

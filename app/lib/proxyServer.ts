@@ -17,8 +17,6 @@ try {
   });
 }
 
-const DEFAULT_GATEWAY_WS_URL = "wss://proxy.jukto.pw";
-
 // ============================================================================
 // Types
 // ============================================================================
@@ -55,10 +53,8 @@ interface ServerInfo {
 // State
 // ============================================================================
 
-let sessionCode: string | null = null;
-let sessionPassword: string | null = null;
-let activeGatewayWsUrl: string = DEFAULT_GATEWAY_WS_URL;
-let failoverGatewayWsUrls: string[] = [DEFAULT_GATEWAY_WS_URL];
+let localWsUrl: string | null = null;
+let sessionSecret: string | null = null;
 let sendControlMessage:
   | ((
       ns: string,
@@ -102,27 +98,20 @@ interface ProxyControlFrame {
 // ============================================================================
 
 export function configureProxy(
-  gatewayWsUrl: string,
-  code: string,
-  password: string | null,
-  gateways: string[],
+  url: string,
+  secret: string,
   sendControl: (
     ns: string,
     action: string,
     payload?: Record<string, unknown>,
   ) => Promise<any>,
 ): void {
-  activeGatewayWsUrl = gatewayWsUrl || DEFAULT_GATEWAY_WS_URL;
-  failoverGatewayWsUrls = gateways.length > 0 ? gateways : [activeGatewayWsUrl];
-  sessionCode = code;
-  sessionPassword = password;
+  localWsUrl = url;
+  sessionSecret = secret;
   sendControlMessage = sendControl;
   logger.info("proxy", "configured app proxy transport", {
-    gatewayWsUrl: activeGatewayWsUrl,
-    gatewayCount: failoverGatewayWsUrls.length,
-    hasSessionCode: Boolean(sessionCode),
-    hasSessionPassword: Boolean(sessionPassword),
-    hasSendControl: Boolean(sendControlMessage),
+    localWsUrl,
+    hasSessionSecret: Boolean(sessionSecret),
   });
 }
 
@@ -210,10 +199,8 @@ export function stopAllServers(): void {
   desiredPorts.clear();
   lastStoppedAt.clear();
 
-  sessionCode = null;
-  sessionPassword = null;
-  activeGatewayWsUrl = DEFAULT_GATEWAY_WS_URL;
-  failoverGatewayWsUrls = [DEFAULT_GATEWAY_WS_URL];
+  localWsUrl = null;
+  sessionSecret = null;
   sendControlMessage = null;
 }
 
@@ -761,8 +748,7 @@ function startSingleServer(port: number): void {
         remotePort: socket?.remotePort ?? null,
         localAddress: socket?.localAddress ?? null,
         localPort: socket?.localPort ?? null,
-        hasSessionCode: Boolean(sessionCode),
-        hasSessionPassword: Boolean(sessionPassword),
+        hasSecret: Boolean(sessionSecret),
         hasSendControl: Boolean(sendControlMessage),
       });
       handleIncomingConnection(socket, port);
@@ -850,13 +836,12 @@ async function handleIncomingConnection(
   tcpSocket: any,
   port: number,
 ): Promise<void> {
-  if (!sessionCode || !sendControlMessage) {
+  if (!localWsUrl || !sessionSecret || !sendControlMessage) {
     logger.warn("proxy", "dropping localhost connection before tunnel setup", {
       port,
-      hasSessionCode: Boolean(sessionCode),
-      hasSessionPassword: Boolean(sessionPassword),
+      hasLocalUrl: Boolean(localWsUrl),
+      hasSecret: Boolean(sessionSecret),
       hasSendControl: Boolean(sendControlMessage),
-      reason: !sessionCode ? "missing_session_code" : "missing_send_control",
     });
     tcpSocket.destroy();
     return;
@@ -876,9 +861,7 @@ async function handleIncomingConnection(
     remotePort: tcpSocket?.remotePort ?? null,
     localAddress: tcpSocket?.localAddress ?? null,
     localPort: tcpSocket?.localPort ?? null,
-    gatewayWsUrl: activeGatewayWsUrl,
-    hasSessionCode: Boolean(sessionCode),
-    hasSessionPassword: Boolean(sessionPassword),
+    localWsUrl,
   });
 
   let initialProtocol: InitialClientProtocol;
@@ -959,18 +942,12 @@ async function handleIncomingConnection(
       return;
     }
 
-    // Step 2: Open our side of the proxy WS
-    const authQuery = sessionPassword
-      ? `password=${encodeURIComponent(sessionPassword)}`
-      : `code=${encodeURIComponent(sessionCode)}`;
-    const gatewayBase =
-      activeGatewayWsUrl || failoverGatewayWsUrls[0] || DEFAULT_GATEWAY_WS_URL;
-    const proxyWsUrl = `${gatewayBase}/v1/ws/proxy?${authQuery}&tunnelId=${encodeURIComponent(tunnelId)}&role=app`;
+    // Step 2: Open our side of the proxy WS to the local CLI
+    const proxyWsUrl = `${localWsUrl}/v1/ws/proxy?secret=${encodeURIComponent(sessionSecret)}&tunnelId=${encodeURIComponent(tunnelId)}&role=app`;
     logger.info("proxy", "connecting app proxy websocket", {
       tunnelId,
       port,
-      gatewayBase,
-      authMode: sessionPassword ? "password" : "code",
+      localWsUrl,
       initialProtocol,
     });
     const proxyWs = await connectProxyWsWithRetry(

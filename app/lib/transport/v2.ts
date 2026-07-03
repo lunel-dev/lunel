@@ -39,6 +39,7 @@ export interface V2TransportOptions {
   role: 'cli' | 'app';
   handlers: V2TransportHandlers;
   debugLog?: (message: string, ...args: unknown[]) => void;
+  wsUrlOverride?: string;
 }
 
 interface KeyPair {
@@ -104,7 +105,7 @@ export class V2SessionTransport {
       this.secureReadyReject = reject;
     });
 
-    const wsUrl = buildSessionV2WsUrl(
+    const wsUrl = this.options.wsUrlOverride ?? buildSessionV2WsUrl(
       this.options.gatewayUrl,
       this.options.role,
       this.options.password,

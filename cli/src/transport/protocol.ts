@@ -151,9 +151,14 @@ export function buildSessionV2WsUrl(
   password: string,
   generation?: number | null,
 ): string {
+  const lower = gatewayUrl.toLowerCase();
+  if (lower.startsWith("ws://")) {
+    const query = new URLSearchParams({ secret: password });
+    return `${gatewayUrl}/v2/ws/${role}?${query.toString()}`;
+  }
   const wsBase = gatewayUrl.replace(/^https:/, "wss:");
   if (!wsBase.startsWith("wss://")) {
-    throw new Error("Gateway URL must use https://");
+    throw new Error("Gateway URL must use https:// or ws://");
   }
   const query = new URLSearchParams({ password });
   if (typeof generation === "number" && Number.isFinite(generation) && generation > 0) {

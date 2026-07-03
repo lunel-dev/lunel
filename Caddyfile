@@ -1,7 +1,0 @@
-manager.jukto.pw {
-    reverse_proxy manager:8899
-}
-
-proxy.jukto.pw {
-    reverse_proxy proxy:3000
-}
