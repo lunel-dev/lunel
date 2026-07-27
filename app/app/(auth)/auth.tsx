@@ -16,9 +16,9 @@ import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import Svg, { Path } from "react-native-svg";
 
 const TABLET_BREAKPOINT = 768;
-const TERMS_URL = "https://app.lunel.dev/terms";
-const PRIVACY_URL = "https://app.lunel.dev/privacy";
-const UPDATE_CHECK_URL = "https://internal-api.lunel.dev/updateNeeded?version=1.0.1";
+const TERMS_URL = process.env.EXPO_PUBLIC_LUNEL_TERMS_URL || "https://app.lunel.dev/terms";
+const PRIVACY_URL = process.env.EXPO_PUBLIC_LUNEL_PRIVACY_URL || "https://app.lunel.dev/privacy";
+const UPDATE_CHECK_URL = process.env.EXPO_PUBLIC_LUNEL_UPDATE_CHECK_URL || "https://internal-api.lunel.dev/updateNeeded?version=1.0.1";
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const LOGO_SOURCE_DARK = require("@/assets/images/icon-bg.png");
 const LOGO_SOURCE_LIGHT = require("@/assets/images/icon-bg-light.png");

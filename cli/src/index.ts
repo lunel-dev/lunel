@@ -35,7 +35,7 @@ import { createRequire } from "module";
 const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
-const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
+const PTY_RELEASE_BASE_URL = process.env.LUNEL_PTY_DOWNLOAD_URL || "https://github.com/lunel-dev/lunel/releases/download/v0";
 const AI_RUNTIME_INSTALL_CANDIDATES: Record<AiBackend, string[]> = {
   opencode: ["opencode-ai", "@opencode-ai/cli", "opencode"],
   codex: ["@openai/codex", "codex"],

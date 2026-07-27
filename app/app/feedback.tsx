@@ -15,7 +15,7 @@ import {
   View,
 } from "react-native";
 
-const FEEDBACK_ENDPOINT = "https://internal-api.lunel.dev/app/feedback";
+const FEEDBACK_ENDPOINT = process.env.EXPO_PUBLIC_LUNEL_FEEDBACK_URL || "https://internal-api.lunel.dev/app/feedback";
 
 function RatingStars({
   rating,
