@@ -211,7 +211,7 @@ function normalizeGatewayUrl(input: string | null): string | null {
     const raw = input.trim();
     const withScheme = raw.includes("://") ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
-    if (parsed.protocol !== "https:") {
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return null;
     }
     const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
@@ -783,7 +783,7 @@ function startGateway(): void {
       console.error("[manager-control] cannot connect — missing MANAGER_URL, PROXY_PASSWORD, or PUBLIC_URL");
       return;
     }
-    const wsUrl = `${managerUrl.replace(/^https:/, "wss:")}/v1/gateway/ws`;
+    const wsUrl = `${managerUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:")}/v1/gateway/ws`;
     console.log(`[manager-control] connecting to ${wsUrl} as ${publicUrl}...`);
     const ws = new WebSocket(wsUrl);
     managerControlWs = ws;

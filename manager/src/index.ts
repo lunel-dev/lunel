@@ -332,7 +332,7 @@ function normalizeGatewayUrl(input: string | null): string | null {
     const raw = input.trim();
     const withScheme = raw.includes("://") ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
-    if (parsed.protocol !== "https:") {
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return null;
     }
     const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
