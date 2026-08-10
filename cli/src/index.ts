@@ -35,7 +35,7 @@ import { createRequire } from "module";
 const __require = createRequire(import.meta.url);
 const VERSION = (__require("../package.json") as { version: string }).version;
 const VERBOSE_AI_LOGS = process.env.LUNEL_DEBUG_AI === "1";
-const PTY_RELEASE_BASE_URL = "https://github.com/lunel-dev/lunel/releases/download/v0";
+const PTY_RELEASE_BASE_URL = process.env.LUNEL_PTY_DOWNLOAD_URL || "https://github.com/lunel-dev/lunel/releases/download/v0";
 const AI_RUNTIME_INSTALL_CANDIDATES: Record<AiBackend, string[]> = {
   opencode: ["opencode-ai", "@opencode-ai/cli", "opencode"],
   codex: ["@openai/codex", "codex"],
@@ -2582,9 +2582,9 @@ async function handleProxyConnect(payload: Record<string, unknown>): Promise<Rec
   debugLog("[proxy] local tcp connected", { tunnelId, port });
 
   // 2. Open proxy WebSocket to gateway
-  const wsBase = activeGatewayUrl.replace(/^https:/, "wss:");
-  if (!wsBase.startsWith("wss://")) {
-    throw Object.assign(new Error("Gateway URL must use https://"), { code: "EPROTO" });
+  const wsBase = activeGatewayUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
+  if (!wsBase.startsWith("wss://") && !wsBase.startsWith("ws://")) {
+    throw Object.assign(new Error("Gateway URL must use http(s)://"), { code: "EPROTO" });
   }
   const authQuery = currentSessionPassword
     ? `password=${encodeURIComponent(currentSessionPassword)}`
@@ -3218,9 +3218,6 @@ function normalizeGatewayUrl(input: string): string {
   if (!raw) {
     throw new Error("Gateway URL is required");
   }
-  if (raw.toLowerCase().startsWith("http://") || raw.toLowerCase().startsWith("ws://")) {
-    throw new Error("Insecure gateway protocol is not allowed; use https://");
-  }
 
   const withScheme = /^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`;
   let parsed: URL;
@@ -3229,8 +3226,8 @@ function normalizeGatewayUrl(input: string): string {
   } catch {
     throw new Error(`Invalid gateway URL: ${input}`);
   }
-  if (parsed.protocol !== "https:") {
-    throw new Error("Gateway URL must use https://");
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Gateway URL must use http:// or https://");
   }
   const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
   return `${parsed.protocol}//${parsed.host}${path}`;
@@ -3245,7 +3242,7 @@ async function createQrCode(): Promise<ManagerQrResponse> {
 }
 
 async function assembleWithCode(code: string): Promise<AssembleResult> {
-  const wsUrl = `${MANAGER_URL.replace(/^https:/, "wss:")}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
+  const wsUrl = `${MANAGER_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:")}/v2/assemble?code=${encodeURIComponent(code)}&role=cli`;
   return await new Promise<AssembleResult>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;

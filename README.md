@@ -30,6 +30,11 @@ This can be used in two ways, both are for coding:
 
 <br /> 
 
+## Self-hosting
+
+See [docs/self-hosting.md](docs/self-hosting.md) for running Lunel on a local
+network or tailnet over plain `http://` URLs (no TLS/tunnel required).
+
 ## App
 
 Mobile app for iOS/Android/Web built with Expo. App is just a dumb client with most logic on cli and app just acting as a rendering client.
